@@ -38,6 +38,7 @@ end
 ---@param task string
 ---@return string
 function M.branch(base, task)
+	assert(type(base) == "string" and base ~= "" and base:sub(1, 1) ~= "-", "invalid base branch")
 	assert(task:match("^[%w_.-]+$") and task ~= "." and task ~= "..", "invalid task id")
 	return base .. "--" .. task
 end

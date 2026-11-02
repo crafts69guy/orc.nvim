@@ -1,10 +1,13 @@
 local args = require("orc.args")
 
 Test.test("args parses values, booleans, operands and separator", function()
-	local values, operands = args.parse({ "start", "--path=a b", "--here", "--", "--literal", "-x" }, {
-		path = "string",
-		here = "boolean",
-	})
+	local values, operands = args.parse(
+		{ "start", "--path=a b", "--here", "--", "--literal", "-x" },
+		{
+			path = "string",
+			here = "boolean",
+		}
+	)
 	Test.eq(values, { path = "a b", here = true })
 	Test.eq(operands, { "start", "--literal", "-x" })
 	Test.eq(args.parse({ "--flag=false" }, { flag = "boolean" }), { flag = false })

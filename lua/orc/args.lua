@@ -21,7 +21,10 @@ function M.parse(argv, spec)
 			assert(kind == "boolean" or kind == "string", "unknown option: " .. argument)
 			assert(values[name] == nil, "duplicate option: --" .. name)
 			if kind == "boolean" then
-				assert(value == nil or value == "true" or value == "false", "--" .. name .. " needs true or false")
+				assert(
+					value == nil or value == "true" or value == "false",
+					"--" .. name .. " needs true or false"
+				)
 				values[name] = value ~= "false"
 			else
 				if value == nil then

@@ -37,14 +37,13 @@ function M.render(text, name)
 			.. vim.json.encode(data.effort == "max" and "xhigh" or data.effort)
 	end
 	local sandbox = data["codex-sandbox"]
+	local tools = data.tools or "Write"
 	if sandbox then
 		assert(
 			sandbox == "inherit" or sandbox == "read-only" or sandbox == "workspace-write",
 			"invalid codex-sandbox"
 		)
-	elseif
-		not (data.tools or "Write"):match("Write") and not (data.tools or "Write"):match("Edit")
-	then
+	elseif not tools:match("Write") and not tools:match("Edit") then
 		sandbox = "read-only"
 	end
 	if sandbox and sandbox ~= "inherit" then

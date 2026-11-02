@@ -86,7 +86,8 @@ function M.instrument(source, path)
 	local edits, serial = {}, 0
 	local function insert(at, text, rank, span)
 		serial = serial + 1
-		edits[#edits + 1] = { at = at, text = " " .. text .. " ", rank = rank, span = span or 0, serial = serial }
+		edits[#edits + 1] =
+			{ at = at, text = " " .. text .. " ", rank = rank, span = span or 0, serial = serial }
 	end
 	local function site(list, node, kind)
 		local line = node:start() + 1
@@ -161,10 +162,22 @@ function M.instrument(source, path)
 			child_loop = flag
 			local first, last = byte(node), byte(node, true)
 			insert(first, "do local " .. flag .. "=false;", 2, -(last - first))
-			insert(after_token(node, "do", byte), symbol .. ".branch(" .. identity .. "," .. id .. ",true);", 1)
+			insert(
+				after_token(node, "do", byte),
+				symbol .. ".branch(" .. identity .. "," .. id .. ",true);",
+				1
+			)
 			insert(
 				last,
-				";if not " .. flag .. " then " .. symbol .. ".branch(" .. identity .. "," .. id .. ",false) end end;",
+				";if not "
+					.. flag
+					.. " then "
+					.. symbol
+					.. ".branch("
+					.. identity
+					.. ","
+					.. id
+					.. ",false) end end;",
 				0,
 				last - first
 			)
@@ -302,13 +315,22 @@ function M.collector(manifests)
 	end
 	function collector.check(threshold)
 		threshold = threshold or 98
-		assert(type(threshold) == "number" and threshold >= 0 and threshold <= 100, "coverage: invalid threshold")
+		assert(
+			type(threshold) == "number" and threshold >= 0 and threshold <= 100,
+			"coverage: invalid threshold"
+		)
 		local report, errors = collector.report(), {}
 		for _, name in ipairs({ "lines", "branches", "functions" }) do
 			local value = report[name]
 			if value.percent < threshold then
-				errors[#errors + 1] =
-					string.format("%s %.2f%% < %.2f%% (%d/%d)", name, value.percent, threshold, value.hit, value.total)
+				errors[#errors + 1] = string.format(
+					"%s %.2f%% < %.2f%% (%d/%d)",
+					name,
+					value.percent,
+					threshold,
+					value.hit,
+					value.total
+				)
 			end
 		end
 		return #errors == 0, table.concat(errors, "; "), report
@@ -332,7 +354,9 @@ local function sources(root)
 				local path = vim.fs.joinpath(dir, name)
 				if kind == "directory" then
 					walk(path)
-				elseif kind == "file" and (name:match("%.lua$") or path == vim.fs.joinpath(root, "bin", "orc")) then
+				elseif
+					kind == "file" and (name:match("%.lua$") or path == vim.fs.joinpath(root, "bin", "orc"))
+				then
 					found[#found + 1] = path
 				end
 			end

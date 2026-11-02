@@ -178,3 +178,136 @@ Test.test("runtime stream delivers chunks and cancellation terminates its owned 
 		rt.stream({ "true" }, {})
 	end)
 end)
+
+local function replacing(object, key, replacement, fn)
+	local previous = object[key]
+	object[key] = replacement
+	local ok, err = xpcall(fn, debug.traceback)
+	object[key] = previous
+	assert(ok, err)
+end
+
+Test.test(
+	"runtime filesystem failures preserve existing data and close owned descriptors",
+	function()
+		local rt, dir = runtime.new(), Test.temp()
+		local file = rt.path(dir, "report")
+		rt.write(file, "retained")
+		replacing(vim.uv, "fs_fstat", function()
+			return nil, "fstat failed"
+		end, function()
+			local data, err = rt.read(file)
+			Test.eq(data, nil)
+			Test.eq(err, "fstat failed")
+		end)
+		local close = vim.uv.fs_close
+		replacing(vim.uv, "fs_close", function(fd)
+			close(fd)
+			return nil, "close failed"
+		end, function()
+			local data, err = rt.read(file)
+			Test.eq(data, nil)
+			Test.eq(err, "close failed")
+		end)
+		replacing(vim.uv, "fs_write", function()
+			return nil, "write failed"
+		end, function()
+			Test.raises("write failed", function()
+				rt.write(file, "new")
+			end)
+		end)
+		Test.eq(rt.read(file), "retained")
+		Test.eq(rt.list(dir), { "report" })
+		replacing(vim.fn, "mkdir", function()
+			return 0
+		end, function()
+			Test.raises("cannot create directory", function()
+				rt.mkdir(rt.path(dir, "missing"))
+			end)
+		end)
+		replacing(vim.uv, "fs_lstat", function()
+			return nil, "EACCES: denied"
+		end, function()
+			Test.raises("EACCES", function()
+				rt.remove(file)
+			end)
+		end)
+		Test.eq(rt.exec({ "pwd" }, { cwd = file }).code, 1)
+		Test.eq(rt.interactive({ "pwd" }, { cwd = file }), 1)
+	end
+)
+
+Test.test(
+	"runtime interactive forwards cancellation and never kills after child completion",
+	function()
+		local rt, callbacks = runtime.new(), {}
+		replacing(vim.uv, "new_signal", function()
+			return {
+				start = function(_, name, callback)
+					callbacks[name] = callback
+				end,
+				stop = function() end,
+				close = function() end,
+			}
+		end, function()
+			vim.defer_fn(function()
+				callbacks.sigterm()
+			end, 10)
+			Test.eq(rt.interactive({ "sleep", "30" }), 143)
+			callbacks.sigterm()
+		end)
+		local wait, interrupted = vim.wait, false
+		replacing(vim, "wait", function(...)
+			if not interrupted then
+				interrupted = true
+				return false, -2
+			end
+			return wait(...)
+		end, function()
+			Test.eq(rt.interactive({ "sleep", "30" }), 130)
+		end)
+	end
+)
+
+Test.test(
+	"runtime streaming errors terminate its owned child and completion normalizes absent output",
+	function()
+		local rt, completed, killed = runtime.new(), nil, false
+		replacing(vim, "system", function(_, settings, on_exit)
+			local handle = {
+				kill = function()
+					killed = true
+					on_exit({ code = 1, signal = 15 })
+				end,
+			}
+			vim.schedule(function()
+				settings.stdout("EIO", nil)
+			end)
+			return handle
+		end, function()
+			rt.stream({ "fake" }, {
+				on_exit = function(value)
+					completed = value
+				end,
+			}, function()
+				error("no data expected")
+			end)
+			assert(vim.wait(1000, function()
+				return completed ~= nil
+			end))
+			assert(killed)
+			Test.eq(completed.stdout, "")
+			Test.eq(completed.stderr, "")
+		end)
+		replacing(vim, "system", function()
+			return {
+				wait = function()
+					return { code = 0, signal = 0 }
+				end,
+			}
+		end, function()
+			Test.eq(rt.exec({ "fake" }).stdout, "")
+			Test.eq(rt.exec({ "fake" }).stderr, "")
+		end)
+	end
+)

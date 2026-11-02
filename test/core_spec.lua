@@ -675,3 +675,448 @@ Test.test("core Git root helpers distinguish linked worktrees from the main chec
 	Test.eq(wt.root(outside), nil)
 	Test.eq(wt.checkout(outside), nil)
 end)
+
+Test.test("core CLI entrypoints emit clean machine output and propagate failures", function()
+	local rt = runtime.new()
+	local previous = {
+		argv = arg,
+		stdout = io.stdout,
+		stderr = io.stderr,
+		stdin = io.stdin,
+		exit = os.exit,
+		path = package.path,
+	}
+	local out, err, exit = "", "", nil
+	io.stdout = {
+		write = function(_, text)
+			out = out .. text
+		end,
+		flush = function() end,
+	}
+	io.stderr = {
+		write = function(_, text)
+			err = err .. text
+		end,
+		flush = function() end,
+	}
+	io.stdin = {
+		read = function()
+			return "{}"
+		end,
+	}
+	os.exit = function(code)
+		exit = code
+	end
+	local ok, failure = xpcall(function()
+		arg = { [0] = rt.path(rt.root, "bin", "orc"), "--version" }
+		dofile(arg[0])
+		Test.eq(out, "0.1.0\n")
+		Test.eq(err, "")
+		Test.eq(exit, 0)
+		arg = { [0] = rt.path(rt.root, "bin", "orc"), "unknown" }
+		dofile(arg[0])
+		Test.eq(exit, 1)
+		assert(err:find("unknown command", 1, true))
+		arg = { [0] = rt.path(rt.root, "bin", "orc"), "hook", "guard" }
+		dofile(arg[0])
+		Test.eq(exit, 0)
+		arg = { [0] = rt.path(rt.root, "scripts", "gen-agents.lua"), "--check" }
+		dofile(arg[0])
+		Test.eq(exit, 0)
+		arg = { [0] = rt.path(rt.root, "scripts", "gen-agents.lua") }
+		dofile(arg[0])
+		Test.eq(exit, 0)
+		arg = { [0] = rt.path(rt.root, "scripts", "gen-agents.lua"), "--unknown" }
+		Test.raises("usage", function()
+			dofile(arg[0])
+		end)
+	end, debug.traceback)
+	arg, io.stdout, io.stderr, io.stdin, os.exit, package.path =
+		previous.argv, previous.stdout, previous.stderr, previous.stdin, previous.exit, previous.path
+	assert(ok, failure)
+end)
+
+Test.test("core launcher switches session cwd before starting the native harness", function()
+	local rt = fake()
+	route(rt, { ["wt switch existing --no-cd --format=json"] = result(0, '{"path":"/session"}') })
+	Test.eq(cli.run(rt, { "claude", "--wt=existing" }).code, 0)
+	Test.eq(rt.launched[1].options.cwd, "/session")
+	local source = "---\nname: lone\ndescription: d\n---\nbody"
+	Test.eq(generator.render(source, "lone.md"):find("sandbox_mode", 1, true), nil)
+	Test.eq(generator.generate(fake(), true).code, 0)
+end)
+
+Test.test(
+	"core worktree creation, listing and post-merge receipts use canonical task branches",
+	function()
+		local rt = fake()
+		route(rt, {
+			['wt --config-set worktree-path=".worktrees/{{ branch | sanitize }}" switch -c feat--T1 --base feat --no-cd --format=json'] = result(
+				0,
+				'{"path":"/task"}'
+			),
+			["wt list --format=json"] = result(
+				0,
+				'{"items":[{"branch":"feat--T1","worktree":{"path":"/task"}},{"branch":"other","worktree":{"path":"/else"}},{"branch":"bare"}]}'
+			),
+			["git merge-base feat HEAD"] = result(0, "base\n"),
+			["git rev-list --count base..HEAD"] = result(0, "0\n"),
+			["git rev-parse feat"] = result(0, "sha\n"),
+		})
+		Test.eq(
+			wt.run(rt, { "new", "feat", "T1" }).result,
+			{ { task = "T1", branch = "feat--T1", path = "/task" } }
+		)
+		Test.eq(#wt.run(rt, { "list", "feat" }).result, 1)
+		rt.files["/repo/.scratch/feature/plan.md"] = "Base branch: feat\n"
+		Test.eq(cli.run(rt, { "wt", "merge", "feat", "T1", "--message=x" }).code, 0)
+		Test.eq(rt.files["/repo/.scratch/feature/merged"], "T1 sha\n")
+		Test.eq(wt.run(rt, { "list", "feat", "extra" }).code, 1)
+		route(rt, {
+			["git check-ignore -q .orc/x"] = result(),
+			["git check-ignore -q .scratch/x"] = result(),
+			["git check-ignore -q .worktrees/x"] = result(),
+		})
+		local prior = rt.files["/repo/.git/info/exclude"]
+		wt.ignore(rt)
+		Test.eq(rt.files["/repo/.git/info/exclude"], prior)
+	end
+)
+
+Test.test("core merge aborts rebase conflicts and retains nonempty cleanup leftovers", function()
+	local rt = fake()
+	route(rt, {
+		["wt list --format=json"] = result(
+			0,
+			'{"items":[{"branch":"feat--T1","worktree":{"path":"/task"}}]}'
+		),
+		["git merge-base feat HEAD"] = result(0, "base\n"),
+		["git rev-list --count base..HEAD"] = result(0, "1\n"),
+		["wt -C /task merge feat --no-commit --no-remove"] = result(1, "", "conflict"),
+		["git rev-parse --git-path rebase-merge"] = result(0, ".git/rebase-merge\n"),
+		["git diff --name-only --diff-filter=U"] = result(0, "a.lua\nb.lua\n"),
+	})
+	rt.files["/task/.git/rebase-merge"] = "present"
+	local conflict = wt.run(rt, { "merge", "feat", "T1", "--message=x" })
+	Test.eq(conflict.result.files, { "a.lua", "b.lua" })
+	Test.eq(conflict.code, 2)
+	rt.files["/task/.git/rebase-merge"] = nil
+	Test.eq(wt.run(rt, { "merge", "feat", "T1", "--message=x" }).code, 1)
+	route(rt, {
+		["wt -C /task merge feat --no-commit --no-remove"] = result(),
+		["git rev-parse feat"] = result(0, "sha\n"),
+	})
+	rt.files["/task"], rt.files["/task/unrelated"] = "directory", "must retain"
+	assert(
+		wt.run(rt, { "merge", "feat", "T1", "--message=x" }).result.stderr
+			:find("nonempty worktree", 1, true)
+	)
+	Test.eq(rt.files["/task/unrelated"], "must retain")
+	rt.files["/task/unrelated"] = nil
+	Test.eq(wt.run(rt, { "merge", "feat", "T1", "--message=x" }).code, 0)
+	Test.eq(rt.files["/task"], nil)
+end)
+
+Test.test(
+	"core status covers empty plans, orphan-only worktrees and malformed note links",
+	function()
+		local rt = fake()
+		with_module("orc.workers", {
+			collect = function()
+				return {}
+			end,
+		}, function()
+			Test.eq(status.run(rt, {}).out, "no features\n")
+			rt.files["/repo/.scratch/empty/plan.md"] = "# No tasks\n"
+			Test.eq(status.run(rt, {}).out, "no tasks\n")
+			rt.files["/repo/.scratch/empty/inkdrop.json"] = "malformed"
+			Test.eq(status.collect(rt).features[1].note, rt.null)
+			rt.files["/repo/.scratch/empty/inkdrop.json"] = "null"
+			Test.eq(status.collect(rt).features[1].note, rt.null)
+			route(rt, {
+				["wt list --format=json"] = result(
+					0,
+					'{"items":[{"branch":"empty--orphan","worktree":{"path":"/orphan"}}]}'
+				),
+			})
+			Test.eq(status.collect(rt).features[1].tasks[1].branch, "empty--orphan")
+			assert(status.run(rt, {}).out:find("worktree", 1, true))
+			rt.files["/orphan/.orc/report.md"] = "Status: partial\n"
+			assert(status.run(rt, {}).out:find("partial", 1, true))
+		end)
+		Test.eq(
+			status.parse_tasks(
+				"## Tasks\n```yaml\n  goal: before task\n- id: x # comment\n  depends_on: []\n```"
+			)[1].dependsOn,
+			{}
+		)
+		Test.eq(
+			status.parse_tasks('## Tasks\n```yaml\n- id: "unterminated\n```')[1].id,
+			'"unterminated'
+		)
+	end
+)
+
+Test.test("core hooks cover escaped arguments, safe shells and report fallback shapes", function()
+	for _, command in ipairs({
+		"echo escaped\\ word",
+		"sh",
+		"sh -c ''",
+		"bash --version",
+		"sh -c 'echo safe'",
+		"git --version",
+		"gh issue list",
+		"gh pr view",
+		"rex",
+		"rex run -- true",
+		"orc wt list feature",
+	}) do
+		local denied = hooks.decide("main", command)
+		Test.eq(denied, nil)
+	end
+	assert(hooks.decide("implementer", "sh -c 'git push; echo after'"))
+	local nested = "git status"
+	for _ = 1, 7 do
+		nested = "sh -c " .. string.format("%q", nested)
+	end
+	assert(hooks.decide("implementer", nested))
+	local rt = fake()
+	rt.files["/transcript"] = table.concat({
+		"null",
+		"{}",
+		'{"message":{"content":"text"}}',
+		'{"message":{"content":[null,{}, {"type":"tool_use","name":"other"}]}}',
+	}, "\n")
+	Test.eq(hooks.handback(rt, "/transcript"), nil)
+	with_module("orc.inkdrop", {
+		flag = function()
+			return { id = "book:x", name = "Notebook" }
+		end,
+	}, function()
+		assert(hooks.context(rt):find("Notebook", 1, true))
+	end)
+end)
+
+Test.test("core doctor probes connected Rex and Inkdrop without exposing credentials", function()
+	local rt = fake()
+	rt.files["/plugin/hooks/hooks.json"] = "{}"
+	rt.env.ORC_PAIR, rt.env.INKDROP_LOCAL_USERNAME, rt.env.INKDROP_LOCAL_PASSWORD =
+		"1", "user", "private"
+	with_module("orc.inkdrop", {
+		probe = function()
+			return { version = "6" }
+		end,
+	}, function()
+		local document = require("orc.doctor").collect(rt)
+		assert(rt.encode(document):find("connected", 1, true))
+		assert(rt.encode(document):find("v6", 1, true))
+		assert(not rt.encode(document):find("private", 1, true))
+		route(rt, { ["rex whoami --json"] = result(1) })
+		Test.eq(require("orc.doctor").run(rt, {}).code, 1)
+	end)
+end)
+
+Test.test("core update tolerates unavailable or malformed marketplace inventories", function()
+	for _, listing in ipairs({
+		result(127),
+		result(0, "bad JSON"),
+		result(0, "null"),
+		result(0, "[]"),
+		result(0, '[{"name":"unrelated"}]'),
+	}) do
+		local rt = fake()
+		route(rt, {
+			["claude plugin marketplace list --json"] = listing,
+			["codex plugin marketplace list --json"] = listing,
+		})
+		Test.eq(cli.run(rt, { "update" }).code, 0)
+		for _, command in ipairs(rt.commands) do
+			assert(not table.concat(command.argv, " "):find("plugin update", 1, true))
+		end
+	end
+	Test.eq(cli.run(fake(), { "wt", "bad" }).code, 1)
+	Test.eq(cli.run(fake(), { "hook", "guard" }).code, 0)
+	Test.eq(cli.run(fake(), { "completion" }).code, 1)
+	local rt = fake()
+	rt.files["/plugin/agents/ignored.txt"] = "ignored"
+	Test.eq(cli.run(rt, { "claude", "--level=high" }).code, 0)
+	rt.files["/plugin/codex/agents/empty.toml"] = "name = 'empty'"
+	Test.eq(cli.run(rt, { "codex" }).code, 0)
+end)
+
+Test.test("core merge receipts warn without changing a completed merge's exit status", function()
+	local rt = fake()
+	local response =
+		{ code = 0, out = "merged\n", result = { status = "merged", task = "T1", commit = "sha" } }
+	with_module("orc.worktrees", {
+		run = function()
+			return response
+		end,
+	}, function()
+		with_module("orc.status", {
+			record_merge = function()
+				return "ambiguous plans"
+			end,
+		}, function()
+			local found = cli.run(rt, { "wt", "merge", "main", "T1", "--message=x" })
+			Test.eq(found.code, 0)
+			assert(found.err:find("ambiguous plans", 1, true))
+		end)
+		with_module("orc.status", {
+			record_merge = function()
+				error("disk failed")
+			end,
+		}, function()
+			Test.eq(cli.run(rt, { "wt", "merge", "main", "T1", "--message=x" }).code, 0)
+		end)
+	end)
+end)
+
+Test.test(
+	"core status tolerates malformed note metadata and reports pending and live tasks",
+	function()
+		local rt = fake()
+		rt.files["/repo/.scratch/f/plan.md"] =
+			"## Tasks\n```yaml\n- id: T1\n  depends_on: missing-list\n- id: T2\n```\n"
+		rt.files["/repo/.scratch/else/log.md"] = "no plan"
+		with_module("orc.workers", {
+			collect = function()
+				return { { feature = "f", task = "T2", runId = "run", state = "working", path = "/pair" } }
+			end,
+		}, function()
+			for _, note in ipairs({ "{}", '{"noteId":1}', '{"noteId":"wrong"}' }) do
+				rt.files["/repo/.scratch/f/inkdrop.json"] = note
+				Test.eq(status.collect(rt).features[1].note, rt.null)
+			end
+			local text = status.run(rt, {}).out
+			assert(text:find("f/T1  -", 1, true))
+			assert(text:find("f/T2  working", 1, true))
+			route(rt, { ["wt list --format=json"] = result(1, "", "unavailable") })
+			assert(status.run(rt, {}).err:find("unavailable", 1, true))
+		end)
+		with_module("orc.inkdrop", {
+			push = function()
+				return { code = 0 }
+			end,
+		}, function()
+			Test.eq(status.record_merge(rt, "f", "T1", "sha"), nil)
+		end)
+		with_module("orc.inkdrop", {
+			push = function()
+				return { code = 1, error = "HTTP failed" }
+			end,
+		}, function()
+			assert(status.record_merge(rt, "f", "T1", "sha"):find("HTTP failed", 1, true))
+		end)
+		with_module("orc.inkdrop", {
+			push = function()
+				return { code = 1 }
+			end,
+		}, function()
+			assert(status.record_merge(rt, "f", "T1", "sha"):find("unknown error", 1, true))
+		end)
+		rt.env.ORC_INKDROP = "0"
+		Test.eq(status.record_merge(rt, "f", "T1", "sha"), nil)
+	end
+)
+
+Test.test(
+	"core lessons rank by score and denied hooks tolerate unavailable signal storage",
+	function()
+		local parsed =
+			lessons.parse("- [L001] +1 -0 project · f · Lower\n- [L002] +4 -0 orc · f · Higher\n")
+		Test.eq(lessons.select(parsed)[1].id, "L002")
+		Test.eq(hooks.role(":"), ":")
+		local rt = fake()
+		rt.env.ORC = "1"
+		route(rt, { ["git rev-parse --path-format=absolute --git-common-dir"] = result(128) })
+		Test.eq(
+			rt.decode(hooks.run(rt, "guard", '{"tool_input":{"command":"git push"}}').out).hookSpecificOutput.permissionDecision,
+			"deny"
+		)
+		rt.files["/transcript"] = "{}"
+		Test.eq(hooks.handback(rt, "/transcript"), nil)
+		Test.eq(hooks.run(rt, "subagent-stop", '{"agent_type":"reviewer"}').out, "")
+		Test.eq(hooks.context(rt), "Fixture rules\n\nCLI: `/plugin/bin/orc`.")
+	end
+)
+
+Test.test(
+	"core worktrees validate references and preserve cwd and quiet error diagnostics",
+	function()
+		for _, base in ipairs({ "", "-option" }) do
+			Test.raises("invalid base", function()
+				wt.branch(base, "T")
+			end)
+		end
+		local rt = fake()
+		route(rt, {
+			["wt list --format=json"] = result(0, '{"items":[{"worktree":{"path":"/orphan"}}]}'),
+			["wt switch existing --no-cd --format=json"] = result(0, '{"path":"/session"}'),
+		})
+		Test.eq(#wt.run(rt, { "list", "base" }).result, 0)
+		Test.eq(wt.session(rt, "existing", nil, false, "/explicit").path, "/session")
+		Test.eq(wt.list(rt, "/explicit")[1].path, "/orphan")
+		Test.raises("needs a branch", function()
+			wt.session(rt, nil)
+		end)
+		route(rt, { ["wt list --format=json"] = result(1, "quiet error", "") })
+		Test.raises("quiet error", function()
+			wt.list(rt)
+		end)
+		local source = "---\nname: editor\ndescription: role\ntools: Edit\n---\nbody"
+		assert(not generator.render(source, "editor.md"):find("sandbox_mode", 1, true))
+		rt.files["/plugin/agents/editor.md"], rt.files["/plugin/codex/agents/readme.txt"] =
+			source, "ignore"
+		Test.eq(generator.generate(rt).code, 0)
+	end
+)
+
+Test.test(
+	"core doctor enforces minimum Neovim version and accepts future major releases",
+	function()
+		local rt, original = fake(), vim.version
+		local ok, err = xpcall(function()
+			vim.version = function()
+				return setmetatable({ major = 0, minor = 10 }, {
+					__tostring = function()
+						return "0.10"
+					end,
+				})
+			end
+			Test.eq(require("orc.doctor").collect(rt).checks[1].status, "fail")
+			vim.version = function()
+				return setmetatable({ major = 1, minor = 0 }, {
+					__tostring = function()
+						return "1.0"
+					end,
+				})
+			end
+			Test.eq(require("orc.doctor").collect(rt).checks[1].status, "pass")
+		end, debug.traceback)
+		vim.version = original
+		assert(ok, err)
+	end
+)
+
+Test.test("core entrypoints handle absent output and reject extra generator arguments", function()
+	local root = runtime.new().root
+	local previous = { argv = arg, exit = os.exit }
+	os.exit = function() end
+	local ok, err = xpcall(function()
+		with_module("orc.cli", {
+			run = function()
+				return { code = 0 }
+			end,
+		}, function()
+			arg = { [0] = root .. "/bin/orc" }
+			dofile(arg[0])
+		end)
+		arg = { [0] = root .. "/scripts/gen-agents.lua", "--check", "extra" }
+		Test.raises("usage", function()
+			dofile(arg[0])
+		end)
+	end, debug.traceback)
+	arg, os.exit = previous.argv, previous.exit
+	assert(ok, err)
+end)

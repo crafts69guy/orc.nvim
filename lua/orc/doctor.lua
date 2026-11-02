@@ -22,7 +22,7 @@ function M.collect(rt)
 		add(
 			name,
 			result.code == 0 and "pass" or required and "fail" or "warn",
-			vim.trim((result.code == 0 and result.stdout or result.stderr)):match("[^\n]*") or "not found",
+			vim.trim((result.code == 0 and result.stdout or result.stderr)):match("[^\n]*"),
 			"install " .. name
 		)
 		return result.code == 0

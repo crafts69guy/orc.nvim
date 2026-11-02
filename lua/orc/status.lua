@@ -137,11 +137,16 @@ function M.collect(rt, cwd)
 				end
 			end
 			local link = optional_json(rt, rt.path(dir, "inkdrop.json"))
+			local note = link
+					and type(link.noteId) == "string"
+					and link.noteId:match("^note:")
+					and link.noteId
+				or rt.null
 			result.features[#result.features + 1] = {
 				feature = feature,
 				base = base or rt.null,
 				plan = plan_path,
-				note = link and link.noteId or rt.null,
+				note = note,
 				tasks = tasks,
 			}
 		end

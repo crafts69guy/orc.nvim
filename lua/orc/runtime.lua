@@ -302,12 +302,10 @@ function M.new(opts)
 			error(err, 0)
 		end
 		local entries = {}
-		while true do
-			local name = uv.fs_scandir_next(request)
-			if not name then
-				break
-			end
+		local name = uv.fs_scandir_next(request)
+		while name do
 			entries[#entries + 1] = name
+			name = uv.fs_scandir_next(request)
 		end
 		table.sort(entries)
 		return entries
