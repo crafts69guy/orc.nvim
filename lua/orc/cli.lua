@@ -2,12 +2,13 @@ local M = {}
 M.version = "0.1.0"
 M.usage = [[usage: orc <command> [args]
 
-  claude|codex [--yolo] [--level default|high] [--panes|--pair] [--wt <branch>] [--base <ref>] [harness args]
+  claude|codex [--yolo] [--level default|high] [--panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
   wt new|merge|remove|list|session ...
   pane start|wait|prompt|close ...
   status|doctor [--json]
   context [--scope user|project|all] [--json]
   inkdrop init|inbox|claim|push|pull|lessons ...
+  inkdrop-mcp install|start|stop|restart|status|enable|disable|migrate|rollback|uninstall ...
   update
   eval [--bench] [evaluation args]
   completion fish
@@ -23,7 +24,7 @@ end
 
 local function own_flags(argv)
 	local flags, rest = {}, {}
-	local strings = { level = true, wt = true, base = true }
+	local strings = { level = true, wt = true, base = true, ["inkdrop-mcp"] = true }
 	local booleans = { yolo = true, panes = true, pair = true }
 	local index = 1
 	while index <= #argv do
@@ -79,84 +80,14 @@ local function launch(rt, kind, argv)
 	if flags.wt then
 		cwd = require("orc.worktrees").session(rt, flags.wt, flags.base, false).path
 	end
-	local env = {
-		ORC = "1",
-		ORC_ROLE = "",
-		ORC_PAIR = flags.pair and "1" or false,
-		ORC_PANES = flags.panes and "1" or false,
-	}
-	if flags.level then
-		env.ORC_LEVEL = flags.level
-	end
-	local run_rt = vim.tbl_extend(
-		"force",
-		{},
-		rt,
-		{ cwd = cwd, env = vim.tbl_extend("force", {}, rt.env, env) }
-	)
-	for name, value in pairs(run_rt.env) do
-		if value == false then
-			run_rt.env[name] = nil
-		end
-	end
-	local command = { kind }
-	if kind == "claude" then
-		vim.list_extend(command, { "--plugin-dir", rt.root })
-		local model = false
-		for _, word in ipairs(rest) do
-			model = model or word == "--model" or word:match("^%-%-model=") ~= nil
-		end
-		if not model then
-			vim.list_extend(command, { "--model", "opus" })
-		end
-		if flags.yolo then
-			command[#command + 1] = "--dangerously-skip-permissions"
-		end
-		if flags.level == "high" then
-			local definitions = {}
-			for _, file in ipairs(rt.list(rt.path(rt.root, "agents"))) do
-				if file:match("%.md$") then
-					local data, body =
-						require("orc.generator").parse(assert(rt.read(rt.path(rt.root, "agents", file))))
-					definitions[data.name] = {
-						description = data.description,
-						prompt = body,
-						tools = vim.tbl_map(vim.trim, vim.split(data.tools or "", ",", { trimempty = true })),
-						model = data.name == "implementer" and "opus"
-							or data.name == "reviewer" and "opus"
-							or "sonnet",
-					}
-				end
-			end
-			vim.list_extend(command, { "--agents", rt.encode(definitions) })
-		end
-	else
-		local context = require("orc.hooks").context(run_rt, cwd)
-		vim.list_extend(command, { "-c", "developer_instructions=" .. rt.encode(context) })
-		for _, file in ipairs(rt.list(rt.path(rt.root, "codex", "agents"))) do
-			if file:match("%.toml$") then
-				local name = file:gsub("%.toml$", "")
-				local path = rt.path(rt.root, "codex", "agents", file)
-				vim.list_extend(command, { "-c", "agents." .. name .. ".config_file=" .. rt.encode(path) })
-				local description = (rt.read(path) or ""):match("\ndescription = ([^\n]+)")
-				if description then
-					vim.list_extend(command, { "-c", "agents." .. name .. ".description=" .. description })
-				end
-			end
-		end
-		local common = rt.exec(
-			{ "git", "rev-parse", "--path-format=absolute", "--git-common-dir" },
-			{ cwd = cwd }
-		)
-		if common.code == 0 and vim.trim(common.stdout) ~= "" then
-			vim.list_extend(command, { "--add-dir", vim.trim(common.stdout) })
-		end
-		if flags.yolo then
-			command[#command + 1] = "--dangerously-bypass-approvals-and-sandbox"
-		end
-	end
-	vim.list_extend(command, rest)
-	return { code = rt.interactive(command, { cwd = cwd, env = env }), out = "" }
+	local launch = require("orc.providers").plan(rt, {
+		kind = kind,
+		role = "main",
+		cwd = cwd,
+		flags = flags,
+		args = rest,
+	})
+	return { code = rt.interactive(launch.argv, { cwd = launch.cwd, env = launch.env }), out = "" }
 end
 
 local function update(rt, argv)
@@ -231,6 +162,7 @@ function M.run(rt, argv, input)
 			doctor = "doctor",
 			context = "context",
 			inkdrop = "inkdrop",
+			["inkdrop-mcp"] = "inkdrop_service",
 			eval = "eval",
 		}
 		assert(modules[command], "unknown command: " .. command .. "\n" .. M.usage)

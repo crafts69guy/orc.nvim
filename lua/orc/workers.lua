@@ -411,6 +411,13 @@ local function start(rt, feature, task, values, file)
 	end
 	assert(terminal, "orc pane: local terminal creator unavailable")
 	new_run(rt, record)
+	local launch = require("orc.providers").plan(rt, {
+		kind = kind,
+		role = "implementer",
+		cwd = path,
+		workerFile = file,
+		prompt = prompt_text(rt, record, "Your brief: " .. brief .. "."),
+	})
 	ignore_reports(rt, path)
 	if values.here then
 		assert(rt.env.REX_BLOCK, "orc pane: --here needs REX_BLOCK")
@@ -422,23 +429,19 @@ local function start(rt, feature, task, values, file)
 		end
 	end
 	save(rt, record, "new")
-	local command = {
-		"env",
-		"ORC=1",
-		"ORC_ROLE=implementer",
-		"ORC_WORKER_FILE=" .. file,
-		"PATH=" .. (rt.env.PATH or ""),
-		kind,
-	}
-	if kind == "claude" then
-		vim.list_extend(
-			command,
-			{ "--plugin-dir", rt.root, "--model", rt.env.ORC_LEVEL == "high" and "opus" or "sonnet" }
-		)
-	else
-		vim.list_extend(command, { "--sandbox", "workspace-write" })
+	local command, names = { "env" }, vim.tbl_keys(launch.env)
+	table.sort(names)
+	for _, name in ipairs(names) do
+		if launch.env[name] == false then
+			vim.list_extend(command, { "-u", name })
+		end
 	end
-	command[#command + 1] = prompt_text(rt, record, "Your brief: " .. brief .. ".")
+	for _, name in ipairs(names) do
+		if launch.env[name] ~= false then
+			command[#command + 1] = name .. "=" .. launch.env[name]
+		end
+	end
+	vim.list_extend(command, launch.argv)
 	local layout = {
 		block = {
 			flavor = "com.superlogical.terminal.shell",

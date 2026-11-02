@@ -3,8 +3,18 @@ local workers = require("orc.workers")
 
 local function fake()
 	local root = Test.temp()
-	local rt =
-		runtime.new({ cwd = root, env = { REX_SESSION = "session:fixture", REX_BLOCK = "block:main" } })
+	local rt = runtime.new({
+		cwd = root,
+		env = {
+			HOME = root,
+			REX_SESSION = "session:fixture",
+			REX_BLOCK = "block:main",
+			ORC_INKDROP_MCP_MODE = false,
+			ORC_INKDROP_MCP_CONFIG = false,
+			CLAUDE_CONFIG_DIR = false,
+			CODEX_HOME = false,
+		},
+	})
 	rt.env.ORC_ROLE, rt.env.ORC_WORKER_FILE = nil, nil
 	rt.write(root .. "/brief.md", "Implement the fixture")
 	local execute = rt.exec
@@ -265,6 +275,100 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	Test.eq(state.start().result.runId, record.runId)
 	Test.eq(state.created, 1)
 	assert(not rt.exists(rt.path(rt.cwd, ".orc", "report.md")))
+end)
+
+Test.test(
+	"workers shared plan removes Rex credentials and propagates opt-in without owning the service",
+	function()
+		local rt, state = fake()
+		local old, exec = package.loaded["orc.inkdrop_mcp"], rt.exec
+		local url = "http://127.0.0.1:19841/servers/inkdrop/mcp"
+		rt.env.INKDROP_LOCAL_USERNAME, rt.env.INKDROP_LOCAL_PASSWORD =
+			"synthetic-user", "synthetic-secret"
+		rt.env.CODEX_HOME = "/private/codex-profile"
+		rt.exec = function(argv, opts)
+			if argv[1] == "codex" then
+				return {
+					code = 0,
+					stdout = rt.encode({
+						enabled = true,
+						transport = { type = "streamable_http", url = url },
+					}),
+					stderr = "",
+				}
+			end
+			return exec(argv, opts)
+		end
+		local checks = 0
+		package.loaded["orc.inkdrop_mcp"] = {
+			resolve = function()
+				return { mode = "shared", url = url, paths = { config = "/private/user-config.json" } }
+			end,
+			check = function()
+				checks = checks + 1
+				return { ok = true }
+			end,
+		}
+		local ok, err = xpcall(function()
+			Test.eq(state.start().code, 0)
+			local argv = state.layout.block.options.command
+			local command = table.concat(argv, " ")
+			Test.eq(argv[1], "env")
+			assert(command:find("-u INKDROP_LOCAL_PASSWORD", 1, true))
+			assert(command:find("-u INKDROP_LOCAL_USERNAME", 1, true))
+			assert(command:find("-u INKDROP_LOCAL_SERVER_URL", 1, true))
+			assert(command:find("ORC_INKDROP_MCP_MODE=shared", 1, true))
+			assert(command:find("ORC_INKDROP_MCP_CONFIG=/private/user-config.json", 1, true))
+			assert(command:find("CODEX_HOME=/private/codex-profile", 1, true))
+			assert(command:find("HOME=" .. rt.env.HOME, 1, true))
+			assert(command:find("-u CLAUDE_CONFIG_DIR", 1, true))
+			assert(not command:find("synthetic-secret", 1, true))
+			assert(command:find("--sandbox workspace-write", 1, true))
+			Test.eq(checks, 1)
+			Test.eq(state.run("close").code, 0)
+			Test.eq(checks, 1)
+			for _, call in ipairs(state.calls) do
+				assert(call.argv[1] ~= "launchctl")
+			end
+		end, debug.traceback)
+		package.loaded["orc.inkdrop_mcp"] = old
+		assert(ok, err)
+	end
+)
+
+Test.test("workers shared preflight failure leaves no durable run and can be retried", function()
+	local rt, state = fake()
+	local old, healthy = package.loaded["orc.inkdrop_mcp"], false
+	package.loaded["orc.inkdrop_mcp"] = {
+		resolve = function()
+			return { mode = "shared", url = "http://127.0.0.1:19841/mcp" }
+		end,
+		check = function()
+			return { ok = healthy }
+		end,
+	}
+	local ok, err = xpcall(function()
+		state.processName = "claude"
+		local args = {
+			"start",
+			"feature",
+			"task",
+			"--path",
+			rt.cwd,
+			"--brief",
+			rt.path(rt.cwd, "brief.md"),
+			"--kind",
+			"claude",
+		}
+		Test.eq(workers.run(rt, args).code, 1)
+		Test.eq(state.created, 0)
+		Test.eq(state.record(), nil)
+		healthy = true
+		Test.eq(workers.run(rt, args).code, 0)
+		Test.eq(state.created, 1)
+	end, debug.traceback)
+	package.loaded["orc.inkdrop_mcp"] = old
+	assert(ok, err)
 end)
 
 Test.test(
