@@ -1,0 +1,68 @@
+# Architecture
+
+## Responsibilities
+
+```mermaid
+flowchart TD
+  user[Developer] --> nvim[Neovim task panel]
+  user --> agent[Claude or Codex orchestrator]
+  nvim --> core[Shared Lua workflow]
+  agent --> cli[orc CLI]
+  cli --> core
+  core --> git[Git and worktrunk]
+  core --> rex[Rex adapter]
+  rex --> workers[Harness workers in terminal blocks]
+  workers --> report[Run-specific reports]
+  report --> core
+  core --> ink[Inkdrop managed notes]
+```
+
+The harness makes decisions using canonical Markdown roles, rules and skills.
+The Lua workflow manages identities, files, subprocesses and reports. Rex owns
+terminal processes, layout and events. Neovim renders state and invokes the same
+workflow commands asynchronously. This is not an independent LLM agent loop.
+
+## Runtime
+
+Neovim's Lua 5.1 environment supplies JSON, filesystem and libuv process support.
+The executable resolves its own real path, so a symlinked CLI can find its modules
+without changing the caller's working directory. Hooks run without user plugins,
+write machine-readable stdout and send diagnostics to stderr.
+
+Captured commands receive an argv list. Interactive harnesses inherit file
+descriptors 0/1/2 and propagate exit/signal status. No shell is used to concatenate
+user input into commands. Business modules accept a runtime adapter for tests.
+
+## Identity and recovery
+
+Every assignment has a distinct `runId`. A durable record associates its feature,
+task and worktree with the Rex server/session/block and acknowledged prompt.
+The record's block ID, not its label, identifies a terminal the workflow may close.
+After reconnect, events trigger a fresh snapshot rather than assuming missed events
+can be replayed.
+
+Process state, self-reported program state and reviewed task outcome are separate.
+Unknown delivery stays unconfirmed until the receiving harness acknowledges it;
+retrying an ambiguous send must not type a duplicate prompt. Report validation
+checks the current run ID and required sections. Only the orchestrator accepts
+work after reading the diff and rerunning the task's validation.
+
+## Permissions
+
+The workflow never answers trust or approval dialogs. Restricted roles do not
+receive the orchestrator's shared Git-directory access. Hook command guards prevent
+accidental workflow violations; they are not a security sandbox against arbitrary
+same-user programs or access to a terminal server. Real restrictions come from the
+harness/OS sandbox and available credentials.
+
+## Persistence and external interfaces
+
+Plans and managed-note links belong to the main checkout; task reports belong to
+their worktree. State writes are atomic. No UI process is required for worker
+liveness. JSON command fields keep their established schemaVersion 1 meaning,
+with additive worker metadata for new clients.
+
+Inkdrop requests use a five-second timeout (shorter for doctor), refuse redirects
+and non-loopback hosts, and never expose credentials through argv or logs.
+Revision conflicts retry once from a fresh GET, preserving edits outside the managed
+block.
