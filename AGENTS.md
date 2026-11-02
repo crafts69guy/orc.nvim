@@ -11,7 +11,7 @@ This rewrite explicitly uses implementer subagents in isolated git worktrees.
 Follow .scratch/lua-rewrite/plan.md and your assigned ownership. Do not edit
 another task's files. Do not publish, push, or create a remote repository.
 
-Validation: `nvim --clean -l test/run.lua`, `stylua --check lua test scripts bin/orc`.
+Validation: `nvim --clean -l test/run.lua`, `stylua --check lua test scripts bin/orc plugin evals`.
 Coverage must report lines, branches and functions separately, each >=98%.
 Never replace missing coverage with estimates or exclude production modules.
 Tests must validate behavior, including errors and recovery, using fake adapters

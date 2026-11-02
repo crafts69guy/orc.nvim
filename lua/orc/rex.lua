@@ -62,12 +62,12 @@ function M.new(rt)
 			vim.list_extend(args, { "-s", session })
 		end
 		vim.list_extend(args, { method, "-" })
-		return command(args, rt.encode(arguments or vim.empty_dict()))
+		return command(args, rt.encode(arguments and next(arguments) and arguments or vim.empty_dict()))
 	end
 	function client.block(session, block, method, arguments)
 		return command(
 			{ "block", "call", "-s", session, "-b", block, method, "-" },
-			rt.encode(arguments or vim.empty_dict())
+			rt.encode(arguments and next(arguments) and arguments or vim.empty_dict())
 		)
 	end
 	---Stream NDJSON notifications. The caller resnapshots state after disconnects.

@@ -1204,3 +1204,37 @@ Test.test(
 		)
 	end
 )
+
+Test.test(
+	"core doctor resolves bundled Rex off PATH for both version and session probes",
+	function()
+		local bundled = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
+		local rt, exepath = fake(), vim.fn.exepath
+		rt.env.ORC_PANES = "1"
+		rt.files[bundled] = "exists"
+		local previous, probes = rt.exec, {}
+		rt.exec = function(argv, options)
+			assert(argv[1] ~= "rex", "off-PATH Rex must use its resolved executable")
+			if argv[1] == bundled then
+				probes[#probes + 1] = argv
+				return result(0, argv[2] == "version" and "rex fixture\n" or "{}")
+			end
+			return previous(argv, options)
+		end
+		vim.fn.exepath = function(name)
+			return name == "rex" and "" or exepath(name)
+		end
+		local ok, err = xpcall(function()
+			local document = require("orc.doctor").collect(rt)
+			Test.eq(probes, { { bundled, "version" }, { bundled, "whoami", "--json" } })
+			local checks = {}
+			for _, check in ipairs(document.checks) do
+				checks[check.name] = check
+			end
+			Test.eq(checks.rex.status, "pass")
+			Test.eq(checks["rex-session"].status, "pass")
+		end, debug.traceback)
+		vim.fn.exepath = exepath
+		assert(ok, err)
+	end
+)

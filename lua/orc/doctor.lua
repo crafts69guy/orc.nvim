@@ -35,11 +35,12 @@ function M.collect(rt)
 		add("harness", "fail", "neither Claude Code nor Codex is available", "install a coding harness")
 	end
 	local pane_mode = rt.env.ORC_PAIR == "1" or rt.env.ORC_PANES == "1"
-	local rex = rt.exec({ "rex", "version" })
+	local executable = require("orc.rex").resolve(rt)
+	local rex = rt.exec({ executable, "version" })
 	if rex.code == 0 then
 		add("rex", "pass", vim.trim(rex.stdout))
 		if pane_mode then
-			local connected = rt.exec({ "rex", "whoami", "--json" })
+			local connected = rt.exec({ executable, "whoami", "--json" })
 			add(
 				"rex-session",
 				connected.code == 0 and "pass" or "fail",

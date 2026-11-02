@@ -35,9 +35,18 @@ For lazy.nvim, use the checkout directly until the repository is published:
 }
 ```
 
-The CLI loads the local Claude plugin explicitly. Install/trust the Codex plugin
-hooks through your normal plugin workflow before using hook-driven automation.
-Never enable the old Orchestra plugin and this plugin for the same session.
+Register the local marketplace with each harness you use:
+
+```fish
+claude plugin marketplace add ~/Developments/github.com/crafts69guy/orc.nvim
+claude plugin install orc@orc-nvim
+codex plugin marketplace add ~/Developments/github.com/crafts69guy/orc.nvim
+codex plugin add orc@orc-nvim
+```
+
+The CLI also loads the local Claude plugin explicitly. Disable the old Orchestra
+plugin, restart agent sessions and approve new or changed hooks through the
+harness's normal trust controls before using hook-driven automation.
 
 ## Commands
 
@@ -90,7 +99,7 @@ additive; consumers ignore unknown fields and retain the distinction between
 nvim --clean -l test/run.lua
 nvim --clean -l test/run.lua --coverage
 nvim --clean -l scripts/gen-agents.lua --check
-stylua --check lua test scripts bin/orc plugin
+stylua --check lua test scripts bin/orc plugin evals
 ```
 
 Unit/integration tests use fake process/network adapters and temporary

@@ -627,6 +627,36 @@ Test.test(
 	end
 )
 
+Test.test("workers Rex API and block calls send empty JSON objects on the wire", function()
+	local rt = fake()
+	local calls = {}
+	rt.exec = function(argv, opts)
+		calls[#calls + 1] = { argv = argv, stdin = opts.stdin }
+		return { code = 0, stdout = "{}", stderr = "" }
+	end
+	local client = require("orc.rex").new(rt)
+	client.call("session.list_blocks", nil, "s")
+	client.call("session.list_blocks", {}, "s")
+	client.block("s", "b", "process")
+	client.block("s", "b", "process", {})
+	for _, call in ipairs(calls) do
+		Test.eq(call.stdin, "{}")
+	end
+	Test.eq(
+		vim.list_slice(calls[1].argv, 2),
+		{ "api", "call", "-s", "s", "session.list_blocks", "-" }
+	)
+	Test.eq(
+		vim.list_slice(calls[3].argv, 2),
+		{ "block", "call", "-s", "s", "-b", "b", "process", "-" }
+	)
+	local arguments = { data = "\r", nested = { "one", "two" } }
+	client.call("example", arguments)
+	client.block("s", "b", "write", arguments)
+	Test.eq(calls[5].stdin, rt.encode(arguments))
+	Test.eq(calls[6].stdin, rt.encode(arguments))
+end)
+
 Test.test("workers Rex resolution schema errors and bounded event frames", function()
 	local rt, state = fake()
 	local rex = require("orc.rex")

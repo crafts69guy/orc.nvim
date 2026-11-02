@@ -25,7 +25,7 @@ jobs:
       - name: Install formatter
         run: cargo install stylua --locked --version 2.6.0
       - name: Lua format
-        run: stylua --check lua test scripts bin/orc plugin
+        run: stylua --check lua test scripts bin/orc plugin evals
       - name: Generated agents
         run: nvim --clean -l scripts/gen-agents.lua --check
       - name: Tests and three coverage gates
