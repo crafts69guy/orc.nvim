@@ -1,0 +1,7 @@
+.scratch/
+.worktrees/
+.orc/
+.eval-plugin/
+coverage/
+evals/results/
+*.swp
