@@ -13,6 +13,10 @@ local serial = 0
 ---@field env? table<string,string|number|false> Overrides; false removes a variable.
 ---@field stdin? string Input for a captured command.
 ---@field timeout? integer Timeout in milliseconds for captured commands.
+---@field on_exit? fun(result:orc.ProcessResult) Completion callback for streaming commands.
+
+---@class orc.ProcessHandle
+---@field stop fun() Idempotently terminate only this owned child process.
 
 local function environment(base, overrides)
 	local env = vim.deepcopy(base)
@@ -39,6 +43,8 @@ end
 ---@field null userdata JSON null sentinel.
 ---@field exec fun(argv:string[], opts?:orc.ProcessOptions):orc.ProcessResult
 ---@field interactive fun(argv:string[], opts?:orc.ProcessOptions):integer
+---@field async fun(argv:string[], opts:orc.ProcessOptions?, callback:fun(result:orc.ProcessResult)):orc.ProcessHandle
+---@field stream fun(argv:string[], opts:orc.ProcessOptions?, on_data:fun(chunk:string)):orc.ProcessHandle
 ---@field read fun(path:string):string?,string?
 ---@field write fun(path:string,text:string) Atomically replace a file; throw on failure.
 ---@field mkdir fun(path:string) Create parent directories; throw on failure.
@@ -56,7 +62,7 @@ end
 ---@class orc.RuntimeOptions
 ---@field root? string Override the plugin location for a fixture.
 ---@field cwd? string Override the working directory.
----@field env? table<string,string> Environment overrides, merged with the current process.
+---@field env? table<string,string|number|false> Environment overrides, merged with the current process.
 
 ---Create an isolated runtime. Tests can replace methods on the returned table.
 ---@param opts? orc.RuntimeOptions
@@ -97,14 +103,16 @@ function M.new(opts)
 	rt.exec = function(argv, options)
 		options = options or {}
 		local ok, result = pcall(function()
-			return vim.system(argv, {
-				cwd = options.cwd or rt.cwd,
-				env = environment(rt.env, options.env),
-				clear_env = true,
-				stdin = options.stdin,
-				timeout = options.timeout,
-				text = true,
-			}):wait()
+			return vim
+				.system(argv, {
+					cwd = options.cwd or rt.cwd,
+					env = environment(rt.env, options.env),
+					clear_env = true,
+					stdin = options.stdin,
+					timeout = options.timeout,
+					text = true,
+				})
+				:wait()
 		end)
 		if not ok then
 			return { code = spawn_error(result), signal = 0, stdout = "", stderr = tostring(result) }
@@ -115,6 +123,66 @@ function M.new(opts)
 			stdout = result.stdout or "",
 			stderr = result.stderr or "",
 		}
+	end
+
+	local function asynchronous(argv, options, on_data, callback)
+		options = options or {}
+		local finished, stopped, process = false, false, nil
+		local function complete(result)
+			finished = true
+			if callback then
+				vim.schedule(function()
+					callback({
+						code = result.code,
+						signal = result.signal,
+						stdout = result.stdout or "",
+						stderr = result.stderr or "",
+					})
+				end)
+			end
+		end
+		local settings = {
+			cwd = options.cwd or rt.cwd,
+			env = environment(rt.env, options.env),
+			clear_env = true,
+			stdin = options.stdin,
+			timeout = options.timeout,
+			text = true,
+		}
+		if on_data then
+			settings.stdout = function(err, chunk)
+				if chunk then
+					vim.schedule(function()
+						on_data(chunk)
+					end)
+				elseif err then
+					process:kill(15)
+				end
+			end
+		end
+		local ok, child = pcall(vim.system, argv, settings, complete)
+		if ok then
+			process = child
+		else
+			complete({ code = spawn_error(child), signal = 0, stdout = "", stderr = tostring(child) })
+		end
+		return {
+			stop = function()
+				if not stopped and not finished then
+					stopped = true
+					process:kill(15)
+				end
+			end,
+		}
+	end
+
+	rt.async = function(argv, options, callback)
+		assert(type(callback) == "function", "async needs a completion callback")
+		return asynchronous(argv, options, nil, callback)
+	end
+	rt.stream = function(argv, options, on_data)
+		assert(type(on_data) == "function", "stream needs a data callback")
+		return asynchronous(argv, options, on_data, options and options.on_exit)
 	end
 
 	rt.interactive = function(argv, options)

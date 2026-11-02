@@ -1,0 +1,14 @@
+{
+  "name": "orc",
+  "version": "0.1.0",
+  "description": "Lua orchestration workflow for Neovim and Rex.",
+  "author": { "name": "crafts69guy" },
+  "license": "MIT",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "orc.nvim",
+    "shortDescription": "Lua orchestration for visible, isolated coding workers",
+    "capabilities": ["Instructions", "Lifecycle hooks"]
+  }
+}

@@ -33,8 +33,18 @@ Test.test("runtime executes argv literally with stdin, cwd, exit and environment
 	Test.eq(rt.exec({ "pwd" }).stdout, vim.uv.fs_realpath("/tmp") .. "\n")
 	Test.eq(rt.exec({ "pwd" }, { cwd = "/" }).stdout, "/\n")
 	Test.eq(rt.exec({ "printenv", "ORC_RUNTIME_TEST" }).stdout, "base\n")
-	Test.eq(rt.exec({ "printenv", "ORC_RUNTIME_TEST" }, { env = { ORC_RUNTIME_TEST = "child" } }).stdout, "child\n")
-	Test.eq(rt.exec({ "printenv", "ORC_RUNTIME_TEST" }, { env = { ORC_RUNTIME_TEST = false } }).code, 1)
+	Test.eq(
+		rt.exec({ "printenv", "ORC_RUNTIME_TEST" }, { env = { ORC_RUNTIME_TEST = "child" } }).stdout,
+		"child\n"
+	)
+	Test.eq(
+		rt.exec({ "printenv", "ORC_RUNTIME_TEST" }, { env = { ORC_RUNTIME_TEST = false } }).code,
+		1
+	)
+	Test.eq(
+		rt.exec({ "printenv", "ORC_RUNTIME_TEST" }, { env = { ORC_RUNTIME_TEST = 42 } }).stdout,
+		"42\n"
+	)
 	Test.eq(rt.exec({ "false" }).code, 1)
 	Test.eq(rt.exec({ "orc-executable-does-not-exist" }).code, 127)
 	Test.eq(rt.exec({ "pwd" }, { cwd = "/orc-missing-cwd" }).code, 127)
@@ -43,47 +53,128 @@ Test.test("runtime executes argv literally with stdin, cwd, exit and environment
 	Test.eq(rt.env.ORC_RUNTIME_TEST, "base")
 end)
 
-Test.test("runtime writes atomically, reads, sorts and removes without following symlinks", function()
-	local rt, dir = runtime.new(), Test.temp()
-	local target = rt.path(dir, "nested", "report.md")
-	rt.write(target, "first")
-	Test.eq(rt.read(target), "first")
-	rt.write(target, "second\n")
-	Test.eq(rt.read(target), "second\n")
-	rt.write(rt.path(dir, "nested", "a"), "")
-	Test.eq(rt.list(rt.path(dir, "nested")), { "a", "report.md" })
-	Test.eq(rt.list(rt.path(dir, "missing")), {})
-	Test.eq(rt.read(rt.path(dir, "missing")), nil)
-	Test.raises("ENOTDIR", function()
-		rt.list(target)
-	end)
-	assert(vim.uv.fs_symlink(rt.path(dir, "nested"), rt.path(dir, "link")))
-	rt.remove(rt.path(dir, "link"))
-	Test.eq(rt.read(target), "second\n")
-	rt.remove(rt.path(dir, "nested"))
-	assert(not rt.exists(target))
-	rt.remove(rt.path(dir, "missing"))
-	Test.eq(rt.list(dir), {})
-end)
+Test.test(
+	"runtime writes atomically, reads, sorts and removes without following symlinks",
+	function()
+		local rt, dir = runtime.new(), Test.temp()
+		local target = rt.path(dir, "nested", "report.md")
+		rt.write(target, "first")
+		Test.eq(rt.read(target), "first")
+		rt.write(target, "second\n")
+		Test.eq(rt.read(target), "second\n")
+		rt.write(rt.path(dir, "nested", "a"), "")
+		Test.eq(rt.list(rt.path(dir, "nested")), { "a", "report.md" })
+		Test.eq(rt.list(rt.path(dir, "missing")), {})
+		Test.eq(rt.read(rt.path(dir, "missing")), nil)
+		local _, read_error = rt.read(rt.path(dir, "missing"))
+		assert(read_error:find("ENOENT", 1, true))
+		local data, directory_error = rt.read(rt.path(dir, "nested"))
+		Test.eq(data, nil)
+		assert(directory_error:find("EISDIR", 1, true))
+		Test.raises("ENOTDIR", function()
+			rt.list(target)
+		end)
+		assert(vim.uv.fs_symlink(rt.path(dir, "nested"), rt.path(dir, "link")))
+		rt.remove(rt.path(dir, "link"))
+		Test.eq(rt.read(target), "second\n")
+		rt.remove(rt.path(dir, "nested"))
+		assert(not rt.exists(target))
+		rt.remove(rt.path(dir, "missing"))
+		Test.eq(rt.list(dir), {})
+	end
+)
 
-Test.test("runtime atomic write retains old target and cleans temporary on rename failure", function()
-	local rt, dir = runtime.new(), Test.temp()
-	local target = rt.path(dir, "directory")
-	rt.mkdir(target)
-	Test.raises("EISDIR", function()
-		rt.write(target, "must not replace directory")
-	end)
-	Test.eq(rt.list(dir), { "directory" })
-	assert(rt.exists(target))
-end)
+Test.test(
+	"runtime atomic write retains old target and cleans temporary on rename failure",
+	function()
+		local rt, dir = runtime.new(), Test.temp()
+		local target = rt.path(dir, "directory")
+		rt.mkdir(target)
+		Test.raises("EISDIR", function()
+			rt.write(target, "must not replace directory")
+		end)
+		Test.eq(rt.list(dir), { "directory" })
+		assert(rt.exists(target))
+	end
+)
 
 Test.test("runtime interactive preserves exit codes and environment", function()
 	local rt = runtime.new({ env = { ORC_RUNTIME_TEST = "base" } })
 	Test.eq(rt.interactive({ "true" }), 0)
 	Test.eq(rt.interactive({ "false" }), 1)
 	Test.eq(rt.interactive({ "test", "child", "=", "child" }, { cwd = "/tmp" }), 0)
+	Test.eq(
+		rt.interactive(
+			{ "/bin/sh", "-c", 'test "$ORC_RUNTIME_TEST" = child' },
+			{ env = { ORC_RUNTIME_TEST = "child" } }
+		),
+		0
+	)
+	Test.eq(rt.interactive({ "/bin/sh", "-c", "kill -TERM $$" }), 143)
 	Test.eq(rt.interactive({ "orc-executable-does-not-exist" }), 127)
 	Test.raises("executable", function()
 		rt.interactive({})
+	end)
+end)
+
+Test.test(
+	"runtime async captures output without blocking and reports missing executables",
+	function()
+		local rt, completed = runtime.new(), nil
+		local handle = rt.async({ "cat" }, { stdin = "async input" }, function(value)
+			completed = value
+		end)
+		Test.eq(completed, nil)
+		assert(vim.wait(3000, function()
+			return completed ~= nil
+		end))
+		Test.eq(completed.code, 0)
+		Test.eq(completed.stdout, "async input")
+		handle.stop()
+		handle.stop()
+		completed = nil
+		local missing = rt.async({ "orc-executable-does-not-exist" }, {}, function(value)
+			completed = value
+		end)
+		assert(vim.wait(1000, function()
+			return completed ~= nil
+		end))
+		Test.eq(completed.code, 127)
+		missing.stop()
+		Test.raises("completion callback", function()
+			rt.async({ "true" }, {})
+		end)
+	end
+)
+
+Test.test("runtime stream delivers chunks and cancellation terminates its owned process", function()
+	local rt, output, completed = runtime.new(), "", nil
+	local stream = rt.stream({ "printf", "%s", "event\n" }, {
+		on_exit = function(value)
+			completed = value
+		end,
+	}, function(chunk)
+		output = output .. chunk
+	end)
+	assert(vim.wait(3000, function()
+		return completed ~= nil
+	end))
+	Test.eq(output, "event\n")
+	Test.eq(completed.code, 0)
+	stream.stop()
+	completed = nil
+	local sleeper = rt.async({ "sleep", "30" }, {}, function(value)
+		completed = value
+	end)
+	sleeper.stop()
+	sleeper.stop()
+	assert(vim.wait(3000, function()
+		return completed ~= nil
+	end))
+	assert(completed.code ~= 0 or completed.signal ~= 0)
+	local no_exit = rt.stream({ "true" }, nil, function() end)
+	no_exit.stop()
+	Test.raises("data callback", function()
+		rt.stream({ "true" }, {})
 	end)
 end)

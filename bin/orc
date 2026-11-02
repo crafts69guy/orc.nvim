@@ -1,0 +1,15 @@
+#!/usr/bin/env -S nvim -l
+local file = assert(vim.uv.fs_realpath(arg[0]))
+local root = vim.fs.dirname(vim.fs.dirname(file))
+package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path
+local input = arg[1] == "hook" and io.stdin:read("*a") or nil
+local result = require("orc.cli").run(require("orc.runtime").new({ root = root }), arg, input)
+if result.out then
+	io.stdout:write(result.out)
+end
+if result.err then
+	io.stderr:write(result.err)
+end
+io.stdout:flush()
+io.stderr:flush()
+os.exit(result.code)

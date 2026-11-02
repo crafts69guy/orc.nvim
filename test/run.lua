@@ -4,10 +4,16 @@ local cwd = assert(uv.cwd())
 local root = vim.env.ORC_TEST_ROOT
 	or (uv.fs_stat(cwd .. "/test/run.lua") and cwd)
 	or vim.fs.dirname(vim.fs.dirname(file))
-package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. root .. "/?.lua;" .. package.path
+package.path = root
+	.. "/lua/?.lua;"
+	.. root
+	.. "/lua/?/init.lua;"
+	.. root
+	.. "/?.lua;"
+	.. package.path
 
 local tests, temporary = {}, {}
-local filter, coverage
+local filter, coverage, coverage_session
 local index = 1
 while index <= #arg do
 	if arg[index] == "--filter" then
@@ -34,13 +40,19 @@ function Test.test(name, fn)
 end
 
 function Test.eq(actual, expected)
-	assert(vim.deep_equal(actual, expected), "expected " .. vim.inspect(expected) .. ", got " .. vim.inspect(actual))
+	assert(
+		vim.deep_equal(actual, expected),
+		"expected " .. vim.inspect(expected) .. ", got " .. vim.inspect(actual)
+	)
 end
 
 function Test.raises(pattern, fn)
 	local ok, err = pcall(fn)
 	assert(not ok, "expected an error matching " .. pattern)
-	assert(tostring(err):match(pattern), "expected error matching " .. pattern .. ", got " .. tostring(err))
+	assert(
+		tostring(err):match(pattern),
+		"expected error matching " .. pattern .. ", got " .. tostring(err)
+	)
 end
 
 function Test.temp()
@@ -59,8 +71,7 @@ local function run()
 	if coverage then
 		local ok, module = pcall(require, "test.support.coverage")
 		assert(ok, "coverage requested but coverage tooling is unavailable: " .. tostring(module))
-		coverage = module
-		coverage.start(root)
+		coverage_session = module.start(root)
 	end
 	local files = vim.fn.glob(root .. "/test/*_spec.lua", false, true)
 	table.sort(files)
@@ -83,12 +94,34 @@ local function run()
 	assert(passed + failed > 0, "no tests matched")
 	io.stdout:write(string.format("# pass %d\n# fail %d\n", passed, failed))
 	if coverage then
-		coverage.finish()
+		local accepted, reason, report = coverage_session.check(98)
+		vim.fn.mkdir(root .. "/coverage", "p")
+		vim.fn.writefile({ vim.json.encode(report) }, root .. "/coverage/report.json")
+		for _, name in ipairs({ "lines", "branches", "functions" }) do
+			local metric = report[name]
+			io.stdout:write(
+				string.format(
+					"# coverage %s %d/%d %.2f%%\n",
+					name,
+					metric.hit,
+					metric.total,
+					metric.percent
+				)
+			)
+		end
+		coverage_session.stop()
+		if not accepted then
+			io.stderr:write(reason .. "\n")
+			failed = failed + 1
+		end
 	end
 	return failed == 0 and 0 or 1
 end
 
 local ok, result = xpcall(run, debug.traceback)
+if coverage_session then
+	coverage_session.stop()
+end
 cleanup()
 if not ok then
 	io.stderr:write(tostring(result) .. "\n")
