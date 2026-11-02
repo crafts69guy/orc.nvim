@@ -1,0 +1,20 @@
+schema_version: "1.1"
+name: reflect-capture
+description: "Fresh Lua behavior case: reflect-capture"
+tags: [orc]
+plugins: ["../.."]
+runs: 2
+context:
+  scaffold_script: fixture.lua
+execution:
+  model: opus
+  max_turns: 20
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Bash, Edit, Write, Agent, Skill]
+  prompt: "The slug feature is finished and reviewed; .scratch/slug/log.md records verified evidence. Finish Capture. I approve every lesson change you propose: apply them without asking. Upvote an existing matching lesson rather than duplicate it. Do not commit or modify src/ or test/. Run nvim --clean -l check.lua last."
+graders:
+  - {"name":"reflect-invoked","type":"tool_used","tool":"Skill","input_match":"\"skill\"\\s*:\\s*\"(?:orc:)?reflect\""}
+  - {"name":"existing-upvoted","type":"regex","target":{"source":"file","path":".orc/lessons.md"},"flags":"m","pattern":"^- \\[L001\\] \\+2 -0 orc · csv · "}
+  - {"name":"new-well-formed","type":"regex","target":{"source":"file","path":".orc/lessons.md"},"flags":"m","pattern":"^- \\[L00[2-9]\\] \\+\\d+ -\\d+ (?:project|orc) · [^·]+ · .{20,}$"}
+  - {"name":"at-most-three","type":"regex","target":{"source":"file","path":".orc/lessons.md"},"pattern":"\\[L00[5-9]\\]","match":"not_contains"}
+  - {"name":"skip-one-off","type":"regex","target":{"source":"file","path":".orc/lessons.md"},"flags":"i","pattern":"registry|timed? ?out","match":"not_contains"}

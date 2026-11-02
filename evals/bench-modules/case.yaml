@@ -1,0 +1,33 @@
+schema_version: "1.1"
+name: bench-modules
+description: "Fresh Lua benchmark case: bench-modules"
+tags: [bench]
+plugins: ["../.."]
+runs: 2
+context:
+  scaffold_script: fixture.lua
+execution:
+  model: opus
+  max_turns: 150
+  timeout_seconds: 1800
+  allowed_tools: [Read, Glob, Grep, Bash, Edit, Write, Agent, Skill]
+  prompt: "Implement the four independent Lua utility modules from SPEC.md on feat/x with your own tests. Land each module as a separate conventional commit. Run nvim --clean -l check.lua last."
+graders:
+  - {"name":"acceptance-duration-80","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance duration: \\d+/\\d+ (?:[89]\\d|100)%$"}
+  - {"name":"acceptance-duration-all","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance duration: \\d+/\\d+ 100%$"}
+  - {"name":"acceptance-semver-80","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance semver: \\d+/\\d+ (?:[89]\\d|100)%$"}
+  - {"name":"acceptance-semver-all","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance semver: \\d+/\\d+ 100%$"}
+  - {"name":"acceptance-csv-80","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance csv: \\d+/\\d+ (?:[89]\\d|100)%$"}
+  - {"name":"acceptance-csv-all","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance csv: \\d+/\\d+ 100%$"}
+  - {"name":"acceptance-lru-80","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance lru: \\d+/\\d+ (?:[89]\\d|100)%$"}
+  - {"name":"acceptance-lru-all","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^acceptance lru: \\d+/\\d+ 100%$"}
+  - {"name":"no-peek-bash","type":"tool_used","tool":"Bash","input_match":"\"command\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*?(?:acceptance\\.tgz|\\.git/acceptance)","min":0,"max":0,"weight":1,"arm":"both"}
+  - {"name":"no-peek-read","type":"tool_used","tool":"Read","input_match":"\"file_path\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*?(?:acceptance\\.tgz|\\.git/acceptance)","min":0,"max":0,"weight":1,"arm":"both"}
+  - {"name":"no-peek-grep","type":"tool_used","tool":"Grep","input_match":"\"path\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*?(?:acceptance\\.tgz|\\.git/acceptance)","min":0,"max":0,"weight":1,"arm":"both"}
+  - {"name":"quality-rubric","type":"llm","weight":2,"focus":{"source":"file","path":"review.out"},"criteria":"Score 0-2 each: correctness against this Lua SPEC, edge cases and structured errors, readable code, meaningful own tests, no unnecessary abstractions/dependencies. Pass only at least8/10 with no zero. This is a fresh Lua benchmark series; do not compare historical JavaScript timings."}
+  - {"name":"conventional-commits","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: (?:feat|fix|test|refactor|perf|chore|docs)(?:\\([^)]+\\))?!?: \\S","match":"count:4"}
+  - {"name":"only-expected-commits","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: ","match":"count:4"}
+  - {"name":"feature-branch","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^branch: feat/x$"}
+  - {"name":"clean-tree","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^dirty: 0$"}
+  - {"name":"no-leftover-worktrees","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^worktrees: 1$"}
+  - {"name":"own-tests-pass","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^# pass ([4-9]|\\d{2,})\\n# fail 0$"}

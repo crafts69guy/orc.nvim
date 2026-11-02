@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: inline-small
+description: "Fresh Lua behavior case: inline-small"
+tags: [orc]
+plugins: ["../.."]
+runs: 1
+context:
+  scaffold_script: fixture.lua
+execution:
+  model: opus
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Bash, Edit, Write, Agent, Skill]
+  prompt: "Bug: add in src/math.lua subtracts instead of adding. Change only a - b to a + b. Existing tests must pass. Do not commit. Run nvim --clean -l check.lua as the very last step."
+graders:
+  - {"name":"no-subagent","type":"tool_used","tool":"Agent","min":0,"max":0}
+  - {"name":"fixed","type":"regex","target":{"source":"file","path":"src/math.lua"},"pattern":"return\\s+a\\s*\\+\\s*b"}
+  - {"name":"tests-pass","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^# pass 2\\n# fail 0$"}
+  - {"name":"no-commit","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: ","match":"not_contains"}
