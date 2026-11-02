@@ -173,11 +173,11 @@ function M.merge(rt, base, task, message, yes)
 	local removed = rt.exec(options({ "wt", "remove", branch, "--foreground", "-D" }, yes))
 	assert(removed.code == 0, "merged as " .. commit .. " but worktree remains: " .. removed.stderr)
 	if rt.exists(path) then
+		local cleaned, err = pcall(rt.rmdir, path)
 		assert(
-			#rt.list(path) == 0,
-			"merged as " .. commit .. " but nonempty worktree remains: " .. path
+			cleaned,
+			"merged as " .. commit .. " but worktree remains: " .. path .. ": " .. tostring(err)
 		)
-		rt.remove(path)
 	end
 	return { status = "merged", task = task, commit = commit }, 0
 end

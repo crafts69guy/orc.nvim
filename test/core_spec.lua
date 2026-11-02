@@ -19,6 +19,13 @@ local function fake()
 	rt.write = function(path, text)
 		rt.files[path] = text
 	end
+	rt.append = function(path, line)
+		rt.files[path] = (rt.files[path] or "") .. line
+	end
+	rt.rmdir = function(path)
+		assert(#rt.list(path) == 0, "ENOTEMPTY: directory not empty")
+		rt.files[path] = nil
+	end
 	rt.mkdir = function() end
 	rt.remove = function(path)
 		rt.files[path] = nil
@@ -147,9 +154,12 @@ Test.test("core Claude high mode and Rex mode are explicit per-run options", fun
 	local rt = fake()
 	rt.env.REX_SESSION, rt.env.REX_BLOCK = "session:1", "block:1"
 	for _, name in ipairs({ "implementer", "reviewer", "scoper", "shipper" }) do
+		local tools = name == "implementer" and "Read, Write, Edit, Bash" or "Read, Grep, Glob, Bash"
 		rt.files["/plugin/agents/" .. name .. ".md"] = "---\nname: "
 			.. name
-			.. "\ndescription: role\n---\nBody"
+			.. "\ndescription: role\ntools: "
+			.. tools
+			.. "\n---\nBody"
 	end
 	Test.eq(cli.run(rt, { "claude", "--level", "high", "--pair", "prompt" }).code, 0)
 	Test.eq(rt.launched[1].options.env.ORC_PAIR, "1")
@@ -162,6 +172,8 @@ Test.test("core Claude high mode and Rex mode are explicit per-run options", fun
 	Test.eq(agents.implementer.model, "opus")
 	Test.eq(agents.scoper.model, "sonnet")
 	Test.eq(agents.reviewer.model, "opus")
+	Test.eq(agents.scoper.tools, { "Read", "Grep", "Glob", "Bash" })
+	Test.eq(agents.implementer.tools, { "Read", "Write", "Edit", "Bash" })
 	Test.eq(cli.run(rt, { "claude", "--panes", "--level=default" }).code, 0)
 	Test.eq(rt.launched[2].options.env.ORC_PANES, "1")
 end)
@@ -809,7 +821,7 @@ Test.test("core merge aborts rebase conflicts and retains nonempty cleanup lefto
 	rt.files["/task"], rt.files["/task/unrelated"] = "directory", "must retain"
 	assert(
 		wt.run(rt, { "merge", "feat", "T1", "--message=x" }).result.stderr
-			:find("nonempty worktree", 1, true)
+			:find("worktree remains", 1, true)
 	)
 	Test.eq(rt.files["/task/unrelated"], "must retain")
 	rt.files["/task/unrelated"] = nil
@@ -1120,3 +1132,75 @@ Test.test("core entrypoints handle absent output and reject extra generator argu
 	arg, os.exit = previous.argv, previous.exit
 	assert(ok, err)
 end)
+
+Test.test("core merge cleanup preserves files created after worktrunk removal", function()
+	local real, rt = runtime.new(), fake()
+	local path = real.path(Test.temp(), "task")
+	real.mkdir(path)
+	rt.exists, rt.rmdir = real.exists, real.rmdir
+	rt.list = function()
+		error("cleanup must not use a list-then-delete check")
+	end
+	rt.remove = function()
+		error("cleanup must never recursively delete")
+	end
+	route(rt, {
+		["wt list --format=json"] = result(
+			0,
+			rt.encode({ items = { { branch = "feat--T1", worktree = { path = path } } } })
+		),
+		["git merge-base feat HEAD"] = result(0, "base\n"),
+		["git rev-list --count base..HEAD"] = result(0, "1\n"),
+		["git rev-parse feat"] = result(0, "sha\n"),
+		["wt remove feat--T1 --foreground -D"] = function()
+			real.write(real.path(path, "late-user-work"), "must survive")
+			return result()
+		end,
+	})
+	local merged = wt.run(rt, { "merge", "feat", "T1", "--message=x" })
+	Test.eq(merged.code, 1)
+	assert(merged.result.stderr:find("merged as sha but worktree remains", 1, true))
+	Test.eq(real.read(real.path(path, "late-user-work")), "must survive")
+end)
+
+Test.test(
+	"core hook signals append interleaved events without replacing earlier records",
+	function()
+		local rt, interleaved = fake(), false
+		rt.env.ORC = "1"
+		rt.files["/repo/.orc/signals.jsonl"] = '{"existing":true}\n'
+		local read = rt.read
+		rt.read = function(path)
+			assert(path ~= "/repo/.orc/signals.jsonl", "signal writes must not read-modify-replace")
+			return read(path)
+		end
+		rt.append = function(path, line)
+			if not interleaved then
+				interleaved = true
+				hooks.run(
+					rt,
+					"guard",
+					'{"agent_type":"implementer","tool_input":{"command":"git commit -m x"}}'
+				)
+			end
+			rt.files[path] = (rt.files[path] or "") .. line
+		end
+		local denied = hooks.run(rt, "guard", '{"tool_input":{"command":"git push"}}')
+		Test.eq(rt.decode(denied.out).hookSpecificOutput.permissionDecision, "deny")
+		local records = {}
+		for line in rt.files["/repo/.orc/signals.jsonl"]:gmatch("[^\n]+") do
+			records[#records + 1] = rt.decode(line)
+		end
+		Test.eq(#records, 3)
+		Test.eq(records[1], { existing = true })
+		Test.eq(records[2].role, "implementer")
+		Test.eq(records[3].role, "main")
+		rt.append = function()
+			error("disk full")
+		end
+		Test.eq(
+			rt.decode(hooks.run(rt, "guard", '{"tool_input":{"command":"git push"}}').out).hookSpecificOutput.permissionDecision,
+			"deny"
+		)
+	end
+)

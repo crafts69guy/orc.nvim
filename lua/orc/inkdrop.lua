@@ -225,6 +225,7 @@ local function request(rt, srv, method, path, opts)
 		"silent",
 		"show-error",
 		"max-redirs = 0",
+		'noproxy = "*"',
 		'proto = "=http,https"',
 		"request = " .. quoted(method),
 		"url = " .. quoted(url),

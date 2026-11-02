@@ -154,11 +154,9 @@ local function signal(rt, kind, role, reason)
 		if root then
 			wt.ignore(rt)
 			local path = rt.path(root, ".orc", "signals.jsonl")
-			rt.write(
+			rt.append(
 				path,
-				(rt.read(path) or "")
-					.. rt.encode({ ts = rt.now(), kind = kind, role = role, reason = reason })
-					.. "\n"
+				rt.encode({ ts = rt.now(), kind = kind, role = role, reason = reason }) .. "\n"
 			)
 		end
 	end)

@@ -311,3 +311,67 @@ Test.test(
 		end)
 	end
 )
+
+Test.test("runtime rmdir never removes contents or follows directory symlinks", function()
+	local rt, dir = runtime.new(), Test.temp()
+	local empty, occupied = rt.path(dir, "empty"), rt.path(dir, "occupied")
+	rt.mkdir(empty)
+	rt.rmdir(empty)
+	assert(not rt.exists(empty))
+	rt.write(rt.path(occupied, "user-work"), "preserve")
+	Test.raises("ENOTEMPTY", function()
+		rt.rmdir(occupied)
+	end)
+	assert(vim.uv.fs_symlink(occupied, rt.path(dir, "link")))
+	Test.raises("ENOTDIR", function()
+		rt.rmdir(rt.path(dir, "link"))
+	end)
+	Test.eq(rt.read(rt.path(occupied, "user-work")), "preserve")
+end)
+
+Test.test("runtime append keeps interleaved records with one O_APPEND write per caller", function()
+	local rt, dir = runtime.new(), Test.temp()
+	local file = rt.path(dir, "signals.jsonl")
+	rt.write(file, '{"before":true}\n')
+	local write, interleaved, writes = vim.uv.fs_write, false, 0
+	replacing(vim.uv, "fs_write", function(fd, text, offset)
+		writes = writes + 1
+		if not interleaved then
+			interleaved = true
+			rt.append(file, '{"writer":"B"}\n')
+		end
+		Test.eq(offset, -1)
+		return write(fd, text, offset)
+	end, function()
+		rt.append(file, '{"writer":"A"}\n')
+	end)
+	Test.eq(writes, 2)
+	Test.eq(rt.read(file), '{"before":true}\n{"writer":"B"}\n{"writer":"A"}\n')
+end)
+
+Test.test(
+	"runtime append rejects oversized or multiline records and preserves data on write failure",
+	function()
+		local rt, dir = runtime.new(), Test.temp()
+		local file = rt.path(dir, "signals.jsonl")
+		rt.append(file, '{"before":true}\n')
+		for _, value in ipairs({ "", string.rep("x", 4097) }) do
+			Test.raises("1%-4096 bytes", function()
+				rt.append(file, value)
+			end)
+		end
+		for _, value in ipairs({ "missing newline", "two\nlines\n" }) do
+			Test.raises("newline%-terminated", function()
+				rt.append(file, value)
+			end)
+		end
+		replacing(vim.uv, "fs_write", function()
+			return nil, "append failed"
+		end, function()
+			Test.raises("append failed", function()
+				rt.append(file, '{"after":true}\n')
+			end)
+		end)
+		Test.eq(rt.read(file), '{"before":true}\n')
+	end
+)

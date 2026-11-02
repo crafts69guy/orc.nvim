@@ -121,6 +121,7 @@ local function launch(rt, kind, argv)
 					definitions[data.name] = {
 						description = data.description,
 						prompt = body,
+						tools = vim.tbl_map(vim.trim, vim.split(data.tools or "", ",", { trimempty = true })),
 						model = data.name == "implementer" and "opus"
 							or data.name == "reviewer" and "opus"
 							or "sonnet",

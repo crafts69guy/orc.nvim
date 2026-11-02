@@ -164,6 +164,11 @@ end
 
 Test.test("integrations Inkdrop config, enable flags and safe health probes", function()
 	local rt, _, calls = fake({
+		env = {
+			http_proxy = "http://untrusted.invalid:8080",
+			ALL_PROXY = "socks5://untrusted.invalid:1080",
+			NO_PROXY = "",
+		},
 		respond = function()
 			return { version = "6" }
 		end,
@@ -175,6 +180,7 @@ Test.test("integrations Inkdrop config, enable flags and safe health probes", fu
 	local curl = calls[#calls]
 	assert(not table.concat(curl.argv, " "):find("private", 1, true))
 	assert(curl.opts.stdin:find(vim.base64.encode('alice:private"\\secret'), 1, true))
+	assert(curl.opts.stdin:find('noproxy = "*"\n', 1, true))
 	assert(curl.opts.timeout == 2500)
 	for _, env in ipairs({
 		{ ORC_INKDROP = "0" },

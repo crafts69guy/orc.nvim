@@ -47,7 +47,9 @@ end
 ---@field stream fun(argv:string[], opts:orc.ProcessOptions?, on_data:fun(chunk:string)):orc.ProcessHandle
 ---@field read fun(path:string):string?,string?
 ---@field write fun(path:string,text:string) Atomically replace a file; throw on failure.
+---@field append fun(path:string,line:string) Append one newline-terminated record of at most 4096 bytes in one write; throw on failure.
 ---@field mkdir fun(path:string) Create parent directories; throw on failure.
+---@field rmdir fun(path:string) Remove an empty directory only; throw when nonempty or otherwise unsuccessful.
 ---@field remove fun(path:string) Remove a file or directory tree; missing paths are allowed.
 ---@field list fun(path:string):string[] Sorted entries; missing directories yield an empty list.
 ---@field exists fun(path:string):boolean
@@ -292,6 +294,25 @@ function M.new(opts)
 		end
 		local flags = stat.type == "directory" and "rf" or ""
 		assert(vim.fn.delete(path, flags) == 0, "cannot remove: " .. path)
+	end
+	rt.rmdir = function(path)
+		assert(uv.fs_rmdir(path))
+	end
+	rt.append = function(path, line)
+		assert(
+			type(line) == "string" and #line > 0 and #line <= 4096,
+			"append needs a record of 1-4096 bytes"
+		)
+		assert(
+			line:sub(-1) == "\n" and not line:sub(1, -2):find("\n", 1, true),
+			"append needs one newline-terminated record"
+		)
+		rt.mkdir(vim.fs.dirname(path))
+		local fd = assert(uv.fs_open(path, "a", 384))
+		local written, write_error = uv.fs_write(fd, line, -1)
+		local closed, close_error = uv.fs_close(fd)
+		assert(written == #line, write_error or "short append write")
+		assert(closed, close_error)
 	end
 	rt.list = function(path)
 		local request, err = uv.fs_scandir(path)
