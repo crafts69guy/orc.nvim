@@ -51,7 +51,8 @@ end
 ---Instrument valid Lua 5.1 without executing it.
 ---A line site is the first source line of a statement or evaluated decision, not
 ---a comment, structural `end`, or continuation-only expression line. Branches are
----condition truthy/falsy outcomes, short-circuit evaluation/skip, and for entry/skip.
+---condition truthy/falsy outcomes, short-circuit evaluation/skip, and native loop
+---continuation/normal termination. Break and return do not count as termination.
 ---@param source string
 ---@param path string
 ---@return string instrumented
@@ -121,8 +122,9 @@ function M.instrument(source, path)
 			insert(last_end, text, 1)
 		end
 	end
-	local function visit(node)
+	local function visit(node, loop_flag)
 		local kind = node:type()
+		local child_loop = loop_flag
 		assert(kind ~= "goto_statement" and kind ~= "label_statement", "coverage: goto is not Lua 5.1")
 		if kind == "chunk" or kind == "block" then
 			for child in node:iter_children() do
@@ -137,6 +139,7 @@ function M.instrument(source, path)
 			end
 		end
 		if kind == "function_declaration" or kind == "function_definition" then
+			child_loop = nil
 			local id = site(manifest.functions, node, "function")
 			body_entry(node, symbol .. ".enter(" .. identity .. "," .. id .. ");")
 		elseif
@@ -145,30 +148,32 @@ function M.instrument(source, path)
 			or kind == "while_statement"
 			or kind == "repeat_statement"
 		then
+			if kind == "while_statement" or kind == "repeat_statement" then
+				child_loop = nil
+			end
 			local expr = assert(node:field("condition")[1], "coverage: missing condition")
 			condition(expr, kind)
 		elseif kind == "binary_expression" and operator(node) then
 			condition(assert(node:field("left")[1]), operator(node))
 		elseif kind == "for_statement" then
-			local id = site(manifest.branches, node, "for-entry")
+			local id = site(manifest.branches, node, "for-loop")
 			local flag = symbol .. "_loop" .. id
+			child_loop = flag
 			local first, last = byte(node), byte(node, true)
 			insert(first, "do local " .. flag .. "=false;", 2, -(last - first))
-			insert(
-				after_token(node, "do", byte),
-				flag .. "=true;" .. symbol .. ".branch(" .. identity .. "," .. id .. ",true);",
-				1
-			)
+			insert(after_token(node, "do", byte), symbol .. ".branch(" .. identity .. "," .. id .. ",true);", 1)
 			insert(
 				last,
 				";if not " .. flag .. " then " .. symbol .. ".branch(" .. identity .. "," .. id .. ",false) end end;",
 				0,
 				last - first
 			)
+		elseif kind == "break_statement" and loop_flag then
+			insert(byte(node), loop_flag .. "=true;", 1)
 		end
 		for child in node:iter_children() do
 			if child:named() and child:type() ~= "comment" then
-				visit(child)
+				visit(child, child_loop)
 			end
 		end
 	end

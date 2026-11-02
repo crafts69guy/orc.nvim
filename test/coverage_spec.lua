@@ -70,7 +70,7 @@ end]],
 	Test.eq(report.lines.percent, 100)
 end)
 
-Test.test("coverage numeric generic for measure entered and skipped without changing bindings", function()
+Test.test("coverage numeric generic for measure continuation and normal termination", function()
 	local report = execute(
 		[[return function(n, values)
   local result = 0
@@ -86,6 +86,41 @@ end]],
 	Test.eq(report.branches.total, 4)
 	Test.eq(report.branches.percent, 100)
 	Test.eq(report.lines.percent, 100)
+end)
+
+Test.test("coverage nonempty constant for loops naturally cover both native outcomes", function()
+	local report = execute("for i=1,2 do local x=i end; for k,v in ipairs({1,2}) do local x=v end")
+	Test.eq(report.branches.total, 4)
+	Test.eq(report.branches.hit, 4)
+end)
+
+Test.test("coverage break and return do not masquerade as normal for termination", function()
+	for _, ending in ipairs({ "break", "return" }) do
+		local report = execute("return function(n) for i=1,n do " .. ending .. " end end", function(f)
+			f(2)
+		end)
+		Test.eq(report.branches.total, 2)
+		Test.eq(report.branches.hit, 1)
+		Test.eq(report.files["corpus.lua"].missing.branches[1].outcome, false)
+		report = execute("return function(n) for i=1,n do " .. ending .. " end end", function(f)
+			f(2)
+			f(0)
+		end)
+		Test.eq(report.branches.hit, 2)
+	end
+end)
+
+Test.test("coverage nested breaks target their nearest native loop", function()
+	local report = execute([[for i=1,2 do
+  while i > 0 do break end
+  repeat break until false
+  for j=1,2 do break end
+end]])
+	local missing = report.files["corpus.lua"].missing.branches
+	for _, branch in ipairs(missing) do
+		assert(branch.id ~= 1, "inner break incorrectly marked outer for as broken")
+	end
+	Test.eq(#missing, 4)
 end)
 
 Test.test("coverage while repeat conditions measure actual outcomes", function()
