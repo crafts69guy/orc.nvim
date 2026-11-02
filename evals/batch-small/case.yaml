@@ -1,0 +1,23 @@
+schema_version: "1.1"
+name: batch-small
+description: "Fresh Lua behavior case: batch-small"
+tags: [orc]
+plugins: ["../.."]
+runs: 2
+context:
+  scaffold_script: fixture.lua
+execution:
+  model: opus
+  max_turns: 35
+  timeout_seconds: 600
+  allowed_tools: [Read, Glob, Grep, Bash, Edit, Write, Agent, Skill]
+  prompt: "Add two small independent features with tests on feat/x. In src/strings.lua add slugify(str): lowercase, trim, collapse ASCII non-alphanumeric runs to '-' and strip boundary hyphens. In src/numbers.lua add clamp(n,min,max), raising {kind='RangeError',message=...} if min>max. Keep existing exports and tests. Land each feature as a separate conventional commit. Run nvim --clean -l check.lua last."
+graders:
+  - {"name":"no-dispatch","type":"tool_used","tool":"Skill","input_match":"\"skill\"\\s*:\\s*\"(?:orc:)?dispatch\"","min":0,"max":0,"arm":"both"}
+  - {"name":"one-implementer","type":"tool_used","tool":"Agent","input_match":"\"subagent_type\"\\s*:\\s*\"orc:implementer\"","min":1,"max":1}
+  - {"name":"conventional-commits","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: (?:feat|fix|test|refactor|perf|chore|docs)(?:\\([^)]+\\))?!?: \\S","match":"count:2"}
+  - {"name":"only-expected-commits","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: ","match":"count:2"}
+  - {"name":"feature-branch","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^branch: feat/x$"}
+  - {"name":"clean-tree","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^dirty: 0$"}
+  - {"name":"no-leftover-worktrees","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^worktrees: 1$"}
+  - {"name":"own-tests-pass","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^# pass ([4-9]|\\d{2,})\\n# fail 0$"}
