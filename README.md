@@ -78,6 +78,11 @@ workers without a plan. Open the selected task's brief, report or diff, focus it
 Rex pane, or send a follow-up. Closing the panel stops its watchers; worker
 processes continue in Rex. Reopening reconstructs state from disk and Rex.
 
+`:Orc projects` searches `ghq list -p` with Telescope and opens a fresh Rex
+session for the selected repository. Telescope/plenary are required only for
+project search. Personal Rex actions can open either view in a floating Neovim
+and pass the originating app for session selection. See [Rex integration](docs/rex-integration.md).
+
 ## State and integrations
 
 Plans and capture logs live in the main checkout's `.scratch/<feature>/`. Approved

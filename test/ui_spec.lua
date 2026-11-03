@@ -15,6 +15,8 @@ local function fixture(exercise)
 		acknowledged = true,
 		sessionId = "session:test",
 		blockId = "block:test",
+		hostId = "host",
+		instanceId = "instance",
 	}
 	local document = {
 		schemaVersion = 1,
@@ -45,9 +47,12 @@ local function fixture(exercise)
 		error("panel action blocked on synchronous command")
 	end
 	function state.reply(index, code, out, err)
+		local default = vim.tbl_contains(state.calls[index].argv, "whoami")
+				and { host_id = "host", instance_id = "instance", endpoint = "unix:///fixture" }
+			or document
 		state.callbacks[index]({
 			code = code or 0,
-			stdout = out or rt.encode(document),
+			stdout = out or rt.encode(default),
 			stderr = err or "",
 		})
 	end
@@ -177,12 +182,14 @@ Test.test(
 			state.reply(2, 0, "diff --git a/x b/x\n+fixed\n")
 			Test.eq(vim.bo.filetype, "diff")
 			ui.action("focus")
-			assert(table.concat(state.calls[3].argv, " "):find("session.focus_block", 1, true))
-			Test.eq(rt.decode(state.calls[3].options.stdin).block_id, "block:test")
 			state.reply(3)
+			state.reply(4)
+			assert(table.concat(state.calls[5].argv, " "):find("session.focus_block", 1, true))
+			Test.eq(rt.decode(state.calls[5].options.stdin).block_id, "block:test")
+			state.reply(5)
 			ui.action("prompt")
 			state.input("fix the regression")
-			Test.eq(state.calls[4].argv, {
+			Test.eq(state.calls[6].argv, {
 				rt.root .. "/bin/orc",
 				"pane",
 				"prompt",
@@ -192,9 +199,9 @@ Test.test(
 				"--text",
 				"fix the regression",
 			})
-			state.reply(4)
-			Test.eq(state.calls[5].argv[2], "status")
-			state.reply(5)
+			state.reply(6)
+			Test.eq(state.calls[7].argv[2], "status")
+			state.reply(7)
 			assert(vim.api.nvim_buf_is_valid(buffer))
 		end)
 	end
@@ -327,8 +334,9 @@ Test.test("ui failed refresh launch can be closed and prompt stderr is shown", f
 end)
 
 Test.test("ui setup and plugin register only Orc and are idempotent", function()
-	local actual_ui, actual_runtime = package.loaded["orc.ui"], package.loaded["orc.runtime"]
-	local opened, actions = 0, {}
+	local actual_ui, actual_runtime, actual_projects =
+		package.loaded["orc.ui"], package.loaded["orc.runtime"], package.loaded["orc.projects"]
+	local opened, actions, projects = 0, {}, {}
 	package.loaded["orc.ui"] = {
 		open = function()
 			opened = opened + 1
@@ -342,6 +350,12 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 			return opts
 		end,
 	}
+	package.loaded["orc.projects"] = {
+		open = function(_, opts)
+			projects[#projects + 1] = opts or {}
+			return "handle"
+		end,
+	}
 	local ok, err = xpcall(function()
 		local module = require("orc")
 		module.setup({ cwd = "/fixture" })
@@ -350,6 +364,18 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 		vim.cmd("Orc status")
 		Test.eq(opened, 2)
 		Test.eq(actions, { "status" })
+		module.open()
+		Test.eq(opened, 3)
+		module.open({ cwd = Test.temp() })
+		Test.eq(opened, 4)
+		for _, cwd in ipairs({ "relative", "/missing-orc-cwd", true }) do
+			Test.raises("existing absolute", function()
+				module.open({ cwd = cwd })
+			end)
+		end
+		Test.eq(module.projects({ client_id = "origin" }), "handle")
+		vim.cmd("Orc projects")
+		Test.eq(projects, { { client_id = "origin" }, {} })
 		assert(vim.tbl_contains(vim.fn.getcompletion("Orc ", "cmdline"), "report"))
 		vim.g.loaded_orc = nil
 		dofile(actual_runtime.new().root .. "/plugin/orc.lua")
@@ -357,9 +383,70 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 		Test.eq(vim.g.loaded_orc, true)
 	end, debug.traceback)
 	package.loaded["orc.ui"], package.loaded["orc.runtime"] = actual_ui, actual_runtime
+	package.loaded["orc.projects"] = actual_projects
 	vim.g.loaded_orc = nil
 	pcall(vim.api.nvim_del_user_command, "Orc")
 	assert(ok, err)
+end)
+
+Test.test("ui popup closes only its view and focuses the explicitly originating Rex app", function()
+	fixture(function(rt, state)
+		local old_cmd, old_schedule = vim.cmd, vim.schedule
+		local quit, scheduled = 0, {}
+		vim.cmd = function(command)
+			if command == "qa" then
+				quit = quit + 1
+			else
+				old_cmd(command)
+			end
+		end
+		vim.schedule = function(fn)
+			scheduled[#scheduled + 1] = fn
+		end
+		local ok, err = xpcall(function()
+			ui.open(rt, { client_id = "client:origin", quit_on_close = true })
+			state.reply(1)
+			vim.api.nvim_win_set_cursor(0, { 4, 0 })
+			ui.action("focus")
+			state.reply(2)
+			state.reply(3)
+			state.reply(4, 0, "{}")
+			assert(vim.tbl_contains(state.calls[5].argv, "client:origin"))
+			state.reply(5, 1, "", "Remote Control disabled")
+			assert(state.notices[1]:find("Remote Control disabled", 1, true))
+			ui.close()
+			ui.close()
+			for _, callback in ipairs(scheduled) do
+				callback()
+			end
+			Test.eq(quit, 1)
+		end, debug.traceback)
+		vim.cmd, vim.schedule = old_cmd, old_schedule
+		assert(ok, err)
+	end)
+end)
+
+Test.test("ui popup preserves modified buffers when non-forced quit is refused", function()
+	fixture(function(rt, state)
+		local old_cmd, old_schedule = vim.cmd, vim.schedule
+		vim.cmd = function(command)
+			if command == "qa" then
+				error("modified buffers")
+			else
+				old_cmd(command)
+			end
+		end
+		vim.schedule = function(fn)
+			fn()
+		end
+		local ok, err = xpcall(function()
+			ui.open(rt, { quit_on_close = true })
+			ui.close()
+			assert(state.notices[1]:find("save modified buffers", 1, true))
+		end, debug.traceback)
+		vim.cmd, vim.schedule = old_cmd, old_schedule
+		assert(ok, err)
+	end)
 end)
 
 Test.test("ui health checks dependencies local Rex and failures without model calls", function()

@@ -67,6 +67,19 @@ and non-loopback hosts, and never expose credentials through argv or logs.
 Revision conflicts retry once from a fresh GET, preserving edits outside the managed
 block.
 
+## Rex configuration and project views
+
+Rex configuration remains the user's adapter for keybindings, popup placement
+and originating client context. It launches public orc Neovim entrypoints rather
+than importing Neovim modules into the server's Lua host. The project picker owns
+its create/select/retry flow; the shared Rex adapter owns transport and server
+identity. Telescope is required only by project search.
+
+Task focus selects recorded session/block IDs and the originating app when known.
+View shutdown never controls worker/session or Inkdrop service lifetimes. Existing
+worker ownership and permission checks remain separate from UI selection.
+See [Rex integration](rex-integration.md).
+
 ## Shared Inkdrop MCP
 
 `providers.plan` is the shared launch interface for the orchestrator and Rex

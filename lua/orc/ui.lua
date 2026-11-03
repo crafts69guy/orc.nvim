@@ -145,6 +145,14 @@ function M.close(event)
 	if not event and vim.api.nvim_buf_is_valid(previous.buffer) then
 		vim.api.nvim_buf_delete(previous.buffer, { force = true })
 	end
+	if previous.options.quit_on_close then
+		vim.schedule(function()
+			local ok = pcall(vim.cmd, "qa")
+			if not ok then
+				notify("Popup remains open: save modified buffers before quitting")
+			end
+		end)
+	end
 end
 
 ---Run an action for the selected task without blocking the editor's process loop.
@@ -184,18 +192,19 @@ function M.action(action)
 			local worker = assert(row.worker, "orc: task has no Rex worker")
 			assert(worker.blockId, "orc: worker has no confirmed block")
 			local client = require("orc.rex").new(rt)
-			current.actions[#current.actions + 1] = rt.async(
-				client.argv({ "api", "call", "-s", worker.sessionId, "session.focus_block", "-" }),
-				{ stdin = rt.encode({ block_id = worker.blockId }) },
-				function(result)
-					if not active() then
-						return
-					end
-					if result.code ~= 0 then
-						notify(result.stderr)
-					end
+			current.actions[#current.actions + 1] = client.focus({
+				session_id = worker.sessionId,
+				block_id = worker.blockId,
+				client_id = current.options.client_id,
+				identity = { host_id = worker.hostId, instance_id = worker.instanceId },
+			}, function(_, error)
+				if not active() then
+					return
 				end
-			)
+				if error then
+					notify(error)
+				end
+			end)
 		elseif action == "prompt" then
 			assert(row.path and row.worker, "orc: task has no worker")
 			vim.ui.input({ prompt = "Worker follow-up: " }, function(text)
@@ -232,8 +241,9 @@ end
 
 ---Open a native read-only task panel. No picker plugin or global mappings are required.
 ---@param rt orc.Runtime
+---@param opts? orc.ViewOptions Explicit originating app and popup lifetime.
 ---@return integer buffer Panel buffer identifier.
-function M.open(rt)
+function M.open(rt, opts)
 	if panel and vim.api.nvim_win_is_valid(panel.window) then
 		vim.api.nvim_set_current_win(panel.window)
 		return panel.buffer
@@ -247,6 +257,7 @@ function M.open(rt)
 	local timer = assert(vim.uv.new_timer())
 	panel = {
 		rt = rt,
+		options = opts or {},
 		buffer = buffer,
 		window = window,
 		rows = {},
