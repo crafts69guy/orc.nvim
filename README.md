@@ -1,53 +1,96 @@
 # orc.nvim
 
-An orchestration workflow written in Lua for Neovim, Rex, Claude Code and Codex.
-One agent scopes, delegates, reviews and ships; independent implementers work in
-separate Git worktrees. Neovim provides the task panel. Rex runs the terminals.
+Visible, isolated multi-agent coding for Neovim, [Rex](https://www.superlogical.com/rex/docs),
+Claude Code and Codex.
 
-The CLI, hooks, generator, tests and evaluation fixtures run with Neovim's Lua
-runtime. They do not load your Neovim configuration. Orc has no Node backend;
-the optional shared Inkdrop service uses external Python/Node dependencies.
+One orchestrator agent scopes, delegates, reviews and ships. Implementers work in
+separate Git worktrees inside Rex terminals you can watch and steer. Neovim shows
+the live task panel. Nothing is accepted until the orchestrator reads the diff and
+reruns validation.
+
+Everything — CLI, hooks, generator, tests and evals — is Lua running on Neovim's
+runtime (`nvim -l`). It does not load your Neovim configuration and has no Node
+backend.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  dev([Developer])
+  subgraph harness[Claude Code / Codex]
+    orch[Orchestrator<br/>rules · skills · hooks]
+  end
+  subgraph orc[orc.nvim · Lua]
+    cli[orc CLI]
+    core[Workflow core<br/>runs · records · reports]
+    panel[":Orc task panel"]
+  end
+  subgraph rex[Rex]
+    w1[Worker pane]
+    w2[Worker pane]
+  end
+  wt[(Git worktrees<br/>via worktrunk)]
+  state[(.scratch/ plans<br/>.orc/ records)]
+  ink[(Inkdrop notes<br/>optional)]
+
+  dev --> orch
+  dev --> panel
+  orch --> cli --> core
+  panel --> core
+  core --> wt
+  core -->|spawn · prompt · focus| rex
+  w1 & w2 -->|edit| wt
+  w1 & w2 -->|run-specific report| core
+  core --> state
+  core -.-> ink
+```
+
+- **Harness** makes decisions from canonical Markdown roles, rules and skills.
+- **orc** owns identities (`runId`), worktrees, subprocesses and report validation.
+- **Rex** owns terminal processes, layout and events. Workers outlive the UI.
+- **Neovim** renders state and calls the same workflow asynchronously.
+
+Details: [architecture](docs/architecture.md) · [Rex integration](docs/rex-integration.md).
 
 ## Requirements
 
-- Neovim 0.11 or newer, Git and [worktrunk](https://worktrunk.dev).
+- Neovim 0.11+, Git and [worktrunk](https://worktrunk.dev).
 - Claude Code or Codex.
 - [Rex](https://www.superlogical.com/rex/docs) for pane and pair workers.
-- curl for the optional Inkdrop local-server integration.
-- Developers: StyLua 2.6 and Neovim's Lua Tree-sitter parser.
+- Optional: [ghq](https://github.com/x-motemen/ghq) and
+  [snacks.nvim](https://github.com/folke/snacks.nvim) for `:Orc projects`;
+  curl for the Inkdrop local-server integration.
+- Development: StyLua 2.6 and Neovim's Lua Tree-sitter parser.
 
-## Local installation
+## Installation
 
-Clone this repository and add its absolute `bin` directory to PATH. In fish:
+Clone once and put `bin` on PATH (fish shown):
 
 ```fish
-fish_add_path ~/Developments/github.com/crafts69guy/orc.nvim/bin
+git clone https://github.com/crafts69guy/orc.nvim ~/.local/share/orc.nvim
+fish_add_path ~/.local/share/orc.nvim/bin
 orc doctor
 ```
 
-For lazy.nvim, use the checkout directly until the repository is published:
+Neovim (lazy.nvim):
 
 ```lua
-{
-  dir = vim.fn.expand("~/Developments/github.com/crafts69guy/orc.nvim"),
-  name = "orc.nvim",
-  cmd = "Orc",
-  opts = {},
-}
+{ "crafts69guy/orc.nvim", cmd = "Orc", opts = {} }
 ```
 
-Register the local marketplace with each harness you use:
+Register the checkout as a plugin marketplace for each harness you use:
 
 ```fish
-claude plugin marketplace add ~/Developments/github.com/crafts69guy/orc.nvim
+claude plugin marketplace add ~/.local/share/orc.nvim
 claude plugin install orc@orc-nvim
-codex plugin marketplace add ~/Developments/github.com/crafts69guy/orc.nvim
+codex plugin marketplace add ~/.local/share/orc.nvim
 codex plugin add orc@orc-nvim
 ```
 
-The CLI also loads the local Claude plugin explicitly. Disable the old Orchestra
-plugin, restart agent sessions and approve new or changed hooks through the
-harness's normal trust controls before using hook-driven automation.
+The CLI also loads the local Claude plugin explicitly. Restart agent sessions and
+approve new or changed hooks through the harness's normal trust controls before
+relying on hook-driven automation. `orc update` fast-forwards the clean checkout
+and updates the installed plugins.
 
 ## Commands
 
@@ -67,38 +110,41 @@ harness's normal trust controls before using hook-driven automation.
 | `orc eval` | Explicitly run model-based behavior evaluations |
 | `orc update` | Fast-forward the clean Git checkout and update installed plugins |
 
-Use `orc --help` for arguments. Permission bypass is explicit (`--yolo`), never
-the default. Workers must not commit or push. Review changes and rerun validation
-before accepting a task; a terminal's `done` indicator is not validation.
+Run `orc --help` for arguments.
+
+**Safety defaults:** permission bypass is explicit (`--yolo`), never the default.
+Workers must not commit or push. A terminal's `done` indicator is not validation —
+review the diff and rerun checks before accepting a task.
 
 ## Neovim
 
-`:Orc` opens the task panel. It shows features, tasks and workers, including pair
-workers without a plan. Open the selected task's brief, report or diff, focus its
-Rex pane, or send a follow-up. Closing the panel stops its watchers; worker
-processes continue in Rex. Reopening reconstructs state from disk and Rex.
+- `:Orc` opens the task panel: features, tasks and workers (including pair
+  workers without a plan). Open a task's brief, report or diff, focus its Rex
+  pane, or send a follow-up. Closing the panel stops only its watchers; workers
+  keep running and state is rebuilt from disk and Rex on reopen.
+- `:Orc projects` searches `ghq list -p` in a compact Snacks picker and opens a
+  fresh Rex session for the selected repository. LazyVim already ships snacks.nvim.
 
-`:Orc projects` searches `ghq list -p` with the Snacks picker and opens a fresh
-Rex session for the selected repository. [snacks.nvim](https://github.com/folke/snacks.nvim)
-is required only for project search; LazyVim already ships it. Personal Rex actions can open either view in a floating Neovim
-and pass the originating app for session selection. See [Rex integration](docs/rex-integration.md).
+Rex actions can open either view in a floating Neovim and pass the originating app
+for session selection. See [Rex integration](docs/rex-integration.md).
 
 ## State and integrations
 
-Plans and capture logs live in the main checkout's `.scratch/<feature>/`. Approved
-lessons and worker records live in `.orc/`, excluded from Git. Each assignment has
-a `runId`; reports must identify it. An unconfirmed delivery is not automatically
-resent. A failed follow-up must not erase the previous report.
+- Plans and capture logs live in the main checkout's `.scratch/<feature>/`.
+  Approved lessons and worker records live in `.orc/`, excluded from Git.
+- Every assignment has a `runId`; reports must identify it. An unconfirmed
+  delivery is never resent automatically, and a failed follow-up never erases the
+  previous report.
+- `status`, `doctor` and `context` emit `schemaVersion: 1` JSON. New fields are
+  additive; consumers should ignore unknown fields and keep the distinction
+  between `null`, empty arrays and empty objects.
 
-Inkdrop uses `INKDROP_LOCAL_USERNAME`, `INKDROP_LOCAL_PASSWORD` and optionally
-`INKDROP_LOCAL_SERVER_URL` (default `http://localhost:19840`). Keep credentials in
-an untracked local file. Only loopback HTTP servers are accepted; redirects are
-refused. Only the managed `<!-- orc:begin -->` block is replaced, preserving user
-text and refusing damaged markers.
-
-`status`, `doctor` and `context` expose `schemaVersion: 1` JSON. New fields are
-additive; consumers ignore unknown fields and retain the distinction between
-`null`, empty arrays and empty objects.
+**Inkdrop** (optional) reads `INKDROP_LOCAL_USERNAME`, `INKDROP_LOCAL_PASSWORD`
+and `INKDROP_LOCAL_SERVER_URL` (default `http://localhost:19840`). Keep
+credentials in an untracked local file. Only loopback HTTP is accepted, redirects
+are refused, and only the managed `<!-- orc:begin -->` block is replaced. For an
+opt-in LaunchAgent shared by Claude, Codex and Rex workers, see
+[shared Inkdrop MCP](docs/shared-inkdrop.md).
 
 ## Development
 
@@ -109,17 +155,15 @@ nvim --clean -l scripts/gen-agents.lua --check
 stylua --check lua test scripts bin/orc plugin evals
 ```
 
-Unit/integration tests use fake process/network adapters and temporary
-repositories. The ordinary suite does not call a model or require a Rex server.
-Coverage has separate 98% gates for executable source lines, branches and
-functions. See [coverage definitions](docs/coverage.md).
+Tests use fake process/network adapters and temporary repositories; they never
+call a model or need a Rex server. Coverage has separate 98% gates for lines,
+branches and functions ([definitions](docs/coverage.md)).
 
-Paid evaluations are separate: `orc eval` uses the existing explicit model cost
-cap (`ORC_EVAL_MAX_COST`, default 5 USD). All fixtures are Lua and form a new
-benchmark series; old JavaScript timings are historical, not a comparable baseline.
+Paid evaluations are separate: `orc eval` enforces a model cost cap
+(`ORC_EVAL_MAX_COST`, default 5 USD).
 
-See [architecture](docs/architecture.md) and [cutover](docs/cutover.md).
+See also [cutover](docs/cutover.md) for migrating from the earlier Orchestra plugin.
 
-For an opt-in user LaunchAgent shared by Claude, Codex and Rex workers, see
-[shared Inkdrop MCP](docs/shared-inkdrop.md). The service is independent of task
-lifecycle; ordinary launches preserve their existing MCP configuration.
+## License
+
+[MIT](LICENSE)
