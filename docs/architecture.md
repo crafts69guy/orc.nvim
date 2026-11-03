@@ -73,7 +73,7 @@ Rex configuration remains the user's adapter for keybindings, popup placement
 and originating client context. It launches public orc Neovim entrypoints rather
 than importing Neovim modules into the server's Lua host. The project picker owns
 its create/select/retry flow; the shared Rex adapter owns transport and server
-identity. Telescope is required only by project search.
+identity. snacks.nvim is required only by project search.
 
 Task focus selects recorded session/block IDs and the originating app when known.
 View shutdown never controls worker/session or Inkdrop service lifetimes. Existing

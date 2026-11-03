@@ -4,19 +4,19 @@ local M = {}
 ---@field client_id? string Originating Rex app; absent means no app is selected.
 ---@field quit_on_close? boolean Exit only the dedicated popup Neovim; false in a normal editor.
 
----Open a Telescope GHQ picker. Session creation is never replayed after an unknown result.
+---Open a Snacks GHQ picker. Session creation is never replayed after an unknown result.
 ---@param rt orc.Runtime Runtime supplying asynchronous subprocesses.
 ---@param opts? orc.ProjectOptions Popup context.
 ---@return orc.ProcessHandle handle Closing stops only owned CLI children, never Rex sessions.
 function M.open(rt, opts)
 	opts = opts or {}
-	local closed, busy, creating, uncertain, job, prompt = false, false, false, false, nil, nil
-	local telescope, error_buffer, error_window
+	local closed, busy, creating, uncertain, job, picker = false, false, false, false, nil, nil
+	local snacks_picker, error_buffer, error_window
 	local created = {}
 	local function notify(message)
 		vim.notify(message, vim.log.levels.ERROR, { title = "orc projects" })
 	end
-	local function close(event)
+	local function close()
 		if closed then
 			return
 		end
@@ -27,15 +27,16 @@ function M.open(rt, opts)
 		if job then
 			job.stop()
 		end
-		if prompt and vim.api.nvim_buf_is_valid(prompt) and (not event or event.buf ~= prompt) then
-			pcall(telescope.actions.close, prompt)
+		if picker then
+			pcall(picker.close, picker)
 		end
-		if error_buffer then
+		local buffer = error_buffer
+		if buffer then
 			if error_window and vim.api.nvim_win_is_valid(error_window) then
 				pcall(vim.api.nvim_win_close, error_window, false)
 			end
-			if vim.api.nvim_buf_is_valid(error_buffer) then
-				pcall(vim.api.nvim_buf_delete, error_buffer, { force = false })
+			if vim.api.nvim_buf_is_valid(buffer) then
+				pcall(vim.api.nvim_buf_delete, buffer, { force = false })
 			end
 		end
 		if opts.quit_on_close then
@@ -72,21 +73,21 @@ function M.open(rt, opts)
 				style = "minimal",
 				border = "rounded",
 			})
-			vim.api.nvim_create_autocmd("BufWipeout", { buffer = buffer, once = true, callback = close })
+			vim.api.nvim_create_autocmd("BufWipeout", {
+				buffer = buffer,
+				once = true,
+				callback = function()
+					-- The buffer is already being wiped (e.g. :q); deleting it again raises E937.
+					error_buffer = nil
+					close()
+				end,
+			})
 		end
 	end
 	local loaded
-	loaded, telescope = pcall(function()
-		return {
-			pickers = require("telescope.pickers"),
-			finders = require("telescope.finders"),
-			config = require("telescope.config").values,
-			actions = require("telescope.actions"),
-			state = require("telescope.actions.state"),
-		}
-	end)
+	loaded, snacks_picker = pcall(require, "snacks.picker")
 	if not loaded then
-		startup_error("Telescope is required for GHQ search; install telescope.nvim and plenary.nvim")
+		startup_error("Snacks.nvim is required for GHQ search; install folke/snacks.nvim")
 		return handle
 	end
 	local client = require("orc.rex").new(rt)
@@ -100,105 +101,107 @@ function M.open(rt, opts)
 		end
 		local items = {}
 		for path in result.stdout:gmatch("[^\r\n]+") do
-			items[#items + 1] = path
+			items[#items + 1] = { text = path, value = path }
 		end
 		if #items == 0 then
 			startup_error("No repositories found by ghq list -p")
 			return
 		end
+		local function select_session(path)
+			local session = created[path]
+			job = client.focus({
+				session_id = session.session_id,
+				identity = session.identity,
+				client_id = opts.client_id,
+			}, function(_, err)
+				if closed then
+					return
+				end
+				busy = false
+				if err then
+					notify(
+						"Session " .. session.session_id .. " exists; press Enter to retry switching. " .. err
+					)
+					return
+				end
+				close()
+			end)
+		end
+		local function confirm(_, item)
+			if closed or busy then
+				return
+			end
+			if uncertain then
+				notify("Session creation is unconfirmed; check rex ls before reopening")
+				return
+			end
+			if not item then
+				return
+			end
+			local path = item.value
+			local stat = type(path) == "string" and path:sub(1, 1) == "/" and vim.uv.fs_stat(path)
+			if not stat or stat.type ~= "directory" then
+				notify("Repository directory no longer exists or is not absolute")
+				return
+			end
+			busy = true
+			if created[path] then
+				select_session(path)
+				return
+			end
+			creating = true
+			job = client.create_session(
+				{ cwd = path, label = vim.fn.strcharpart(vim.fs.basename(path), 0, 128) },
+				function(value, err)
+					if closed then
+						return
+					end
+					creating = false
+					if err then
+						busy, uncertain = false, true
+						notify(err .. "; session creation is unconfirmed; check rex ls before reopening")
+						return
+					end
+					created[path] = value
+					select_session(path)
+				end
+			)
+		end
+		local windows, buffers = {}, {}
+		for _, window in ipairs(vim.api.nvim_list_wins()) do
+			windows[window] = true
+		end
+		for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+			buffers[buffer] = true
+		end
 		local opened, error = pcall(function()
-			telescope.pickers
-				.new({}, {
-					prompt_title = "GHQ → New Rex Session",
-					finder = telescope.finders.new_table({ results = items }),
-					sorter = telescope.config.generic_sorter({}),
-					previewer = false,
-					attach_mappings = function(buffer, map)
-						prompt = buffer
-						vim.api.nvim_create_autocmd(
-							{ "BufWipeout", "BufHidden" },
-							{ buffer = buffer, once = true, callback = close }
-						)
-						local function select_session(path)
-							local session = created[path]
-							job = client.focus({
-								session_id = session.session_id,
-								identity = session.identity,
-								client_id = opts.client_id,
-							}, function(_, err)
-								if closed then
-									return
-								end
-								busy = false
-								if err then
-									notify(
-										"Session "
-											.. session.session_id
-											.. " exists; press Enter to retry switching. "
-											.. err
-									)
-									return
-								end
-								telescope.actions.close(prompt)
-								close()
-							end)
-						end
-						telescope.actions.select_default:replace(function()
-							if closed or busy then
-								return
-							end
-							if uncertain then
-								notify("Session creation is unconfirmed; check rex ls before reopening")
-								return
-							end
-							local entry = telescope.state.get_selected_entry()
-							if not entry then
-								return
-							end
-							local path = entry.value
-							local stat = type(path) == "string" and path:sub(1, 1) == "/" and vim.uv.fs_stat(path)
-							if not stat or stat.type ~= "directory" then
-								notify("Repository directory no longer exists or is not absolute")
-								return
-							end
-							busy = true
-							if created[path] then
-								select_session(path)
-								return
-							end
-							creating = true
-							job = client.create_session(
-								{ cwd = path, label = vim.fn.strcharpart(vim.fs.basename(path), 0, 128) },
-								function(value, err)
-									if closed then
-										return
-									end
-									creating = false
-									if err then
-										busy, uncertain = false, true
-										notify(
-											err .. "; session creation is unconfirmed; check rex ls before reopening"
-										)
-										return
-									end
-									created[path] = value
-									select_session(path)
-								end
-							)
-						end)
-						for _, mode in ipairs({ "i", "n" }) do
-							map(mode, "<Esc>", telescope.actions.close)
-							map(mode, "<C-c>", telescope.actions.close)
-							map(mode, "<C-j>", telescope.actions.move_selection_next)
-							map(mode, "<C-k>", telescope.actions.move_selection_previous)
-						end
-						return true
-					end,
-				})
-				:find()
+			picker = snacks_picker.pick({
+				title = "GHQ → New Rex Session",
+				items = items,
+				format = "text",
+				layout = { preview = false },
+				-- Snacks' default insert-mode <Esc> only leaves insert mode; close on the first press.
+				win = { input = { keys = { ["<Esc>"] = { "close", mode = { "n", "i" } } } } },
+				confirm = confirm,
+				on_close = function()
+					-- Snacks is already closing itself; drop the reference so close() does not re-enter it.
+					picker = nil
+					close()
+				end,
+			})
 		end)
 		if not opened then
-			startup_error("Telescope picker failed: " .. tostring(error))
+			-- A partially opened picker returns no handle; remove only windows and buffers it created.
+			for _, window in ipairs(vim.api.nvim_list_wins()) do
+				if not windows[window] then
+					local buffer = vim.api.nvim_win_get_buf(window)
+					pcall(vim.api.nvim_win_close, window, true)
+					if not buffers[buffer] then
+						pcall(vim.api.nvim_buf_delete, buffer, { force = false })
+					end
+				end
+			end
+			startup_error("Snacks picker failed: " .. tostring(error))
 		end
 	end)
 	if not ok then

@@ -5,7 +5,7 @@ local function fixture(exercise)
 	local rt = runtime.new({ cwd = Test.temp() })
 	local path = rt.cwd .. "/-repo with spaces;$()'東京"
 	rt.mkdir(path)
-	local state = { calls = {}, callbacks = {}, stopped = 0, notices = {}, maps = {}, path = path }
+	local state = { calls = {}, callbacks = {}, stopped = 0, notices = {}, path = path }
 	rt.exec = function()
 		error("synchronous process in project UI")
 	end
@@ -39,66 +39,44 @@ local function fixture(exercise)
 		end
 	end
 	local previous, preload = {}, {}
-	local actions = {
-		select_default = {
-			replace = function(_, fn)
-				state.confirm = fn
-			end,
-		},
-		close = function(buffer)
-			state.closed = true
-			if vim.api.nvim_buf_is_valid(buffer) then
-				vim.api.nvim_buf_delete(buffer, { force = true })
-			end
-		end,
-		move_selection_next = function()
-			state.next = true
-		end,
-		move_selection_previous = function()
-			state.previous = true
-		end,
-	}
 	local modules = {
-		["telescope.pickers"] = {
-			new = function(_, opts)
+		["snacks.picker"] = {
+			pick = function(opts)
 				state.options = opts
-				return {
-					find = function()
-						state.buffer = vim.api.nvim_create_buf(false, true)
-						if state.show then
-							state.window = vim.api.nvim_open_win(state.buffer, true, {
-								relative = "editor",
-								width = 30,
-								height = 5,
-								row = 1,
-								col = 1,
-							})
-						end
-						opts.attach_mappings(state.buffer, function(mode, key, fn)
-							state.maps[mode .. key] = fn
-						end)
-						if state.partialFailure then
-							error("partially opened picker")
-						end
-					end,
-				}
-			end,
-		},
-		["telescope.finders"] = {
-			new_table = function(opts)
-				state.items = opts.results
-				return opts
-			end,
-		},
-		["telescope.config"] = { values = {
-			generic_sorter = function()
-				return {}
-			end,
-		} },
-		["telescope.actions"] = actions,
-		["telescope.actions.state"] = {
-			get_selected_entry = function()
-				return state.entry
+				state.items = vim.tbl_map(function(item)
+					Test.eq(item.text, item.value)
+					return item.value
+				end, opts.items)
+				state.buffer = vim.api.nvim_create_buf(false, true)
+				if state.show then
+					state.window = vim.api.nvim_open_win(state.buffer, true, {
+						relative = "editor",
+						width = 30,
+						height = 5,
+						row = 1,
+						col = 1,
+					})
+				end
+				if state.partialFailure then
+					error("partially opened picker")
+				end
+				-- Mirrors snacks Picker:close(): on_close runs before the picker is marked closed.
+				local picker = { closed = false }
+				function picker.close(self)
+					if self.closed then
+						return
+					end
+					opts.on_close(self)
+					self.closed, state.closed = true, true
+					if vim.api.nvim_buf_is_valid(state.buffer) then
+						vim.api.nvim_buf_delete(state.buffer, { force = true })
+					end
+				end
+				state.picker = picker
+				function state.confirm()
+					opts.confirm(picker, state.entry)
+				end
+				return picker
 			end,
 		},
 	}
@@ -117,7 +95,7 @@ local function fixture(exercise)
 		return handle
 	end
 	local ok, err = xpcall(function()
-		exercise(rt, state, actions)
+		exercise(rt, state)
 	end, debug.traceback)
 	if state.buffer and vim.api.nvim_buf_is_valid(state.buffer) then
 		vim.api.nvim_buf_delete(state.buffer, { force = true })
@@ -130,16 +108,15 @@ local function fixture(exercise)
 end
 
 Test.test(
-	"projects Telescope lists GHQ and creates one correctly quoted session on its originating app",
+	"projects Snacks picker lists GHQ and creates one correctly quoted session on its originating app",
 	function()
 		fixture(function(rt, state)
 			state.open({ client_id = "client:origin" })
 			Test.eq(state.calls[1].argv, { "ghq", "list", "-p" })
 			Test.eq(state.items, { state.path })
-			Test.eq(state.options.previewer, false)
-			state.maps["i<C-j>"]()
-			state.maps["n<C-k>"]()
-			assert(state.next and state.previous)
+			Test.eq(state.options.layout, { preview = false })
+			Test.eq(state.options.format, "text")
+			Test.eq(state.options.win.input.keys["<Esc>"], { "close", mode = { "n", "i" } })
 			state.confirm()
 			state.confirm()
 			Test.eq(#state.calls, 2)
@@ -186,7 +163,7 @@ Test.test(
 )
 
 Test.test("projects cancellation and stale callbacks stop only owned children", function()
-	fixture(function(_, state, actions)
+	fixture(function(_, state)
 		local handle = state.open()
 		state.entry = nil
 		state.confirm()
@@ -194,13 +171,16 @@ Test.test("projects cancellation and stale callbacks stop only owned children", 
 		state.entry = { value = "relative" }
 		state.confirm()
 		assert(state.notices[1]:find("not absolute", 1, true))
+		state.entry = { value = 42 }
+		state.confirm()
+		assert(state.notices[2]:find("not absolute", 1, true))
 		state.entry = { value = state.path }
 		state.confirm()
-		actions.close(state.buffer)
+		state.picker:close()
 		handle.stop()
 		state.reply(2)
 		Test.eq(#state.calls, 2)
-		assert(state.notices[2]:find("may be unconfirmed", 1, true))
+		assert(state.notices[3]:find("may be unconfirmed", 1, true))
 		Test.eq(state.stopped, 1)
 	end)
 	fixture(function(rt, state)
@@ -215,12 +195,12 @@ Test.test(
 	"projects reports missing dependencies listing failures and empty GHQ without creating sessions",
 	function()
 		fixture(function(rt, state)
-			package.loaded["telescope.pickers"] = nil
-			package.preload["telescope.pickers"] = function()
+			package.loaded["snacks.picker"] = nil
+			package.preload["snacks.picker"] = function()
 				error("missing")
 			end
 			require("orc.projects").open(rt)
-			assert(state.notices[1]:find("Telescope is required", 1, true))
+			assert(state.notices[1]:find("Snacks.nvim is required", 1, true))
 			Test.eq(#state.calls, 0)
 		end)
 		for _, sample in ipairs({
@@ -388,18 +368,30 @@ Test.test(
 			end)
 		end
 		fixture(function(rt, state)
-			package.loaded["telescope.pickers"].new = function()
+			package.loaded["snacks.picker"].pick = function()
 				error("picker failure")
 			end
 			require("orc.projects").open(rt)
 			state.reply(1, state.path .. "\n")
-			assert(state.notices[1]:find("Telescope picker failed", 1, true))
+			assert(state.notices[1]:find("Snacks picker failed", 1, true))
+		end)
+		fixture(function(rt, state)
+			local user = vim.api.nvim_create_buf(true, false)
+			local window
+			package.loaded["snacks.picker"].pick = function()
+				window = vim.api.nvim_open_win(user, false, { split = "below" })
+				error("partial picker")
+			end
+			require("orc.projects").open(rt)
+			state.reply(1, state.path .. "\n")
+			assert(not vim.api.nvim_win_is_valid(window) and vim.api.nvim_buf_is_valid(user))
+			vim.api.nvim_buf_delete(user, { force = true })
 		end)
 	end
 )
 
 Test.test(
-	"projects public stop dismisses owned visible Telescope without quitting the editor",
+	"projects public stop dismisses owned visible Snacks picker without quitting the editor",
 	function()
 		fixture(function(_, state)
 			state.show = true
@@ -443,8 +435,8 @@ Test.test(
 				local handle
 				local ok, err = xpcall(function()
 					if scenario == "missing" then
-						package.loaded["telescope.pickers"] = nil
-						package.preload["telescope.pickers"] = function()
+						package.loaded["snacks.picker"] = nil
+						package.preload["snacks.picker"] = function()
 							error("missing")
 						end
 					end
@@ -507,3 +499,30 @@ Test.test(
 		end
 	end
 )
+
+Test.test("projects popup diagnostic closes cleanly with :q instead of mappings", function()
+	fixture(function(rt, state)
+		local old_cmd, old_schedule = vim.cmd, vim.schedule
+		local quit = 0
+		vim.cmd = function(command)
+			if command == "qa" then
+				quit = quit + 1
+				return
+			end
+			return old_cmd(command)
+		end
+		vim.schedule = function(fn)
+			fn()
+		end
+		local ok, err = xpcall(function()
+			require("orc.projects").open(rt, { quit_on_close = true })
+			state.reply(1, "", 1, "ghq offline")
+			local diagnostic = vim.api.nvim_get_current_buf()
+			vim.cmd("q")
+			assert(not vim.api.nvim_buf_is_valid(diagnostic))
+			Test.eq(quit, 1)
+		end, debug.traceback)
+		vim.cmd, vim.schedule = old_cmd, old_schedule
+		assert(ok, err)
+	end)
+end)

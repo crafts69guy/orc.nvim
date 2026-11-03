@@ -6,22 +6,16 @@ Rex configuration. All owned integration code is Lua.
 
 ## Setup
 
-Use `:Orc` for tasks and `:Orc projects` for the Telescope GHQ picker. Both keep
+Use `:Orc` for tasks and `:Orc projects` for the Snacks GHQ picker. Both keep
 the existing editor running when their views close. Project search requires
-GHQ, [Telescope](https://github.com/nvim-telescope/telescope.nvim) and plenary.nvim;
+GHQ and [snacks.nvim](https://github.com/folke/snacks.nvim);
 the task panel and other workflow commands do not. Missing dependencies produce
 a diagnostic rather than silently switching to another picker.
 
-Add alongside the orc lazy.nvim spec:
+LazyVim already ships snacks.nvim. Otherwise add alongside the orc lazy.nvim spec:
 
 ```lua
-{
-  "nvim-telescope/telescope.nvim",
-  tag = "v0.2.2",
-  cmd = "Telescope",
-  dependencies = { "nvim-lua/plenary.nvim" },
-  opts = {},
-}
+{ "folke/snacks.nvim", opts = { picker = {} } }
 ```
 
 ## Popup entrypoints
@@ -70,7 +64,7 @@ Closing a view stops its own watchers and CLI children, leaving workers, created
 sessions and shared Inkdrop running. Late callbacks cannot update a closed view.
 An unconfirmed create is reported rather than automatically replayed or deleted.
 
-Rex's Lua host registers actions; Neovim's Lua host provides `vim.*` and Telescope.
+Rex's Lua host registers actions; Neovim's Lua host provides `vim.*` and Snacks.
 Do not import Neovim modules into the Rex configuration interpreter. Existing
 synchronous adapter methods remain compatible; interactive views use async calls.
 

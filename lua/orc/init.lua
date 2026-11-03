@@ -19,7 +19,7 @@ function M.open(opts)
 	return require("orc.ui").open(require("orc.runtime").new({ cwd = opts.cwd }), opts)
 end
 
----Search GHQ repositories with Telescope and open a fresh local Rex session.
+---Search GHQ repositories with the Snacks picker and open a fresh local Rex session.
 ---@param opts? orc.ProjectOptions Explicit originating app and popup lifetime.
 ---@return orc.ProcessHandle handle Stops only the view's owned subprocesses.
 function M.projects(opts)
