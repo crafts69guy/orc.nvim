@@ -272,6 +272,7 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	assert(not command:find("--add-dir", 1, true))
 	assert(command:find("[orc-run:" .. record.runId .. "]", 1, true))
 	Test.eq(state.layout.block.options.shell, "none")
+	Test.eq(state.layout.block.options.login, false)
 	Test.eq(state.start().result.runId, record.runId)
 	Test.eq(state.created, 1)
 	assert(not rt.exists(rt.path(rt.cwd, ".orc", "report.md")))

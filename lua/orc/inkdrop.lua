@@ -42,14 +42,21 @@ function M.config(rt, cwd)
 	}
 end
 
----Whether credentials and a notebook mapping enable the integration.
+---Whether a valid private/legacy credential source and notebook mapping enable the integration.
 ---@param rt table
 ---@param cwd? string
 ---@return boolean
 function M.enabled(rt, cwd)
-	return rt.env.ORC_INKDROP ~= "0"
-		and nullable(rt.env.INKDROP_LOCAL_USERNAME)
-		and nullable(rt.env.INKDROP_LOCAL_PASSWORD)
+	if rt.env.ORC_INKDROP == "0" then
+		return false
+	end
+	local ok, private = pcall(require("orc.inkdrop_mcp").credentials, rt)
+	if not ok then
+		return false
+	end
+	local env = private or rt.env
+	return nullable(env.INKDROP_LOCAL_USERNAME)
+		and nullable(env.INKDROP_LOCAL_PASSWORD)
 		and nullable(M.config(rt, cwd).book)
 end
 
@@ -179,10 +186,11 @@ local function quoted(value)
 		.. '"'
 end
 local function server(rt)
-	if not nullable(rt.env.INKDROP_LOCAL_USERNAME) or not nullable(rt.env.INKDROP_LOCAL_PASSWORD) then
+	local env = require("orc.inkdrop_mcp").credentials(rt) or rt.env
+	if not nullable(env.INKDROP_LOCAL_USERNAME) or not nullable(env.INKDROP_LOCAL_PASSWORD) then
 		fail("set INKDROP_LOCAL_USERNAME and INKDROP_LOCAL_PASSWORD")
 	end
-	local url = rt.env.INKDROP_LOCAL_SERVER_URL or "http://localhost:19840"
+	local url = env.INKDROP_LOCAL_SERVER_URL or "http://localhost:19840"
 	local scheme, authority = url:match("^([%a][%w+.-]*)://([^/?#]+)")
 	if
 		not scheme
@@ -199,8 +207,7 @@ local function server(rt)
 	if suffix ~= "" and not suffix:match("^:%d+$") then
 		fail("INKDROP_LOCAL_SERVER_URL is not a valid URL")
 	end
-	local auth =
-		vim.base64.encode(rt.env.INKDROP_LOCAL_USERNAME .. ":" .. rt.env.INKDROP_LOCAL_PASSWORD)
+	local auth = vim.base64.encode(env.INKDROP_LOCAL_USERNAME .. ":" .. env.INKDROP_LOCAL_PASSWORD)
 	return { base = scheme:lower() .. "://" .. authority, auth = "Basic " .. auth }
 end
 local function escape(value)

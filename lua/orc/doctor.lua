@@ -62,9 +62,31 @@ function M.collect(rt)
 		rt.root,
 		"reinstall orc.nvim"
 	)
-	if
-		rt.env.INKDROP_LOCAL_USERNAME
-		and rt.env.INKDROP_LOCAL_PASSWORD
+	local mcp = require("orc.inkdrop_mcp")
+	local configured, shared = pcall(mcp.resolve, rt)
+	if not configured then
+		add("inkdrop-mcp", "fail", tostring(shared), "check the private shared Inkdrop settings")
+	elseif shared.mode == "shared" then
+		local health = mcp.check(rt, shared)
+		add(
+			"inkdrop-mcp",
+			health.ok and "pass" or "fail",
+			health.ok and "shared HTTP endpoint ready" or health.error,
+			"inspect orc inkdrop-mcp status; service start is explicit"
+		)
+	else
+		add("inkdrop-mcp", "info", "inherit provider configuration")
+	end
+	local private_ok, private = true, nil
+	if rt.env.ORC_INKDROP ~= "0" then
+		private_ok, private = pcall(mcp.credentials, rt)
+	end
+	local env = private_ok and private or rt.env
+	if not private_ok then
+		add("inkdrop", "warn", tostring(private), "check the private backend credential file")
+	elseif
+		(env or rt.env).INKDROP_LOCAL_USERNAME
+		and (env or rt.env).INKDROP_LOCAL_PASSWORD
 		and rt.env.ORC_INKDROP ~= "0"
 	then
 		local inkdrop = require("orc.inkdrop")

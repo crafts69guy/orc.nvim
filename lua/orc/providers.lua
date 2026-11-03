@@ -30,7 +30,9 @@ local function claude_entry(rt, cwd)
 	end
 	local project = decoded(rt, rt.path(root, ".mcp.json"))
 	entry = project.mcpServers and project.mcpServers.inkdrop or entry
-	local local_config = user.projects and (user.projects[cwd] or user.projects[root])
+	local canonical = vim.uv.fs_realpath(cwd) or cwd
+	local local_config = user.projects
+		and (user.projects[canonical] or user.projects[cwd] or user.projects[root])
 	entry = local_config and local_config.mcpServers and local_config.mcpServers.inkdrop or entry
 	assert(entry == nil or type(entry) == "table", "orc: invalid Claude Inkdrop entry")
 	local result = vim.deepcopy(entry or {})

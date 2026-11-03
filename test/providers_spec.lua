@@ -64,6 +64,31 @@ local function options(argv, flag)
 	end
 end
 
+Test.test(
+	"providers retain Claude local policy selected through a canonical directory alias",
+	function()
+		fixture(function(rt, state)
+			local target = Test.temp()
+			local alias = Test.temp() .. "/alias"
+			assert(vim.uv.fs_symlink(target, alias))
+			local canonical = assert(vim.uv.fs_realpath(alias))
+			rt.cwd = alias
+			state.files["/home/.claude.json"] = rt.encode({
+				projects = {
+					[canonical] = { mcpServers = { inkdrop = { command = "legacy", timeout = 2345 } } },
+				},
+			})
+			local plan = providers.plan(rt, {
+				kind = "claude",
+				role = "implementer",
+				flags = { ["inkdrop-mcp"] = "shared" },
+			})
+			local overlay = rt.decode(options(plan.argv, "--mcp-config"))
+			Test.eq(overlay.mcpServers.inkdrop.timeout, 2345)
+		end)
+	end
+)
+
 Test.test("providers preserve literal prompts and reject missing native override values", function()
 	fixture(function(rt, state)
 		for _, kind in ipairs({ "claude", "codex" }) do

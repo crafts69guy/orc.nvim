@@ -1,7 +1,9 @@
 # orc.nvim
 
-Fresh Lua 5.1 implementation for Neovim >= 0.11 and Rex. No Node, JavaScript,
-Herdr, semantic-index integration or legacy runtime bridge.
+Fresh Lua 5.1 implementation for Neovim >= 0.11 and Rex. All owned runtime code
+is Lua; there is no Node/JavaScript or legacy orc runtime bridge. The optional
+shared Inkdrop service uses pinned external proxy/backend dependencies.
+No Herdr or semantic-index integration.
 
 Use apply_patch for edits. Run shell commands with shell="fish" on macOS.
 Do not overwrite user changes. Documentation and exported Lua interfaces need

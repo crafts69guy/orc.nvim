@@ -446,7 +446,13 @@ local function start(rt, feature, task, values, file)
 		block = {
 			flavor = "com.superlogical.terminal.shell",
 			label = "orc:" .. task,
-			options = { shell = "none", cwd = path, command = command, exit = { on_completion = false } },
+			options = {
+				shell = "none",
+				login = false,
+				cwd = path,
+				command = command,
+				exit = { on_completion = false },
+			},
 		},
 	}
 	local created = values.here

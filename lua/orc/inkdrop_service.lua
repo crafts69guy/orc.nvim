@@ -116,10 +116,18 @@ local function loaded(rt, paths, data)
 		)
 		return false
 	end
-	local text = result.stdout .. "\n"
+	local text = "\n" .. result.stdout .. "\n"
+	local job_path = text:match("\n%s*path = ([^\n]+)")
+	local program = text:match("\n%s*program = ([^\n]+)")
+	local own_path, own_program = uv.fs_realpath(paths.plist), uv.fs_realpath(data.service.proxy)
+	-- launchd resolves aliases such as /var to /private/var in its submitted plist path.
 	need(
-		text:find("path = " .. paths.plist .. "\n", 1, true)
-			and text:find("program = " .. data.service.proxy .. "\n", 1, true)
+		job_path
+			and program
+			and own_path
+			and own_program
+			and uv.fs_realpath(job_path) == own_path
+			and uv.fs_realpath(program) == own_program
 			and text:find("--named-server-config", 1, true)
 			and text:find(paths.backend, 1, true),
 		"loaded launchd job is not the installed service"

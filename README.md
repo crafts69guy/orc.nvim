@@ -5,7 +5,8 @@ One agent scopes, delegates, reviews and ships; independent implementers work in
 separate Git worktrees. Neovim provides the task panel. Rex runs the terminals.
 
 The CLI, hooks, generator, tests and evaluation fixtures run with Neovim's Lua
-runtime. They do not load your Neovim configuration. There is no Node backend.
+runtime. They do not load your Neovim configuration. Orc has no Node backend;
+the optional shared Inkdrop service uses external Python/Node dependencies.
 
 ## Requirements
 
@@ -61,6 +62,7 @@ harness's normal trust controls before using hook-driven automation.
 | `orc doctor --json` | Prerequisite and integration checks |
 | `orc context --scope all --json` | Audit static Claude/Codex context sources |
 | `orc inkdrop init\|inbox\|claim\|push\|pull\|lessons` | Mirror managed feature blocks and approved lessons |
+| `orc inkdrop-mcp` | Explicit shared Inkdrop service setup, migration and lifecycle |
 | `orc completion fish` | Print fish completion definitions |
 | `orc eval` | Explicitly run model-based behavior evaluations |
 | `orc update` | Fast-forward the clean Git checkout and update installed plugins |
@@ -112,3 +114,7 @@ cap (`ORC_EVAL_MAX_COST`, default 5 USD). All fixtures are Lua and form a new
 benchmark series; old JavaScript timings are historical, not a comparable baseline.
 
 See [architecture](docs/architecture.md) and [cutover](docs/cutover.md).
+
+For an opt-in user LaunchAgent shared by Claude, Codex and Rex workers, see
+[shared Inkdrop MCP](docs/shared-inkdrop.md). The service is independent of task
+lifecycle; ordinary launches preserve their existing MCP configuration.

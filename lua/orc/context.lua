@@ -521,6 +521,22 @@ local function collect_sources(rt, root, cwd)
 			push("user", "user", "mcp", name, config_path)
 		end
 	end
+	local ok, shared = pcall(require("orc.inkdrop_mcp").resolve, rt)
+	if not ok or shared.mode == "shared" then
+		for _, provider in ipairs({ "claude", "codex" }) do
+			harness = provider
+			add(
+				ok and "info" or "fail",
+				"inkdrop-mcp",
+				ok
+						and ("shared HTTP requested: " .. shared.url .. "; effective MCP policy is checked on launch")
+					or tostring(shared),
+				ok and "this static audit does not connect to the service or inspect live tool availability"
+					or "check the private shared Inkdrop settings",
+				"user"
+			)
+		end
+	end
 	return { sources = sources, findings = findings }
 end
 local function tokens(count)

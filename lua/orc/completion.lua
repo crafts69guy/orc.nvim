@@ -13,6 +13,7 @@ function M.fish()
 		doctor = "Check prerequisites",
 		context = "Audit context",
 		inkdrop = "Sync notes",
+		["inkdrop-mcp"] = "Manage opt-in shared Inkdrop MCP",
 		update = "Update Git installation",
 		eval = "Run evaluations",
 		completion = "Print completions",
@@ -38,11 +39,18 @@ function M.fish()
 				.. flag
 				.. " -r"
 		end
+		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from "
+			.. name
+			.. "' -l inkdrop-mcp -x -a 'inherit shared'"
 	end
 	for _, pair in ipairs({
 		{ "wt", "new merge remove list session" },
 		{ "pane", "start wait prompt close" },
 		{ "inkdrop", "init inbox claim push pull lessons" },
+		{
+			"inkdrop-mcp",
+			"install start stop restart status enable disable migrate rollback uninstall",
+		},
 		{ "completion", "fish" },
 	}) do
 		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from "
@@ -51,6 +59,12 @@ function M.fish()
 			.. pair[2]
 			.. "'"
 	end
+	for _, flag in ipairs({ "proxy", "node", "backend", "port", "credentials", "provider" }) do
+		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from inkdrop-mcp' -l "
+			.. flag
+			.. " -r"
+	end
+	lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from inkdrop-mcp' -l apply"
 	for _, flag in ipairs({
 		"path",
 		"brief",

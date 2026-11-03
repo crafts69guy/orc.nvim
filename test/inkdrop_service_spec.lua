@@ -90,7 +90,9 @@ local function fake()
 					result.code, result.stderr = 113, "Could not find service"
 				else
 					result.stdout = "path = "
-						.. (state.foreign and "/foreign.plist" or paths.plist)
+						.. (state.foreign and "/foreign.plist" or state.canonical and uv.fs_realpath(
+							paths.plist
+						) or paths.plist)
 						.. "\nprogram = "
 						.. state.proxy
 						.. "\narguments = {\n--named-server-config\n"
@@ -265,6 +267,26 @@ Test.test("inkdrop_service lifecycle owns exactly one explicit launchd job", fun
 	Test.eq(bootstrap, 1)
 	Test.eq(bootout, 1)
 end)
+
+Test.test(
+	"inkdrop_service recognizes the owned canonical plist path reported by launchd",
+	function()
+		local rt, state = installed()
+		state.running, state.canonical = true, true
+		Test.eq(run(rt, state, { "status", "--json" }).code, 0)
+		Test.eq(run(rt, state, { "stop" }).code, 0)
+		state.running, state.foreign = true, true
+		assert_error(run(rt, state, { "stop" }), "not the installed service")
+		local previous = rt.exec
+		rt.exec = function(argv, opts)
+			if argv[1] == "launchctl" and argv[2] == "print" then
+				return { code = 0, stdout = "malformed job information\n", stderr = "", signal = 0 }
+			end
+			return previous(argv, opts)
+		end
+		assert_error(run(rt, state, { "stop" }), "not the installed service")
+	end
+)
 
 Test.test(
 	"inkdrop_service control refuses foreign jobs tampering platform and failed health",

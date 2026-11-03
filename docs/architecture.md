@@ -66,3 +66,22 @@ Inkdrop requests use a five-second timeout (shorter for doctor), refuse redirect
 and non-loopback hosts, and never expose credentials through argv or logs.
 Revision conflicts retry once from a fresh GET, preserving edits outside the managed
 block.
+
+## Shared Inkdrop MCP
+
+`providers.plan` is the shared launch interface for the orchestrator and Rex
+workers. It returns native argv, cwd and explicit environment changes. Provider
+transport configuration stays separate from process execution and task state.
+The `inherit` default keeps existing MCP behavior; explicit `shared` mode checks
+the endpoint/configuration and fails rather than starting another STDIO backend.
+
+The user LaunchAgent owns mcp-proxy, and mcp-proxy owns one Inkdrop backend.
+Worker/panel shutdown never controls that service. Installation, migration and
+service start are explicit user operations. Config/credential reads, protocol
+health checks and launchd mutations have separate interfaces and tests.
+
+Inkdrop REST mirroring remains independent of MCP transport and can read the
+same private credential source without exporting secrets to providers. HTTP
+session separation does not provide per-user authorization, note-write
+serialization or a workspace filesystem sandbox for attachment tools.
+See [setup, migration and security limits](shared-inkdrop.md).
