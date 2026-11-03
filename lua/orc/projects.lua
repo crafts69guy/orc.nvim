@@ -179,9 +179,18 @@ function M.open(rt, opts)
 				title = "GHQ → New Rex Session",
 				items = items,
 				format = "text",
-				layout = { preview = false },
-				-- Snacks' default insert-mode <Esc> only leaves insert mode; close on the first press.
-				win = { input = { keys = { ["<Esc>"] = { "close", mode = { "n", "i" } } } } },
+				-- Compact centered list (50% wide, 80-100 cols, 40% tall); repo paths need no preview.
+				layout = { preset = "select" },
+				-- Pin both modes: Snacks' insert <Esc> only leaves insert mode, and a user's
+				-- plain-string `["<CR>"] = "confirm"` override maps normal mode only.
+				win = {
+					input = {
+						keys = {
+							["<Esc>"] = { "close", mode = { "n", "i" } },
+							["<CR>"] = { "confirm", mode = { "n", "i" } },
+						},
+					},
+				},
 				confirm = confirm,
 				on_close = function()
 					-- Snacks is already closing itself; drop the reference so close() does not re-enter it.
