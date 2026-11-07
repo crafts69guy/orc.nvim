@@ -126,6 +126,7 @@ end
 local function with_status(fn, features)
 	local previous = package.loaded["orc.status"]
 	package.loaded["orc.status"] = {
+		task_state = require("orc.status").task_state,
 		collect = function()
 			return { features = features or {} }
 		end,

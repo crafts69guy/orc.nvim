@@ -569,7 +569,7 @@ local function migrate(rt, flags, paths, data)
 		"provider configuration must be a regular user-owned file"
 	)
 	local source = need(rt.read(file), "cannot read provider configuration")
-	local body
+	local body, after_entry
 	if flags.provider == "claude" then
 		local doc = json(rt, source, "invalid Claude configuration")
 		need(
@@ -596,7 +596,7 @@ local function migrate(rt, flags, paths, data)
 			end
 		end
 		entry.type, entry.url = "http", data.url
-		doc.mcpServers.inkdrop = entry
+		doc.mcpServers.inkdrop, after_entry = entry, entry
 		body = rt.encode(doc) .. "\n"
 	else
 		body = codex_body(source, data.url, rt)
@@ -620,6 +620,7 @@ local function migrate(rt, flags, paths, data)
 			backup = backup,
 			beforeHash = vim.fn.sha256(source),
 			afterHash = vim.fn.sha256(body),
+			afterEntry = after_entry,
 		}
 		write_private(rt, receipt, rt.encode(document) .. "\n")
 		-- shortcut: cooperative migrations are locked; native editors can still race the final read/rename.
@@ -631,6 +632,30 @@ local function migrate(rt, flags, paths, data)
 		need(uv.fs_chmod(file, stat.mode % 512), "cannot preserve provider configuration permissions")
 		return "migrated Inkdrop only; private rollback receipt saved\n"
 	end)
+end
+
+-- Claude rewrites its own file; restore only our entry while it still equals the migrated one.
+local function claude_restored(rt, doc, current, source)
+	if doc.provider ~= "claude" or type(doc.afterEntry) ~= "table" then
+		return nil
+	end
+	local ok, live = pcall(rt.decode, current)
+	if
+		not ok
+		or type(live) ~= "table"
+		or type(live.mcpServers) ~= "table"
+		or not vim.deep_equal(live.mcpServers.inkdrop, doc.afterEntry)
+	then
+		return nil
+	end
+	local before = json(rt, source, "invalid migration backup")
+	local servers = type(before.mcpServers) == "table" and before.mcpServers or {}
+	live.mcpServers.inkdrop = servers.inkdrop
+	-- An emptied Lua table would encode as a JSON array.
+	if next(live.mcpServers) == nil then
+		live.mcpServers = vim.empty_dict()
+	end
+	return rt.encode(live) .. "\n"
 end
 
 local function rollback(rt, flags, paths)
@@ -657,13 +682,14 @@ local function rollback(rt, flags, paths)
 		)
 		local current = need(rt.read(file), "cannot read provider configuration")
 		local hash = vim.fn.sha256(current)
-		need(
-			hash == doc.afterHash or hash == doc.beforeHash,
-			"provider configuration has later user edits; refusing rollback"
-		)
+		local restored
+		if hash ~= doc.afterHash and hash ~= doc.beforeHash then
+			restored = claude_restored(rt, doc, current, source)
+			need(restored, "provider configuration has later user edits; refusing rollback")
+		end
 		need(rt.read(file) == current, "provider configuration changed during rollback")
 		if hash ~= doc.beforeHash then
-			rt.write(file, source)
+			rt.write(file, restored or source)
 			need(uv.fs_chmod(file, stat.mode % 512), "cannot preserve provider configuration permissions")
 		end
 		rt.remove(receipt)

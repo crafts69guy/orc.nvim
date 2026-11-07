@@ -12,16 +12,25 @@ local function checked(result)
 	return vim.trim(result.stdout)
 end
 
+---Absolute shared git directory; nil outside Git.
+---@param rt orc.Runtime
+---@param cwd? string
+---@return string?
+function M.common(rt, cwd)
+	local result = git(rt, cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if result.code ~= 0 or vim.trim(result.stdout) == "" then
+		return nil
+	end
+	return vim.trim(result.stdout)
+end
+
 ---Main checkout containing shared .scratch and .orc state; nil outside Git.
 ---@param rt orc.Runtime
 ---@param cwd? string
 ---@return string?
 function M.root(rt, cwd)
-	local result = git(rt, cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if result.code ~= 0 or vim.trim(result.stdout) == "" then
-		return nil
-	end
-	return vim.fs.dirname(vim.trim(result.stdout))
+	local common = M.common(rt, cwd)
+	return common and vim.fs.dirname(common)
 end
 
 ---The current checkout's own top-level directory, including in linked worktrees.
@@ -47,8 +56,8 @@ end
 ---@param rt orc.Runtime
 ---@param cwd? string
 function M.ignore(rt, cwd)
-	local root = assert(M.root(rt, cwd), "not a Git repository")
-	local file = rt.path(root, ".git", "info", "exclude")
+	local common = assert(M.common(rt, cwd), "not a Git repository")
+	local file = rt.path(common, "info", "exclude")
 	local previous = rt.read(file) or ""
 	local missing = {}
 	for _, name in ipairs({ ".orc", ".worktrees", ".scratch" }) do

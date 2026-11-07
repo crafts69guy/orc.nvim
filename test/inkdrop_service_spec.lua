@@ -426,6 +426,49 @@ Test.test(
 	end
 )
 
+Test.test(
+	"inkdrop_service Claude rollback restores only Inkdrop after unrelated rewrites",
+	function()
+		local rt, state = installed()
+		local source = rt.encode({ mcpServers = { inkdrop = { command = "old" } }, numStartups = 1 })
+		local file = provider(rt, "claude", source)
+		local args = { "--provider", "claude", "--file", file }
+		local function command(name, extra)
+			return run(
+				rt,
+				state,
+				vim.list_extend({ name }, vim.list_extend(vim.deepcopy(args), extra or {}))
+			)
+		end
+		Test.eq(command("migrate", { "--apply" }).code, 0)
+		local live = rt.decode((rt.read(file)))
+		live.numStartups = 2
+		rt.write(file, rt.encode(live))
+		Test.eq(command("rollback").code, 0)
+		local restored = rt.decode((rt.read(file)))
+		Test.eq(restored.mcpServers.inkdrop, { command = "old" })
+		Test.eq(restored.numStartups, 2)
+		Test.eq(#rt.list(state.paths.backups), 0)
+
+		file = provider(rt, "claude", '{"mcpServers":{}}')
+		args[4] = file
+		Test.eq(command("migrate", { "--apply" }).code, 0)
+		live = rt.decode((rt.read(file)))
+		live.other = true
+		rt.write(file, rt.encode(live))
+		Test.eq(command("rollback").code, 0)
+		Test.eq(rt.decode((rt.read(file))), { mcpServers = {}, other = true })
+		assert(rt.read(file):find('"mcpServers":{}', 1, true), "empty servers must stay an object")
+
+		Test.eq(command("migrate", { "--apply" }).code, 0)
+		live = rt.decode((rt.read(file)))
+		live.mcpServers.inkdrop.url = "http://edited.example/mcp"
+		rt.write(file, rt.encode(live))
+		assert_error(command("rollback"), "later user edits")
+		Test.eq(rt.decode((rt.read(file))).mcpServers.inkdrop.url, "http://edited.example/mcp")
+	end
+)
+
 Test.test("inkdrop_service migration rejects unsupported TOML before any provider write", function()
 	local rt, state = installed()
 	for _, source in ipairs({

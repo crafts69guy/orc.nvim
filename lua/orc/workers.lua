@@ -36,12 +36,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field observationError? string Diagnostic for a failed live status observation.
 
 local function main_root(rt, cwd)
-	local result = rt.exec(
-		{ "git", "rev-parse", "--path-format=absolute", "--git-common-dir" },
-		{ cwd = cwd }
-	)
-	assert(result.code == 0 and result.stdout:match("%S"), "orc pane: not a git checkout")
-	return vim.fs.dirname(vim.trim(result.stdout))
+	return assert(require("orc.worktrees").root(rt, cwd), "orc pane: not a git checkout")
 end
 
 local function key(task, path)
@@ -78,14 +73,27 @@ local function read_record(rt, file)
 	return record
 end
 
+-- The state lock is held for milliseconds, so an old directory is a crashed holder.
+local function stale_lock(lock)
+	local stat = vim.uv.fs_stat(lock)
+	return stat ~= nil and os.time() - stat.mtime.sec > 60
+end
+
 local function save(rt, record, mode)
 	local file = record_path(rt, record.root, record.task, record.path)
 	local lock = file .. ".state.lock"
 	rt.mkdir(vim.fs.dirname(file))
 	local deadline = rt.clock() + 5000
 	while rt.exec({ "mkdir", "-m", "700", lock }).code ~= 0 do
-		assert(rt.clock() < deadline, "orc pane: worker state lock is busy")
-		rt.sleep(25)
+		if stale_lock(lock) then
+			rt.remove(lock)
+		else
+			assert(
+				rt.clock() < deadline,
+				"orc pane: worker state lock is busy; remove " .. lock .. " if no orc command is running"
+			)
+			rt.sleep(25)
+		end
 	end
 	local ok, err = pcall(function()
 		local latest = read_record(rt, file)
@@ -173,19 +181,17 @@ local function client_for(rt, record)
 	return client
 end
 
-local function report(rt, record)
-	if not record.acknowledged then
-		return false
-	end
-	local text = rt.read(record.report)
-	if not text then
-		return false
-	end
+---Parse the final-report fields shared by hooks, status and worker delivery.
+---Labels may be bulleted, headed or wrapped in markdown emphasis.
+---@param text string
+---@return {run:string?,status:'done'|'partial'|'blocked'|nil,validation:boolean}
+function M.parse_report(text)
 	local run, status, validation, collecting
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-		local plain = line:gsub("^%s*[#>*%-]*%s*", "")
+		local plain = line:gsub("[*_]", ""):gsub("^%s*[#>%-]*%s*", "")
 		run = plain:match("^Run:%s*([%w%-]+)%s*$") or run
-		status = plain:match("^Status:%s*(%a+)%s*$") or status
+		local found = (plain:match("^Status:%s*(%a+)%s*$") or ""):lower()
+		status = statuses[found] and found or status
 		local tail = plain:match("^Validation%s*:?(.*)$")
 		if tail then
 			collecting = true
@@ -200,10 +206,22 @@ local function report(rt, record)
 			end
 		end
 	end
-	if run ~= record.runId or not statuses[status] or not validation then
+	return { run = run, status = status, validation = validation == true }
+end
+
+local function report(rt, record)
+	if not record.acknowledged then
 		return false
 	end
-	record.reportStatus = status
+	local text = rt.read(record.report)
+	if not text then
+		return false
+	end
+	local parsed = M.parse_report(text)
+	if parsed.run ~= record.runId or not parsed.status or not parsed.validation then
+		return false
+	end
+	record.reportStatus = parsed.status
 	record._reportText = text
 	return true
 end
@@ -319,6 +337,22 @@ local function result(rt, code, value)
 	return { code = code, out = rt.encode(value) .. "\n", err = "", result = value }
 end
 
+-- Rex-side failures can strand a record; tell the user how to release it locally.
+local function hinted(record, fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		error(
+			tostring(err)
+				.. "; run orc pane close "
+				.. record.task
+				.. " --path "
+				.. record.path
+				.. " --force to mark it closed without touching Rex",
+			0
+		)
+	end
+end
+
 local function new_run(rt, record)
 	record.previousRunId = record.runId
 	record.previousReport = record.report or record.previousReport
@@ -349,27 +383,15 @@ local function prompt_text(rt, record, body)
 		.. ", Status: done|partial|blocked, Changes, Validation with commands and results, Notes and Docs."
 end
 
-local function ignore_reports(rt, path)
-	local check = rt.exec({ "git", "check-ignore", "-q", ".orc/probe" }, { cwd = path })
-	if check.code ~= 0 then
-		local common = rt.exec(
-			{ "git", "rev-parse", "--path-format=absolute", "--git-common-dir" },
-			{ cwd = path }
-		)
-		assert(common.code == 0, "orc pane: cannot locate git excludes")
-		local file = rt.path(vim.trim(common.stdout), "info", "exclude")
-		local previous = rt.read(file) or ""
-		rt.write(file, previous .. (previous:sub(-1) == "\n" and "" or "\n") .. ".orc/\n")
-	end
-end
-
 local function start(rt, feature, task, values, file)
 	local previous = read_record(rt, file)
 	if previous and previous.state ~= "closed" then
-		local client = client_for(rt, previous)
-		if previous.blockId then
-			snapshot(rt, client, previous)
-		end
+		hinted(previous, function()
+			local client = client_for(rt, previous)
+			if previous.blockId then
+				snapshot(rt, client, previous)
+			end
+		end)
 		return result(rt, 0, {
 			task = task,
 			runId = previous.runId,
@@ -418,7 +440,7 @@ local function start(rt, feature, task, values, file)
 		workerFile = file,
 		prompt = prompt_text(rt, record, "Your brief: " .. brief .. "."),
 	})
-	ignore_reports(rt, path)
+	require("orc.worktrees").ignore(rt, path)
 	if values.here then
 		assert(rt.env.REX_BLOCK, "orc pane: --here needs REX_BLOCK")
 		for _, worker in ipairs(M.collect(rt, path)) do
@@ -674,14 +696,7 @@ local function wait_for(rt, record, timeout)
 	return result(rt, 0, answer)
 end
 
-local function close(rt, record)
-	if record.state == "closed" then
-		return result(
-			rt,
-			0,
-			{ status = "closed", task = record.task, pane = record.blockId or rt.null }
-		)
-	end
+local function close_owned(rt, record)
 	local client = client_for(rt, record)
 	assert(record.blockId, "orc pane: run has no confirmed owned block")
 	local process = client.block(record.sessionId, record.blockId, "process")
@@ -690,9 +705,22 @@ local function close(rt, record)
 		"orc pane: process changed; refusing to close block"
 	)
 	client.call("block.close", { block_id = record.blockId }, record.sessionId)
+end
+
+local function close(rt, record, force)
+	if record.state == "closed" then
+		return result(
+			rt,
+			0,
+			{ status = "closed", task = record.task, pane = record.blockId or rt.null }
+		)
+	end
+	if not force then
+		hinted(record, close_owned, rt, record)
+	end
 	record.state = "closed"
 	save(rt, record)
-	return result(rt, 0, { status = "closed", task = record.task, pane = record.blockId })
+	return result(rt, 0, { status = "closed", task = record.task, pane = record.blockId or rt.null })
 end
 
 ---Read durable workers, including pair-mode workers that have no plan task.
@@ -764,6 +792,8 @@ function M.event(rt, input)
 		record.state, record.hookState = "working", "working"
 	elseif event == "PermissionRequest" then
 		record.state, record.hookState = "blocked", "blocked"
+	elseif event == "PostToolUse" and record.hookState == "blocked" then
+		record.state, record.hookState = "working", "working"
 	elseif event == "Stop" and record.acknowledged then
 		record.state, record.hookState = "idle", "idle"
 		report(rt, record)
@@ -789,7 +819,9 @@ function M.run(rt, argv)
 			timeout = "string",
 			text = "string",
 			file = "string",
+			force = "boolean",
 		})
+		assert(not values.force or command == "close", "orc pane: --force only applies to close")
 		assert(values.path and values.path ~= "", "orc pane: --path is required")
 		local task = command == "start" and pos[2] or pos[1]
 		assert(task and task:match("^[%w_.%-]+$") and not task:match("^%.+$"), "orc pane: invalid task")
@@ -810,7 +842,9 @@ function M.run(rt, argv)
 		rt.mkdir(vim.fs.dirname(file))
 		assert(
 			rt.exec({ "mkdir", "-m", "700", lock }).code == 0,
-			"orc pane: another command holds this task lock"
+			"orc pane: another command holds this task lock; remove "
+				.. lock
+				.. " if no orc command is running"
 		)
 		local locked, value = xpcall(function()
 			if command == "start" then
@@ -825,7 +859,7 @@ function M.run(rt, argv)
 				assert((values.text ~= nil) ~= (values.file ~= nil), "orc pane: supply --text or --file")
 				return follow_up(rt, record, values)
 			elseif command == "close" then
-				return close(rt, record)
+				return close(rt, record, values.force)
 			end
 			error("orc pane: unknown command", 0)
 		end, debug.traceback)

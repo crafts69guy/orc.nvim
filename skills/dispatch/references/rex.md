@@ -6,7 +6,9 @@ Use Rex only through `orc pane`; never infer success from a screen capture.
   Add `--kind codex` to choose Codex; Claude is otherwise used.
 - Wait: `orc pane wait <task> --path <worktree> --timeout 1800000`.
 - Follow-up: `orc pane prompt <task> --path <worktree> --file <brief>` or `--text`.
-- Close: `orc pane close <task> --path <worktree>`.
+- Close: `orc pane close <task> --path <worktree>`. If Rex restarted or pane
+  creation failed, close and start refuse the stranded record; after checking the
+  pane is gone, add `--force` to mark it closed without touching Rex.
 
 Keep returned session/block/run IDs. `not-sent`, blocked or unconfirmed delivery
 is not success: surface the pane to the user and inspect current state before

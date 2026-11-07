@@ -205,6 +205,7 @@ Test.test(
 		local rt = fake()
 		rt.env.REX_SESSION, rt.env.REX_BLOCK = "own", "main"
 		with_module("orc.workers", {
+			parse_report = require("orc.workers").parse_report,
 			collect = function()
 				return {
 					{ path = "/repo", task = "T1", blockId = "worker", sessionId = "own", state = "working" },
@@ -380,6 +381,9 @@ Test.test(
 			"SessionStart"
 		)
 		Test.eq(hooks.evidence(nil), false)
+		Test.eq(hooks.evidence("Status: done. I did not run validation.\nNotes: flaky"), false)
+		Test.eq(hooks.evidence("- Status: done\n- Changes: x\n- Validation: nvim -l t -> ok"), true)
+		Test.eq(hooks.evidence("**Status:** blocked\n**Validation**\nran tests"), true)
 		Test.eq(hooks.evidence("Status: done\nValidation\n"), false)
 		Test.eq(hooks.evidence("Status: unknown\nValidation\npass"), false)
 		local payload = {
@@ -472,7 +476,7 @@ Test.test(
 			"Base branch: feat/x\n## Tasks\n```yaml\n- id: T1\n  goal: Task\n- id: T2\n```\n"
 		rt.files["/repo/.scratch/f/merged"] = "T2 abc123\n"
 		rt.files["/repo/.scratch/f/inkdrop.json"] = '{"noteId":"note:test"}'
-		rt.files["/repo/task/.orc/report.md"] = "Status: done\nValidation\npassed"
+		rt.files["/repo/task/.orc/report.md"] = "git status: clean\nStatus: done\nValidation\npassed"
 		rt.files["/repo/.scratch/no-plan/log.md"] = "ignore"
 		route(rt, {
 			["wt list --format=json"] = result(
@@ -487,6 +491,7 @@ Test.test(
 			),
 		})
 		with_module("orc.workers", {
+			parse_report = require("orc.workers").parse_report,
 			collect = function()
 				return { { feature = "f", task = "T2", runId = "run", state = "idle", path = "/repo/pair" } }
 			end,
@@ -497,6 +502,9 @@ Test.test(
 			Test.eq(feature.note, "note:test")
 			Test.eq(#feature.tasks, 3)
 			Test.eq(feature.tasks[1].report, { status = "done" })
+			Test.eq(feature.tasks[1].state, "done")
+			Test.eq(feature.tasks[2].state, "merged")
+			Test.eq(feature.tasks[3].state, "worktree")
 			Test.eq(feature.tasks[2].agent, { name = "run", state = "idle" })
 			Test.eq(feature.tasks[2].worktree, rt.null)
 			Test.eq(feature.tasks[2].merged, { commit = "abc123" })
@@ -543,6 +551,19 @@ Test.test(
 		Test.eq(wt.checkout(rt), "/repo")
 		wt.ignore(rt)
 		assert(rt.files["/repo/.git/info/exclude"]:find(".orc/", 1, true))
+		Test.eq(wt.common(rt), "/repo/.git")
+		route(
+			rt,
+			{ ["git rev-parse --path-format=absolute --git-common-dir"] = result(0, "/gitdirs/r\n") }
+		)
+		Test.eq(wt.root(rt), "/gitdirs")
+		wt.ignore(rt)
+		assert(rt.files["/gitdirs/r/info/exclude"]:find(".orc/", 1, true))
+		route(rt, { ["git rev-parse --path-format=absolute --git-common-dir"] = result(1) })
+		Test.eq(wt.common(rt), nil)
+		route(rt, {
+			["git rev-parse --path-format=absolute --git-common-dir"] = result(0, "/repo/.git\n"),
+		})
 		route(rt, {
 			["git rev-parse --verify --quiet refs/heads/new"] = result(1),
 			["wt switch -c new --base main --no-cd --format=json --yes"] = result(0, '{"path":"/new"}'),
@@ -834,6 +855,7 @@ Test.test(
 	function()
 		local rt = fake()
 		with_module("orc.workers", {
+			parse_report = require("orc.workers").parse_report,
 			collect = function()
 				return {}
 			end,
@@ -914,6 +936,11 @@ Test.test("core doctor probes connected Rex and Inkdrop without exposing credent
 	rt.files["/plugin/hooks/hooks.json"] = "{}"
 	rt.env.ORC_PAIR, rt.env.INKDROP_LOCAL_USERNAME, rt.env.INKDROP_LOCAL_PASSWORD =
 		"1", "user", "private"
+	local rex = require("orc.rex")
+	local resolve = rex.resolve
+	rex.resolve = function()
+		return "rex"
+	end
 	with_module("orc.inkdrop", {
 		probe = function()
 			return { version = "6" }
@@ -926,6 +953,7 @@ Test.test("core doctor probes connected Rex and Inkdrop without exposing credent
 		route(rt, { ["rex whoami --json"] = result(1) })
 		Test.eq(require("orc.doctor").run(rt, {}).code, 1)
 	end)
+	rex.resolve = resolve
 end)
 
 Test.test("core update tolerates unavailable or malformed marketplace inventories", function()
@@ -992,6 +1020,7 @@ Test.test(
 			"## Tasks\n```yaml\n- id: T1\n  depends_on: missing-list\n- id: T2\n```\n"
 		rt.files["/repo/.scratch/else/log.md"] = "no plan"
 		with_module("orc.workers", {
+			parse_report = require("orc.workers").parse_report,
 			collect = function()
 				return { { feature = "f", task = "T2", runId = "run", state = "working", path = "/pair" } }
 			end,
@@ -1001,7 +1030,7 @@ Test.test(
 				Test.eq(status.collect(rt).features[1].note, rt.null)
 			end
 			local text = status.run(rt, {}).out
-			assert(text:find("f/T1  -", 1, true))
+			assert(text:find("f/T1  pending", 1, true))
 			assert(text:find("f/T2  working", 1, true))
 			route(rt, { ["wt list --format=json"] = result(1, "", "unavailable") })
 			assert(status.run(rt, {}).err:find("unavailable", 1, true))

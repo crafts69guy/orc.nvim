@@ -65,6 +65,29 @@ local function optional_json(rt, path)
 	return ok and type(value) == "table" and value or nil
 end
 
+---Single task-state precedence: merged, agent, report, worktree, then pending.
+---Uses the collected `state` when present so plain task tables work too.
+---@param task table Task from the status document.
+---@return string
+function M.task_state(task)
+	if task.state then
+		return task.state
+	end
+	if task.merged ~= nil and task.merged ~= vim.NIL then
+		return "merged"
+	end
+	if task.agent ~= nil and task.agent ~= vim.NIL then
+		return task.agent.state
+	end
+	if task.report ~= nil and task.report ~= vim.NIL then
+		return task.report.status
+	end
+	if task.worktree ~= nil and task.worktree ~= vim.NIL then
+		return "worktree"
+	end
+	return "pending"
+end
+
 ---Join plans, worktrees, durable workers, reports and merge receipts into schema version 1.
 ---@param rt orc.Runtime
 ---@param cwd? string
@@ -127,14 +150,15 @@ function M.collect(rt, cwd)
 				end
 				if report_path then
 					local report = rt.read(rt.path(report_path, ".orc", "report.md")) or ""
-					local status = report:lower():match("status:%s*(%w+)")
-					if status == "done" or status == "partial" or status == "blocked" then
+					local status = require("orc.workers").parse_report(report).status
+					if status then
 						task.report = { status = status }
 					end
 				end
 				if merges[task.id] then
 					task.merged = { commit = merges[task.id] }
 				end
+				task.state = M.task_state(task)
 			end
 			local link = optional_json(rt, rt.path(dir, "inkdrop.json"))
 			local note = link
@@ -201,16 +225,11 @@ function M.run(rt, argv)
 	local lines = {}
 	for _, feature in ipairs(result.features) do
 		for _, task in ipairs(feature.tasks) do
-			local state = task.merged ~= rt.null and "merged"
-				or task.agent ~= rt.null and task.agent.state
-				or task.report ~= rt.null and task.report.status
-				or task.worktree ~= rt.null and "worktree"
-				or "-"
 			lines[#lines + 1] = feature.feature
 				.. "/"
 				.. task.id
 				.. "  "
-				.. state
+				.. task.state
 				.. "  "
 				.. (task.worktree ~= rt.null and task.worktree or "-")
 		end

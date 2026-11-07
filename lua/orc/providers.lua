@@ -261,12 +261,9 @@ function M.plan(rt, request)
 				end
 			end
 		end
-		local common = rt.exec(
-			{ "git", "rev-parse", "--path-format=absolute", "--git-common-dir" },
-			{ cwd = cwd }
-		)
-		if common.code == 0 and vim.trim(common.stdout) ~= "" then
-			vim.list_extend(command, { "--add-dir", vim.trim(common.stdout) })
+		local common = require("orc.worktrees").common(rt, cwd)
+		if common then
+			vim.list_extend(command, { "--add-dir", common })
 		end
 		if flags.yolo then
 			command[#command + 1] = "--dangerously-bypass-approvals-and-sandbox"

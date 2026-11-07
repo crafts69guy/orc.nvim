@@ -12,6 +12,15 @@ package.path = root
 	.. "/?.lua;"
 	.. package.path
 
+-- Tests must not see the invoking orc/Rex session.
+for name in pairs(vim.fn.environ()) do
+	if name:match("^ORC") or name:match("^REX_") or name:match("^INKDROP_") then
+		vim.env[name] = nil
+	end
+end
+vim.env.CLAUDE_CONFIG_DIR = nil
+vim.env.CODEX_HOME = nil
+
 local tests, temporary = {}, {}
 local filter, coverage, coverage_session
 local index = 1

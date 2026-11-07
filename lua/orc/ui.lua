@@ -49,11 +49,6 @@ function M.render(document)
 	local function add(feature, task, worker, plan)
 		local path = task.worktree ~= vim.NIL and task.worktree or nil
 		path = path or (worker and worker.path)
-		local state = task.merged and task.merged ~= vim.NIL and "merged"
-			or worker and worker.state
-			or task.agent and task.agent ~= vim.NIL and task.agent.state
-			or task.report and task.report ~= vim.NIL and task.report.status
-			or "pending"
 		local row = {
 			feature = feature,
 			task = task.id,
@@ -63,8 +58,12 @@ function M.render(document)
 			report = worker and (not worker.acknowledged and worker.previousReport or worker.report)
 				or path and (path .. "/.orc/report.md"),
 		}
-		lines[#lines + 1] =
-			string.format("%-28s %-12s %s", feature .. "/" .. task.id, state, path or "-")
+		lines[#lines + 1] = string.format(
+			"%-28s %-12s %s",
+			feature .. "/" .. task.id,
+			require("orc.status").task_state(task),
+			path or "-"
+		)
 		rows[#lines] = row
 		if worker then
 			seen[worker.runId] = true
@@ -83,7 +82,11 @@ function M.render(document)
 	end
 	for _, worker in ipairs(workers) do
 		if not seen[worker.runId] then
-			add(worker.feature, { id = worker.task, worktree = worker.path }, worker)
+			add(
+				worker.feature,
+				{ id = worker.task, worktree = worker.path, state = worker.state },
+				worker
+			)
 		end
 	end
 	if #lines == 3 then

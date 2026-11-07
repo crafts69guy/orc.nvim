@@ -1103,7 +1103,7 @@ Test.test(
 		rt.write(rt.cwd .. "/.git/info/exclude", "existing\n")
 		state.ignored = false
 		state.start()
-		Test.eq(rt.read(rt.cwd .. "/.git/info/exclude"), "existing\n.orc/\n")
+		Test.eq(rt.read(rt.cwd .. "/.git/info/exclude"), "existing\n.orc/\n.worktrees/\n.scratch/\n")
 		for _, args in ipairs({
 			{ "start", "f", "bad", "extra", "--path", rt.cwd, "--brief", "brief.md" },
 			{ "start", "f", "bad", "--path", rt.cwd },
@@ -1459,3 +1459,99 @@ Test.test(
 		end
 	end
 )
+
+local function rex_calls(state)
+	local count = 0
+	for _, call in ipairs(state.calls) do
+		if call.argv[1] == "rex" then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+Test.test(
+	"workers force close releases records stranded by a Rex restart or failed creation",
+	function()
+		local rt, state = fake()
+		state.start()
+		state.instance = "restarted"
+		local refused = state.run("close").result.stderr
+		assert(refused:find("orc pane close task --path " .. rt.cwd .. " --force", 1, true))
+		assert(
+			state.start().result.stderr:find("--force to mark it closed without touching Rex", 1, true)
+		)
+		local before = rex_calls(state)
+		local forced = state.run("close", { "--force" })
+		Test.eq(forced.result.status, "closed")
+		Test.eq(rex_calls(state), before)
+		Test.eq(#state.closed, 0)
+		Test.eq(state.record().state, "closed")
+		state.instance = "instance"
+		Test.eq(state.start().result.status, "unconfirmed")
+		Test.eq(state.created, 2)
+
+		local _, failed = fake()
+		failed.createFail = true
+		Test.eq(failed.start().code, 1)
+		assert(failed.run("close").result.stderr:find("--force", 1, true))
+		Test.eq(failed.run("close", { "--force" }).result.status, "closed")
+		failed.createFail = false
+		Test.eq(failed.start().code, 0)
+		Test.eq(failed.created, 1)
+
+		Test.eq(state.run("wait", { "--force" }).code, 1)
+		assert(state.run("wait", { "--force" }).result.stderr:find("only applies to close", 1, true))
+	end
+)
+
+Test.test("workers PostToolUse clears a permission block but is otherwise inert", function()
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.hook("PermissionRequest")
+	Test.eq(state.record().state, "blocked")
+	state.hook("PostToolUse")
+	Test.eq(state.record().state, "working")
+	Test.eq(state.record().hookState, "working")
+	local revision = state.record().revision
+	state.hook("PostToolUse")
+	Test.eq(state.record().revision, revision)
+end)
+
+Test.test("workers lock errors name the lock and a stale state lock is reclaimed", function()
+	local rt, state = fake()
+	state.start()
+	local file = assert(state.file())
+	state.locked = true
+	local busy = state.run("close")
+	assert(busy.result.stderr:find(file .. ".lock if no orc command is running", 1, true))
+	Test.raises(
+		"remove " .. vim.pesc(file) .. "%.state%.lock if no orc command is running",
+		function()
+			state.hook("UserPromptSubmit")
+		end
+	)
+	state.locked = false
+	local lock = file .. ".state.lock"
+	assert(vim.uv.fs_mkdir(lock, 448))
+	local old = os.time() - 120
+	assert(vim.uv.fs_utime(lock, old, old))
+	state.hook("UserPromptSubmit")
+	Test.eq(state.record().acknowledged, true)
+	assert(not rt.exists(lock))
+end)
+
+Test.test("workers parse_report accepts bullets and bold labels and rejects prose", function()
+	local bullets = workers.parse_report(
+		"Run: abc\n- Status: done\n- Changes: x\n- Validation: nvim -l t -> ok\n- Notes: n"
+	)
+	Test.eq(bullets, { run = "abc", status = "done", validation = true })
+	Test.eq(workers.parse_report("**Status:** partial\n**Validation**\nran tests").status, "partial")
+	Test.eq(workers.parse_report("**Status:** partial\n**Validation**\nran tests").validation, true)
+	local prose = workers.parse_report("Status: done. I did not run validation.\nNotes: flaky")
+	Test.eq(prose.status, nil)
+	Test.eq(prose.validation, false)
+	Test.eq(workers.parse_report("Status: maybe\nValidation: ok").status, nil)
+	Test.eq(workers.parse_report("Status: Done\nValidation: ok").status, "done")
+end)

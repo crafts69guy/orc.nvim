@@ -600,3 +600,10 @@ Test.test(
 		end
 	end
 )
+
+Test.test(
+	"inkdrop_mcp curl_quote escapes every control character curl config treats specially",
+	function()
+		Test.eq(require("orc.inkdrop_mcp").curl_quote('a\\b"c\r\n\td'), '"a\\\\b\\"c\\r\\n\\td"')
+	end
+)

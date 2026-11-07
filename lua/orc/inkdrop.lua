@@ -9,14 +9,11 @@ local function fail(message)
 	error("orc inkdrop: " .. message, 0)
 end
 local function root(rt, cwd)
-	local r = rt.exec(
-		{ "git", "rev-parse", "--path-format=absolute", "--git-common-dir" },
-		{ cwd = cwd or rt.cwd }
-	)
-	if r.code ~= 0 or trim(r.stdout) == "" then
+	local main = require("orc.worktrees").root(rt, cwd or rt.cwd)
+	if not main then
 		fail("not a git repository: " .. (cwd or rt.cwd))
 	end
-	return vim.fs.dirname(trim(r.stdout))
+	return main
 end
 local function nullable(value)
 	return value ~= nil and value ~= vim.NIL and value ~= ""
@@ -160,10 +157,7 @@ function M.render_block(feature, plan, tasks, log, now)
 			if nullable(task.merged) then
 				lines[#lines + 1] = "- [x] " .. label .. " (merged " .. task.merged.commit:sub(1, 7) .. ")"
 			else
-				local state = nullable(task.agent) and task.agent.state
-					or nullable(task.report) and task.report.status
-					or nullable(task.worktree) and "worktree"
-					or "pending"
+				local state = require("orc.status").task_state(task)
 				lines[#lines + 1] = "- [ ] " .. label .. " (" .. state .. ")"
 			end
 		end
@@ -175,16 +169,7 @@ function M.render_block(feature, plan, tasks, log, now)
 	return BEGIN .. "\n" .. defuse(table.concat(parts, "\n\n")) .. "\n" .. END
 end
 
-local function quoted(value)
-	return '"'
-		.. value
-			:gsub("\\", "\\\\")
-			:gsub('"', '\\"')
-			:gsub("\r", "\\r")
-			:gsub("\n", "\\n")
-			:gsub("\t", "\\t")
-		.. '"'
-end
+local quoted = require("orc.inkdrop_mcp").curl_quote
 local function server(rt)
 	local env = require("orc.inkdrop_mcp").credentials(rt) or rt.env
 	if not nullable(env.INKDROP_LOCAL_USERNAME) or not nullable(env.INKDROP_LOCAL_PASSWORD) then

@@ -140,11 +140,8 @@ function M.evidence(report)
 	if type(report) ~= "string" then
 		return false
 	end
-	local status = report:lower():match("status:%s*(%w+)")
-	local validation = report:lower():match("validation[^\n]*\n(.+)")
-	return (status == "done" or status == "partial" or status == "blocked")
-		and validation ~= nil
-		and vim.trim(validation) ~= ""
+	local parsed = require("orc.workers").parse_report(report)
+	return parsed.status ~= nil and parsed.validation
 end
 
 local function signal(rt, kind, role, reason)

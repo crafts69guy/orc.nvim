@@ -100,7 +100,7 @@ and updates the installed plugins.
 | `orc claude --pair` | One Codex worker beside the orchestrator in Rex |
 | `orc claude --panes` | Dispatch workers in Rex panes, one task worktree each |
 | `orc wt new\|merge\|remove\|list\|session` | Manage isolated worktrees and serial merges |
-| `orc pane start\|wait\|prompt\|close` | Manage a worker and its report |
+| `orc pane start\|wait\|prompt\|close [--force]` | Manage a worker and its report; `close --force` marks an unreachable record closed without calling Rex |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
 | `orc doctor --json` | Prerequisite and integration checks |
 | `orc context --scope all --json` | Audit static Claude/Codex context sources |
@@ -137,7 +137,10 @@ for session selection. See [Rex integration](docs/rex-integration.md).
   previous report.
 - `status`, `doctor` and `context` emit `schemaVersion: 1` JSON. New fields are
   additive; consumers should ignore unknown fields and keep the distinction
-  between `null`, empty arrays and empty objects.
+  between `null`, empty arrays and empty objects. Each task carries a `state`
+  (merged, agent, report status, `worktree` or `pending`); plain-text `orc status`
+  prints it. A worker report counts only with `Status:` (`done|partial|blocked`)
+  and a nonempty `Validation`; markdown bold labels are accepted.
 
 **Inkdrop** (optional) reads `INKDROP_LOCAL_USERNAME`, `INKDROP_LOCAL_PASSWORD`
 and `INKDROP_LOCAL_SERVER_URL` (default `http://localhost:19840`). Keep

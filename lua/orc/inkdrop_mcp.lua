@@ -161,8 +161,18 @@ function M.credentials(rt)
 	return result
 end
 
-local function quoted(value)
-	return '"' .. value:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\r", "\\r"):gsub("\n", "\\n") .. '"'
+---Quote one value for a curl config file.
+---@param value string
+---@return string
+function M.curl_quote(value)
+	return '"'
+		.. value
+			:gsub("\\", "\\\\")
+			:gsub('"', '\\"')
+			:gsub("\r", "\\r")
+			:gsub("\n", "\\n")
+			:gsub("\t", "\\t")
+		.. '"'
 end
 
 local function token(value)
@@ -227,20 +237,20 @@ function M.check(rt, config)
 			'proto = "=http"',
 			"max-filesize = 1048576",
 			'write-out = "\\n%{http_code}"',
-			"request = " .. quoted(method),
-			"url = " .. quoted(url(config.url)),
+			"request = " .. M.curl_quote(method),
+			"url = " .. M.curl_quote(url(config.url)),
 			"max-time = " .. tostring(remaining / 1000),
 			'header = "Accept: application/json, text/event-stream"',
 		}
 		if session then
-			lines[#lines + 1] = "header = " .. quoted("Mcp-Session-Id: " .. session)
+			lines[#lines + 1] = "header = " .. M.curl_quote("Mcp-Session-Id: " .. session)
 		end
 		if protocol then
-			lines[#lines + 1] = "header = " .. quoted("MCP-Protocol-Version: " .. protocol)
+			lines[#lines + 1] = "header = " .. M.curl_quote("MCP-Protocol-Version: " .. protocol)
 		end
 		if body then
 			lines[#lines + 1] = 'header = "Content-Type: application/json"'
-			lines[#lines + 1] = "data-binary = " .. quoted(rt.encode(body))
+			lines[#lines + 1] = "data-binary = " .. M.curl_quote(rt.encode(body))
 		end
 		local result = rt.exec({ "curl", "--disable", "--config", "-" }, {
 			stdin = table.concat(lines, "\n") .. "\n",

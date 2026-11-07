@@ -54,11 +54,6 @@ local function own_flags(argv)
 		index = index + 1
 	end
 	assert(not flags.base or flags.wt, "--base needs --wt <branch>")
-	assert(not (flags.pair and flags.panes), "--pair and --panes cannot be combined")
-	assert(
-		not flags.level or flags.level == "default" or flags.level == "high",
-		"--level must be default or high"
-	)
 	return flags, rest
 end
 
@@ -142,7 +137,7 @@ function M.run(rt, argv, input)
 		elseif command == "wt" then
 			local response = require("orc.worktrees").run(rt, rest)
 			if response.result.status == "merged" then
-				local flags, pos = require("orc.args").parse(rest, { yes = "boolean", message = "string" })
+				local _, pos = require("orc.args").parse(rest, { yes = "boolean", message = "string" })
 				local recorded, warning =
 					pcall(require("orc.status").record_merge, rt, pos[2], pos[3], response.result.commit)
 				if not recorded or warning then
