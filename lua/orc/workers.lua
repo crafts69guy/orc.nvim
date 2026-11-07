@@ -89,7 +89,7 @@ local function save(rt, record, mode)
 	local lock = file .. ".state.lock"
 	rt.mkdir(vim.fs.dirname(file))
 	local deadline = rt.clock() + 5000
-	while rt.exec({ "mkdir", "-m", "700", lock }).code ~= 0 do
+	while not rt.mkdir_lock(lock) do
 		if stale_lock(lock) then
 			rt.remove(lock)
 		else
@@ -660,6 +660,7 @@ local function wait_for(rt, record, timeout)
 	end
 	local started = rt.clock()
 	local deadline = started + timeout
+	local last_snapshot = started
 	local ok, answer = xpcall(function()
 		connect()
 		repeat
@@ -675,9 +676,11 @@ local function wait_for(rt, record, timeout)
 					evidence = false,
 				}
 			end
-			if changed or not connected then
+			if changed or not connected or rt.clock() - last_snapshot >= 5000 then
+				changed = false
 				client_for(rt, record)
 				local evidence = snapshot(rt, client, record)
+				last_snapshot = rt.clock()
 				if
 					record.state == "blocked"
 					or record.state == "closed"
@@ -694,7 +697,6 @@ local function wait_for(rt, record, timeout)
 						status = record.reportStatus or rt.null,
 					}
 				end
-				changed = false
 				if not connected then
 					connect()
 				end
@@ -713,7 +715,6 @@ local function wait_for(rt, record, timeout)
 				break
 			end
 			rt.sleep(math.min(250, deadline - rt.clock()))
-			changed = true
 		until rt.clock() >= deadline
 		return {
 			task = record.task,
@@ -854,7 +855,7 @@ local function with_task_lock(rt, file, fn)
 	local lock = file .. ".lock"
 	rt.mkdir(vim.fs.dirname(file))
 	assert(
-		rt.exec({ "mkdir", "-m", "700", lock }).code == 0,
+		rt.mkdir_lock(lock),
 		"orc pane: another command holds this task lock; remove "
 			.. lock
 			.. " if no orc command is running"

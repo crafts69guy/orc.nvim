@@ -49,6 +49,7 @@ end
 ---@field write fun(path:string,text:string) Atomically replace a file; throw on failure.
 ---@field append fun(path:string,line:string) Append one newline-terminated record of at most 4096 bytes in one write; throw on failure.
 ---@field mkdir fun(path:string) Create parent directories; throw on failure.
+---@field mkdir_lock fun(path:string):boolean Atomically create a private lock directory; false if it exists, throw on other errors.
 ---@field rmdir fun(path:string) Remove an empty directory only; throw when nonempty or otherwise unsuccessful.
 ---@field remove fun(path:string) Remove a file or directory tree; missing paths are allowed.
 ---@field list fun(path:string):string[] Sorted entries; missing directories yield an empty list.
@@ -258,6 +259,16 @@ function M.new(opts)
 		if vim.fn.mkdir(path, "p") == 0 and not rt.exists(path) then
 			error("cannot create directory: " .. path, 0)
 		end
+	end
+	rt.mkdir_lock = function(path)
+		local created, err, code = uv.fs_mkdir(path, 448)
+		if created then
+			return true
+		end
+		if code == "EEXIST" then
+			return false
+		end
+		error(err, 0)
 	end
 	rt.write = function(path, text)
 		rt.mkdir(vim.fs.dirname(path))

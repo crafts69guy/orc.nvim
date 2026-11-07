@@ -188,6 +188,34 @@ local function replacing(object, key, replacement, fn)
 end
 
 Test.test(
+	"runtime mkdir_lock acquires privately and reports contention without replacing data",
+	function()
+		local rt, dir = runtime.new(), Test.temp()
+		local lock = rt.path(dir, "lock")
+		Test.eq(rt.mkdir_lock(lock), true)
+		Test.eq(bit.band(assert(vim.uv.fs_stat(lock)).mode, 511), 448)
+		Test.eq(rt.mkdir_lock(lock), false)
+		rt.write(rt.path(lock, "owner"), "preserved")
+		Test.eq(rt.mkdir_lock(lock), false)
+		Test.eq(rt.read(rt.path(lock, "owner")), "preserved")
+		local file = rt.path(dir, "file")
+		rt.write(file, "preserved")
+		Test.eq(rt.mkdir_lock(file), false)
+		Test.eq(rt.read(file), "preserved")
+		Test.raises("ENOENT", function()
+			rt.mkdir_lock(rt.path(dir, "missing", "lock"))
+		end)
+		replacing(vim.uv, "fs_mkdir", function()
+			return nil, "EACCES: denied", "EACCES"
+		end, function()
+			Test.raises("EACCES: denied", function()
+				rt.mkdir_lock(lock)
+			end)
+		end)
+	end
+)
+
+Test.test(
 	"runtime filesystem failures preserve existing data and close owned descriptors",
 	function()
 		local rt, dir = runtime.new(), Test.temp()

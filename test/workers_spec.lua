@@ -17,7 +17,7 @@ local function fake()
 	})
 	rt.env.ORC_ROLE, rt.env.ORC_WORKER_FILE = nil, nil
 	rt.write(root .. "/brief.md", "Implement the fixture")
-	local execute = rt.exec
+	local mkdir_lock = rt.mkdir_lock
 	local state = {
 		clock = 0,
 		calls = {},
@@ -86,6 +86,17 @@ local function fake()
 			state.onSleep(ms)
 		end
 	end
+	rt.mkdir_lock = function(path)
+		if state.onLock and path:match("%.state%.lock$") then
+			local callback = state.onLock
+			state.onLock = nil
+			callback()
+		end
+		if state.locked then
+			return false
+		end
+		return mkdir_lock(path)
+	end
 	rt.exec = function(argv, opts)
 		opts = opts or {}
 		state.calls[#state.calls + 1] = { argv = argv, opts = opts }
@@ -97,13 +108,6 @@ local function fake()
 				return failure("not a git repo")
 			end
 			return { code = 0, stdout = state.emptyGit and "" or root .. "/.git\n", stderr = "" }
-		elseif argv[1] == "mkdir" then
-			if state.onLock and argv[4]:match("%.state%.lock$") then
-				local callback = state.onLock
-				state.onLock = nil
-				callback()
-			end
-			return state.locked and failure("exists") or execute(argv, opts)
 		elseif argv[2] == "whoami" then
 			if state.identityFail then
 				return failure("offline")
@@ -655,12 +659,12 @@ Test.test("workers prune rechecks eligibility after acquiring the task lock", fu
 	state.report()
 	state.hook("Stop")
 	state.native = "idle"
-	local exec = rt.exec
-	rt.exec = function(argv, opts)
-		if argv[1] == "mkdir" and argv[4] == state.file() .. ".lock" then
+	local mkdir_lock = rt.mkdir_lock
+	rt.mkdir_lock = function(path)
+		if path == state.file() .. ".lock" then
 			state.hook("UserPromptSubmit")
 		end
-		return exec(argv, opts)
+		return mkdir_lock(path)
 	end
 	local response = workers.run(rt, { "prune", "--path", rt.cwd }).result
 	Test.eq(response.closed, {})
@@ -771,6 +775,50 @@ Test.test("workers wait reconnects resnapshots and cleans streams", function()
 	Test.eq(result.result.evidence, true)
 	assert(state.streams >= 2)
 	Test.eq(state.stopped, state.streams)
+end)
+
+Test.test(
+	"workers wait snapshots only on events or five seconds since the last snapshot",
+	function()
+		for _, event_at in ipairs({ false, 750 }) do
+			local rt, state = fake()
+			state.ack = true
+			state.start()
+			local exec, snapshots = rt.exec, {}
+			rt.exec = function(argv, opts)
+				if argv[2] == "block" and argv[8] == "process" then
+					snapshots[#snapshots + 1] = state.clock
+				end
+				return exec(argv, opts)
+			end
+			state.onSleep = function(ms)
+				assert(ms <= 250)
+				if state.clock == event_at then
+					state.onEvent('{"type":"block_event"}\n')
+				end
+			end
+			Test.eq(state.run("wait", { "--timeout", "11000" }).result.state, "timeout")
+			if event_at then
+				Test.eq(snapshots, { 0, 750, 5750, 10750 })
+			else
+				Test.eq(snapshots, { 0, 5000, 10000 })
+			end
+			Test.eq(state.stopped, 1)
+		end
+	end
+)
+
+Test.test("workers wait returns immediately on a Rex event before the heartbeat", function()
+	local _, state = fake()
+	state.ack = true
+	state.start()
+	state.onSleep = function()
+		state.native = "blocked"
+		state.onEvent('{"type":"block_event"}\n')
+	end
+	Test.eq(state.run("wait", { "--timeout", "1000" }).result.state, "blocked")
+	Test.eq(state.clock, 250)
+	Test.eq(state.stopped, 1)
 end)
 
 Test.test("workers wait stops early when the prompt is never acknowledged", function()
@@ -1871,6 +1919,29 @@ Test.test("workers lock errors name the lock and a stale state lock is reclaimed
 	Test.eq(state.record().acknowledged, true)
 	assert(not rt.exists(lock))
 end)
+
+Test.test(
+	"workers propagate lock filesystem errors without retrying or leaking the task lock",
+	function()
+		local rt, state = fake()
+		state.start()
+		local mkdir_lock = rt.mkdir_lock
+		for _, suffix in ipairs({ ".lock", ".state.lock" }) do
+			rt.mkdir_lock = function(path)
+				if path == state.file() .. suffix then
+					error("EACCES: denied " .. path)
+				end
+				return mkdir_lock(path)
+			end
+			local response = state.run("close")
+			Test.eq(response.code, 1)
+			assert(response.result.stderr:find("EACCES: denied", 1, true))
+			Test.eq(state.clock, 0)
+			assert(not rt.exists(state.file() .. ".lock"))
+			assert(not rt.exists(state.file() .. ".state.lock"))
+		end
+	end
+)
 
 Test.test("workers parse_report accepts bullets and bold labels and rejects prose", function()
 	local bullets = workers.parse_report(
