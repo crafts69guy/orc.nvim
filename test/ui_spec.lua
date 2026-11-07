@@ -334,9 +334,12 @@ Test.test("ui failed refresh launch can be closed and prompt stderr is shown", f
 end)
 
 Test.test("ui setup and plugin register only Orc and are idempotent", function()
-	local actual_ui, actual_runtime, actual_projects =
-		package.loaded["orc.ui"], package.loaded["orc.runtime"], package.loaded["orc.projects"]
-	local opened, actions, projects = 0, {}, {}
+	local actual_ui, actual_runtime, actual_projects, actual_workers =
+		package.loaded["orc.ui"],
+		package.loaded["orc.runtime"],
+		package.loaded["orc.projects"],
+		package.loaded["orc.worker_picker"]
+	local opened, actions, projects, workers = 0, {}, {}, {}
 	package.loaded["orc.ui"] = {
 		open = function()
 			opened = opened + 1
@@ -356,6 +359,13 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 			return "handle"
 		end,
 	}
+	package.loaded["orc.worker_picker"] = {
+		open = function(rt, opts)
+			Test.eq(rt.cwd, opts.cwd)
+			workers[#workers + 1] = opts
+			return "worker handle"
+		end,
+	}
 	local ok, err = xpcall(function()
 		local module = require("orc")
 		module.setup({ cwd = "/fixture" })
@@ -372,11 +382,24 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 			Test.raises("existing absolute", function()
 				module.open({ cwd = cwd })
 			end)
+			Test.raises("existing absolute", function()
+				module.workers({ cwd = cwd })
+			end)
 		end
 		Test.eq(module.projects({ client_id = "origin" }), "handle")
 		vim.cmd("Orc projects")
 		Test.eq(projects, { { client_id = "origin" }, {} })
+		local cwd = Test.temp()
+		local context = { cwd = cwd, client_id = "origin", quit_on_close = true }
+		Test.eq(module.workers(context), "worker handle")
+		Test.eq(module.workers(), "worker handle")
+		module.setup({ cwd = cwd })
+		vim.cmd("Orc workers")
+		Test.eq(workers, { context, {}, { cwd = cwd } })
+		Test.eq(opened, 4)
+		Test.eq(actions, { "status" })
 		assert(vim.tbl_contains(vim.fn.getcompletion("Orc ", "cmdline"), "report"))
+		assert(vim.tbl_contains(vim.fn.getcompletion("Orc ", "cmdline"), "workers"))
 		vim.g.loaded_orc = nil
 		dofile(actual_runtime.new().root .. "/plugin/orc.lua")
 		dofile(actual_runtime.new().root .. "/plugin/orc.lua")
@@ -384,6 +407,7 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 	end, debug.traceback)
 	package.loaded["orc.ui"], package.loaded["orc.runtime"] = actual_ui, actual_runtime
 	package.loaded["orc.projects"] = actual_projects
+	package.loaded["orc.worker_picker"] = actual_workers
 	vim.g.loaded_orc = nil
 	pcall(vim.api.nvim_del_user_command, "Orc")
 	assert(ok, err)

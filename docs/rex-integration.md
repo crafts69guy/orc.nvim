@@ -6,10 +6,11 @@ Rex configuration. All owned integration code is Lua.
 
 ## Setup
 
-Use `:Orc` for tasks and `:Orc projects` for the Snacks GHQ picker. Both keep
-the existing editor running when their views close. Project search requires
-GHQ and [snacks.nvim](https://github.com/folke/snacks.nvim);
-the task panel and other workflow commands do not. Missing dependencies produce
+Use `:Orc` for tasks, `:Orc projects` for the Snacks GHQ picker, and `:Orc workers`
+to search non-closed workers and focus their recorded Rex panes. All keep the
+existing editor running when their views close. Both pickers require
+[snacks.nvim](https://github.com/folke/snacks.nvim); project search also requires GHQ.
+The task panel and other workflow commands do not. Missing dependencies produce
 a diagnostic rather than silently switching to another picker.
 
 LazyVim already ships snacks.nvim. Otherwise add alongside the orc lazy.nvim spec:
@@ -25,12 +26,20 @@ Rex actions can launch a dedicated terminal using the normal Neovim configuratio
 ```lua
 require("orc").open({ cwd = project_path, client_id = originating_client, quit_on_close = true })
 require("orc").projects({ client_id = originating_client, quit_on_close = true })
+require("orc").workers({ cwd = project_path, client_id = originating_client, quit_on_close = true })
 ```
 
 `quit_on_close` defaults to false. Set it only for a dedicated popup, never an
 existing editor with user buffers. Use an argv array with `nvim -n -i NONE -c`
 and a correctly quoted Lua command. Quote strings with Lua `%q`, not shell
 interpolation. The normal Neovim configuration must expose the orc module.
+
+The workers picker runs `orc status --json` asynchronously in `cwd` (the editor's
+current directory by default). Rows show `feature/task`, role (older records
+default to `implementer`), kind and state. Enter focuses the selected worker and
+closes the picker after success; workers without a confirmed block and focus
+failures show a diagnostic. Empty lists and startup failures show a message;
+dedicated popups keep that message in a buffer closable with Esc or q.
 
 Capture `ctx.client_id`, `ctx.session_id` and `ctx.block_id` in the Rex action.
 Do not choose an arbitrary app or assume its active pane is the action's target.
