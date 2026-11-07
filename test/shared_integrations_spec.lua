@@ -107,10 +107,16 @@ Test.test("shared_integrations doctor distinguishes MCP from private REST creden
 		module.credentials = function()
 			error("private credential file rejected", 0)
 		end
-		local checks = doctor.collect(rt).checks
-		Test.eq(checks[#checks].status, "warn")
+		local function inkdrop_status()
+			for _, check in ipairs(doctor.collect(rt).checks) do
+				if check.name == "inkdrop" then
+					return check.status
+				end
+			end
+		end
+		Test.eq(inkdrop_status(), "warn")
 		rt.env.ORC_INKDROP = "0"
-		Test.eq(doctor.collect(rt).checks[#checks].status, "info")
+		Test.eq(inkdrop_status(), "info")
 	end)
 end)
 

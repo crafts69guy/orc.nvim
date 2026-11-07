@@ -709,6 +709,207 @@ Test.test("core doctor reports optional integrations and required failures in sc
 	Test.eq(cli.run(rt, { "doctor", "unexpected" }).code, 1)
 end)
 
+local function trusted_doctor()
+	local rt = fake()
+	rt.env.HOME, rt.env.CODEX_HOME = "/home/test", "/codex"
+	rt.cwd = "/repo/.worktrees/feat--T1"
+	rt.files["/repo/.worktrees/feat--T1/.git"] = "gitdir: /repo/.git/worktrees/feat--T1"
+	rt.files["/repo/.worktrees/feat--T2/.git"] = "gitdir: /repo/.git/worktrees/feat--T2"
+	rt.files["/repo/.worktrees/README.md"] = "not a worktree"
+	local actual = runtime.new()
+	rt.files["/plugin/hooks/hooks.json"] =
+		assert(actual.read(actual.path(actual.root, "hooks", "hooks.json")))
+	rt.files["/codex/config.toml"] = [[
+trusted_hash = "outside-a-table"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "session"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "pre"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:subagent_stop:0:0"]
+trusted_hash = "subagent"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "prompt"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:stop:0:0"]
+trusted_hash = "stop"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:permission_request:0:0"]
+trusted_hash = "permission"
+[hooks.state."orc@orc-nvim:hooks/hooks.json:post_tool_use:0:0"] # hook table
+trusted_hash = 'post' # hash contents are not checked
+[projects."/repo/.worktrees/feat--T1"]
+trust_level = "trusted"
+[projects."/repo/.worktrees/feat--T2"]
+trust_level = 'trusted'
+]]
+	return rt
+end
+
+local function doctor_checks(rt)
+	local checks = {}
+	for _, check in ipairs(require("orc.doctor").collect(rt).checks) do
+		checks[check.name] = check
+	end
+	return checks
+end
+
+Test.test(
+	"core doctor appends trusted Codex checks without writing config or changing schema",
+	function()
+		local rt = trusted_doctor()
+		local files, env = vim.deepcopy(rt.files), vim.deepcopy(rt.env)
+		for _, name in ipairs({ "write", "append", "mkdir", "rmdir", "remove" }) do
+			rt[name] = function()
+				error("doctor must be read-only")
+			end
+		end
+		with_module("orc.rex", {
+			resolve = function()
+				return "/rex/bin/rex"
+			end,
+		}, function()
+			local response = cli.run(rt, { "doctor", "--json" })
+			Test.eq(response.code, 0)
+			local document = rt.decode(response.out)
+			Test.eq(vim.tbl_count(document), 2)
+			Test.eq(document.schemaVersion, 1)
+			local names = {}
+			for _, check in ipairs(document.checks) do
+				names[#names + 1] = check.name
+			end
+			Test.eq(names, {
+				"neovim",
+				"git",
+				"wt",
+				"claude",
+				"codex",
+				"rex",
+				"plugin",
+				"inkdrop-mcp",
+				"inkdrop",
+				"codex-hooks",
+				"codex-worktrees",
+			})
+			local checks = doctor_checks(rt)
+			for _, name in ipairs({ "codex-hooks", "codex-worktrees" }) do
+				Test.eq(checks[name].status, "pass")
+				Test.eq(checks[name].mark, "✓")
+			end
+			assert(not response.out:find("outside-a-table", 1, true))
+		end)
+		Test.eq(rt.files, files)
+		Test.eq(rt.env, env)
+	end
+)
+
+Test.test("core doctor warns for missing or empty event trust scoped to the hook table", function()
+	for _, replacement in ipairs({
+		"",
+		'# trusted_hash = "prompt"',
+		'trusted_hash = ""',
+		'[other]\ntrusted_hash = "prompt"',
+	}) do
+		local rt = trusted_doctor()
+		rt.files["/codex/config.toml"] =
+			rt.files["/codex/config.toml"]:gsub('trusted_hash = "prompt"', replacement)
+		local check = doctor_checks(rt)["codex-hooks"]
+		Test.eq(check.status, "warn")
+		Test.eq(check.mark, "!")
+		Test.eq(check.detail, "missing hook trust: user_prompt_submit")
+		Test.eq(check.fix, "open Codex, run /hooks and trust orc hooks")
+		Test.eq(require("orc.doctor").run(rt, {}).code, 0)
+	end
+	local rt = trusted_doctor()
+	rt.files["/codex/config.toml"] = ""
+	Test.eq(
+		doctor_checks(rt)["codex-hooks"].detail,
+		"missing hook trust: permission_request, post_tool_use, pre_tool_use, session_start, stop, subagent_stop, user_prompt_submit"
+	)
+	Test.eq(
+		doctor_checks(rt)["codex-worktrees"].detail,
+		"untrusted task worktrees: /repo/.worktrees/feat--T1, /repo/.worktrees/feat--T2"
+	)
+end)
+
+Test.test(
+	"core doctor handles missing and unreadable Codex config and recovers at the default home",
+	function()
+		local rt = trusted_doctor()
+		local config = rt.files["/codex/config.toml"]
+		rt.files["/codex/config.toml"] = nil
+		Test.eq(doctor_checks(rt)["codex-hooks"].status, "info")
+		Test.eq(doctor_checks(rt)["codex-worktrees"].status, "info")
+		rt.env.CODEX_HOME = nil
+		local read = rt.read
+		rt.read = function(path)
+			if path == "/home/test/.codex/config.toml" then
+				return nil, "EACCES"
+			end
+			return read(path)
+		end
+		Test.eq(doctor_checks(rt)["codex-hooks"].status, "info")
+		rt.read = read
+		rt.files["/home/test/.codex/config.toml"] = config:gsub("\n", "\r\n")
+		Test.eq(doctor_checks(rt)["codex-hooks"].status, "pass")
+		Test.eq(doctor_checks(rt)["codex-worktrees"].status, "pass")
+		for _, content in ipairs({ "invalid JSON", "null", "{}", '{"hooks":false}' }) do
+			rt.files["/plugin/hooks/hooks.json"] = content
+			Test.eq(doctor_checks(rt)["codex-hooks"].status, "info")
+		end
+	end
+)
+
+Test.test("core doctor warns for untrusted task worktrees using the main root", function()
+	for _, replacement in ipairs({ 'trust_level = "untrusted"', '# trust_level = "trusted"' }) do
+		local rt = trusted_doctor()
+		rt.files["/codex/config.toml"] =
+			rt.files["/codex/config.toml"]:gsub('trust_level = "trusted"', replacement)
+		local check = doctor_checks(rt)["codex-worktrees"]
+		Test.eq(check.status, "warn")
+		Test.eq(check.detail, "untrusted task worktrees: /repo/.worktrees/feat--T1")
+		Test.eq(check.fix, "trust the folder in Codex once; orc never writes trust")
+	end
+	local rt = trusted_doctor()
+	rt.files["/repo/.worktrees/feat--T1/.git"], rt.files["/repo/.worktrees/feat--T2/.git"] = nil, nil
+	Test.eq(doctor_checks(rt)["codex-worktrees"].status, "info")
+	route(rt, { ["git rev-parse --path-format=absolute --git-common-dir"] = result(1) })
+	Test.eq(doctor_checks(rt)["codex-worktrees"].detail, "no task worktrees")
+end)
+
+Test.test("core doctor skips Codex trust checks when Codex is unavailable", function()
+	local rt = trusted_doctor()
+	rt.files["/codex/config.toml"] = ""
+	route(rt, { ["codex --version"] = result(127) })
+	local checks = doctor_checks(rt)
+	Test.eq(checks["codex-hooks"], nil)
+	Test.eq(checks["codex-worktrees"], nil)
+end)
+
+Test.test("core doctor accepts main checkout trust without per-worktree entries", function()
+	local rt = trusted_doctor()
+	rt.files["/codex/config.toml"] = '[projects."/repo"]\ntrust_level = "trusted"'
+	Test.eq(doctor_checks(rt)["codex-worktrees"].status, "pass")
+	rt.files["/codex/config.toml"] = '[projects."/repo"]\ntrust_level = "untrusted"'
+	Test.eq(doctor_checks(rt)["codex-worktrees"].status, "warn")
+end)
+
+Test.test("core doctor reports unknown Codex config location without HOME or CODEX_HOME", function()
+	local rt = trusted_doctor()
+	rt.env.HOME, rt.env.CODEX_HOME = nil, nil
+	local read = rt.read
+	rt.read = function(path)
+		assert(not path:find("config.toml", 1, true), "must not guess the Codex config path")
+		return read(path)
+	end
+	local checks = doctor_checks(rt)
+	for _, name in ipairs({ "codex-hooks", "codex-worktrees" }) do
+		Test.eq(checks[name].status, "info")
+		Test.eq(checks[name].detail, "Codex config location unknown")
+	end
+	rt.env.CODEX_HOME = "/codex"
+	rt.read = read
+	Test.eq(doctor_checks(rt)["codex-hooks"].status, "pass")
+	Test.eq(doctor_checks(rt)["codex-worktrees"].status, "pass")
+end)
+
 Test.test(
 	"core update refuses local modifications and only updates installed new marketplaces",
 	function()

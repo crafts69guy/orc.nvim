@@ -1,7 +1,93 @@
 local M = {}
 local marks = { pass = "✓", fail = "✗", warn = "!", info = "·" }
 
----Inspect prerequisites without installing software or modifying harness configuration.
+local function trust_sections(config)
+	local sections, current = {}, nil
+	for line in (config .. "\n"):gmatch("([^\n]*)\n") do
+		local header = line:match("^%s*(%[.*%])")
+		if header then
+			current = {}
+			sections[header] = current
+		elseif current then
+			local key, value = line:match("^%s*([%w_]+)%s*=%s*(.*)")
+			if key then
+				current[key] = value:match('^"(.-)"') or value:match("^'(.-)'")
+			end
+		end
+	end
+	return sections
+end
+
+local function codex_hooks(rt, sections, add)
+	local ok, manifest = pcall(rt.decode, rt.read(rt.path(rt.root, "hooks", "hooks.json")) or "")
+	if not ok or type(manifest) ~= "table" or type(manifest.hooks) ~= "table" then
+		add("codex-hooks", "info", "hook manifest unavailable")
+		return
+	end
+	local missing = {}
+	for event in pairs(manifest.hooks) do
+		local name = event:gsub("(%l)(%u)", "%1_%2"):lower()
+		local header = '[hooks.state."orc@orc-nvim:hooks/hooks.json:' .. name .. ':0:0"]'
+		local section = sections[header] or {}
+		-- shortcut: hash validity is not verified; compare hook contents if stale trust becomes diagnosable.
+		if not section.trusted_hash or section.trusted_hash == "" then
+			missing[#missing + 1] = name
+		end
+	end
+	table.sort(missing)
+	if #missing > 0 then
+		add(
+			"codex-hooks",
+			"warn",
+			"missing hook trust: " .. table.concat(missing, ", "),
+			"open Codex, run /hooks and trust orc hooks"
+		)
+	else
+		add("codex-hooks", "pass", "all orc hook trust entries present")
+	end
+end
+
+local function codex_worktrees(rt, sections, add)
+	local root = require("orc.worktrees").root(rt)
+	local paths = {}
+	if root then
+		local directory = rt.path(root, ".worktrees")
+		for _, name in ipairs(rt.list(directory)) do
+			local path = rt.path(directory, name)
+			if rt.exists(rt.path(path, ".git")) then
+				paths[#paths + 1] = path
+			end
+		end
+	end
+	if #paths == 0 then
+		add("codex-worktrees", "info", "no task worktrees")
+		return
+	end
+	if not sections then
+		add("codex-worktrees", "info", "Codex config unavailable; folder trust unchecked")
+		return
+	end
+	local missing = {}
+	local main = sections["[projects." .. rt.encode(root) .. "]"] or {}
+	for _, path in ipairs(paths) do
+		local section = sections["[projects." .. rt.encode(path) .. "]"] or {}
+		if section.trust_level ~= "trusted" and main.trust_level ~= "trusted" then
+			missing[#missing + 1] = path
+		end
+	end
+	if #missing > 0 then
+		add(
+			"codex-worktrees",
+			"warn",
+			"untrusted task worktrees: " .. table.concat(missing, ", "),
+			"trust the folder in Codex once; orc never writes trust"
+		)
+	else
+		add("codex-worktrees", "pass", "all task worktrees trusted")
+	end
+end
+
+---Inspect prerequisites and Codex trust entries without modifying configuration.
 ---@param rt orc.Runtime
 ---@return table schema Versioned doctor document.
 function M.collect(rt)
@@ -99,6 +185,26 @@ function M.collect(rt)
 		)
 	else
 		add("inkdrop", "info", "not configured")
+	end
+	if codex then
+		local home = rt.env.CODEX_HOME
+		if not home and rt.env.HOME then
+			home = rt.path(rt.env.HOME, ".codex")
+		end
+		if home then
+			local config = rt.read(rt.path(home, "config.toml"))
+			local sections
+			if config then
+				sections = trust_sections(config)
+				codex_hooks(rt, sections, add)
+			else
+				add("codex-hooks", "info", "Codex config missing or unreadable: " .. home)
+			end
+			codex_worktrees(rt, sections, add)
+		else
+			add("codex-hooks", "info", "Codex config location unknown")
+			add("codex-worktrees", "info", "Codex config location unknown")
+		end
 	end
 	return { schemaVersion = 1, checks = checks }
 end
