@@ -10,6 +10,8 @@ subagents; reviewer and shipper stay native.
   or `--kind claude` to choose Claude.
 - Wait: `orc pane wait <task> --path <worktree> --timeout 1800000`, using the
   harness's background execution (foreground Bash is capped at 10 minutes).
+  If the prompt stays unacknowledged for 60 s (untrusted orc hooks), wait returns
+  `state: "unacknowledged"` with a `hint`; trust the hooks and inspect the pane.
 - Follow-up: `orc pane prompt <task> --path <worktree> --file <brief>` or `--text`.
 - Close: `orc pane close <task> --path <worktree>`. If Rex restarted or pane
   creation failed, close and start refuse the stranded record; after checking the

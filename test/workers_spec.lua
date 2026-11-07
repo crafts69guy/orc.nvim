@@ -773,6 +773,29 @@ Test.test("workers wait reconnects resnapshots and cleans streams", function()
 	Test.eq(state.stopped, state.streams)
 end)
 
+Test.test("workers wait stops early when the prompt is never acknowledged", function()
+	local _, state = fake()
+	state.start()
+	local result = state.run("wait", { "--timeout", "120000" }).result
+	Test.eq(result.state, "unacknowledged")
+	Test.eq(result.evidence, false)
+	assert(result.hint:find("trust orc hooks", 1, true))
+	assert(state.clock > 60000 and state.clock < 70000)
+end)
+
+Test.test("workers wait ignores the unacknowledged limit for acknowledged workers", function()
+	local _, state = fake()
+	state.ack = true
+	state.start()
+	Test.eq(state.run("wait", { "--timeout", "120000" }).result.state, "timeout")
+end)
+
+Test.test("workers wait timeout below the unacknowledged limit stays a timeout", function()
+	local _, state = fake()
+	state.start()
+	Test.eq(state.run("wait", { "--timeout", "1000" }).result.state, "timeout")
+end)
+
 Test.test(
 	"workers wait reports timeout exit errors disconnected and changed runs honestly",
 	function()

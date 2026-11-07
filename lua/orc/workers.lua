@@ -623,6 +623,9 @@ local function follow_up(rt, record, values)
 	})
 end
 
+-- Untrusted Codex hooks never acknowledge the prompt; stop waiting after this long.
+local UNACKNOWLEDGED_WAIT_MS = 60000
+
 local function wait_for(rt, record, timeout)
 	if record.state == "closed" then
 		return result(rt, 0, {
@@ -655,7 +658,8 @@ local function wait_for(rt, record, timeout)
 		end)
 		connected = true
 	end
-	local deadline = rt.clock() + timeout
+	local started = rt.clock()
+	local deadline = started + timeout
 	local ok, answer = xpcall(function()
 		connect()
 		repeat
@@ -694,6 +698,16 @@ local function wait_for(rt, record, timeout)
 				if not connected then
 					connect()
 				end
+			end
+			if not record.acknowledged and rt.clock() - started > UNACKNOWLEDGED_WAIT_MS then
+				return {
+					task = record.task,
+					runId = record.runId,
+					state = "unacknowledged",
+					report = rt.null,
+					evidence = false,
+					hint = "worker prompt was not acknowledged; trust orc hooks in Codex (/hooks) or Claude, then inspect the pane",
+				}
 			end
 			if rt.clock() >= deadline then
 				break

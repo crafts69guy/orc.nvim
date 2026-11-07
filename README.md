@@ -125,7 +125,9 @@ Stop hook saves a matching Run report when its file is absent.
 In pane mode, scopers and implementers use Codex pane workers; reviewers and
 shippers stay native. For one task add `--here` in the session checkout and
 do not edit beside its implementer. Parallel tasks use dispatch worktrees.
-Run `orc pane wait` with the harness's background execution. Prune uses the same
+Run `orc pane wait` with the harness's background execution. If the worker prompt
+is still unacknowledged after 60 s (for example untrusted hooks in Codex), wait
+returns `unacknowledged` with a hint instead of running to timeout. Prune uses the same
 ownership/process checks as non-force close and a lock per task across the repository.
 
 **Safety defaults:** permission bypass is explicit (`--yolo`), never the default.
