@@ -47,6 +47,15 @@ retrying an ambiguous send must not type a duplicate prompt. Report validation
 checks the current run ID and required sections. Only the orchestrator accepts
 work after reading the diff and rerunning the task's validation.
 
+Use Worktrunk project hooks in `.config/wt.toml` as the deterministic gate before
+agent review: an approved `pre-merge` hook runs the project's validation and
+aborts `orc wt merge` on failure. A `post-start` hook running
+`wt step copy-ignored` copies ignored build caches from the primary worktree in
+the background when a worktree is created. Hook names, location and lifecycle
+were verified against Worktrunk v0.81.0's `wt --help` and `wt hook --help` and its
+[hook documentation](https://worktrunk.dev/hook/); see the
+[recommended configuration](../README.md#worktrunk-project-hooks).
+
 ## Permissions
 
 The workflow never answers trust or approval dialogs. Restricted roles do not

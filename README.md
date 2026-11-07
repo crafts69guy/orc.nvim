@@ -183,6 +183,34 @@ branches and functions ([definitions](docs/coverage.md)).
 Paid evaluations are separate: `orc eval` enforces a model cost cap
 (`ORC_EVAL_MAX_COST`, default 5 USD).
 
+### Worktrunk project hooks
+
+Use project hooks in `.config/wt.toml` as the deterministic gate before agent
+review. For this project's validation, the recommended configuration is:
+
+```toml
+[pre-merge]
+validate = """
+nvim --clean -l test/run.lua --coverage &&
+nvim --clean -l scripts/gen-agents.lua --check &&
+stylua --check lua test scripts bin/orc plugin evals
+"""
+
+[post-start]
+copy = "wt step copy-ignored"
+```
+
+With project hooks approved, `orc wt merge` refuses a failing `pre-merge` check.
+Approve them before relying on the gate: declining approval skips project hooks.
+`post-start` runs in the background when a worktree is created; `copy-ignored`
+copies ignored build caches and dependencies from the primary worktree. Limit
+copies to intended caches with `.worktreeinclude`.
+
+Verified with Worktrunk v0.81.0 (`wt --help`, `wt hook --help`,
+`wt step copy-ignored --help`) and the official
+[hook](https://worktrunk.dev/hook/) and
+[copy-ignored](https://worktrunk.dev/step/#wt-step-copy-ignored) documentation.
+
 See also [cutover](docs/cutover.md) for migrating from the earlier Orchestra plugin.
 
 ## License

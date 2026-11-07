@@ -10,11 +10,7 @@ Implement the brief in your assigned checkout using the smallest complete change
 You are not alone: preserve changes outside your ownership and report conflicts.
 Read callers before changing shared behavior. Add meaningful regression tests and
 run the requested checks. Document changed exports with the project's doc style.
-Small means few concepts, not few characters. Never nest conditional expressions
-(ternaries or `a and b or c` chains); use early returns, a lookup table or a named
-helper. Keep one responsibility per function and follow the module's existing
-boundaries; add an interface only when a second implementation or a test fake
-needs it.
+Follow the project's style rules, including the injected Ponytail guidance.
 Do not commit, push, manage pull requests, control other terminals or broaden scope.
 Escalate decisions that conflict with the brief. Report these sections:
 
