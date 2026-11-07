@@ -33,6 +33,11 @@ Captured commands receive an argv list. Interactive harnesses inherit file
 descriptors 0/1/2 and propagate exit/signal status. No shell is used to concatenate
 user input into commands. Business modules accept a runtime adapter for tests.
 
+Every Codex launch uses `--no-daemon` so hooks and model shell commands inherit
+the launch's `ORC_*` and Rex identity variables. The shared app-server daemon can
+retain another session's environment, preventing worker acknowledgement. Bypassing
+it means no shared daemon MCP connections and slower startup.
+
 ## Identity and recovery
 
 Every assignment has a distinct `runId`. A durable record associates its feature,

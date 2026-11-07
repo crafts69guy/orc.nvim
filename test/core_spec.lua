@@ -921,16 +921,34 @@ Test.test(
 			["git pull --ff-only"] = result(1, "", "no upstream"),
 		})
 		Test.eq(cli.run(rt, { "update" }).code, 1)
-		route(rt, {
-			["git pull --ff-only"] = result(0, "updated\n"),
-			["claude plugin marketplace list --json"] = result(0, '[{"name":"orc-nvim"}]'),
-			["codex plugin marketplace list --json"] = result(
-				0,
-				'{"marketplaces":[{"name":"orc-nvim"}]}'
-			),
-			["claude plugin update orc@orc-nvim"] = result(1, "", "plugin failed"),
-		})
-		Test.eq(cli.run(rt, { "update" }).code, 1)
+		for _, codes in ipairs({ { 0, 0, 0 }, { 1, 2, 1 }, { 0, 2, 2 } }) do
+			local refreshed = {}
+			route(rt, {
+				["git pull --ff-only"] = result(0, "updated\n"),
+				["claude plugin marketplace list --json"] = result(0, '[{"name":"orc-nvim"}]'),
+				["codex plugin marketplace list --json"] = result(
+					0,
+					'{"marketplaces":[{"name":"orc-nvim"}]}'
+				),
+				["claude plugin update orc@orc-nvim"] = function(argv)
+					refreshed[#refreshed + 1] = argv
+					return result(codes[1], "claude output\n", "claude diagnostic\n")
+				end,
+				["codex plugin add orc@orc-nvim"] = function(argv)
+					refreshed[#refreshed + 1] = argv
+					return result(codes[2], "codex output\n", "codex diagnostic\n")
+				end,
+			})
+			Test.eq(cli.run(rt, { "update" }), {
+				code = codes[3],
+				out = "updated\nclaude output\ncodex output\n",
+				err = "claude diagnostic\ncodex diagnostic\n",
+			})
+			Test.eq(refreshed, {
+				{ "claude", "plugin", "update", "orc@orc-nvim" },
+				{ "codex", "plugin", "add", "orc@orc-nvim" },
+			})
+		end
 		Test.eq(cli.run(rt, { "update", "bad" }).code, 1)
 	end
 )
@@ -1219,6 +1237,7 @@ Test.test("core update tolerates unavailable or malformed marketplace inventorie
 		Test.eq(cli.run(rt, { "update" }).code, 0)
 		for _, command in ipairs(rt.commands) do
 			assert(not table.concat(command.argv, " "):find("plugin update", 1, true))
+			assert(not table.concat(command.argv, " "):find("plugin add", 1, true))
 		end
 	end
 	Test.eq(cli.run(fake(), { "wt", "bad" }).code, 1)

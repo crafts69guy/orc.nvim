@@ -91,6 +91,8 @@ The CLI also loads the local Claude plugin explicitly. Restart agent sessions an
 approve new or changed hooks through the harness's normal trust controls before
 relying on hook-driven automation. `orc update` fast-forwards the clean checkout
 and updates the installed plugins.
+After `orc update` changes hooks, re-trust them in Codex's `/hooks` before
+workers can be acknowledged.
 
 ## Commands
 

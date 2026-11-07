@@ -224,6 +224,10 @@ function M.plan(rt, request)
 		env.ORC_INKDROP_MCP_CONFIG = config.paths.config
 	end
 	local command = { kind }
+	if kind == "codex" then
+		-- Keep hooks and model shell commands in the launch environment, not a shared daemon's.
+		command[#command + 1] = "--no-daemon"
+	end
 	if config.mode == "shared" then
 		local extra = shared_args(rt, kind, cwd, args, config)
 		local health = mcp.check(rt, config)

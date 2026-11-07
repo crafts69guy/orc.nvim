@@ -125,7 +125,7 @@ local function update(rt, argv)
 				for _, market in ipairs(decoded.marketplaces or decoded) do
 					if market.name == "orc-nvim" then
 						local command = kind == "claude" and { "claude", "plugin", "update", "orc@orc-nvim" }
-							or { "codex", "plugin", "marketplace", "upgrade", "orc-nvim" }
+							or { "codex", "plugin", "add", "orc@orc-nvim" }
 						local result = rt.exec(command)
 						output, errors = output .. result.stdout, errors .. result.stderr
 						if code == 0 then

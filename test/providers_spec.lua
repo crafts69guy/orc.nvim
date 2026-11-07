@@ -71,6 +71,31 @@ local function options(argv, flag)
 	end
 end
 
+Test.test("providers Codex bypasses daemon for all roles and Inkdrop modes", function()
+	fixture(function(rt)
+		for _, role in ipairs({ "main", "implementer", "scoper" }) do
+			for _, mode in ipairs({ "inherit", "shared" }) do
+				local spec = providers.plan(rt, {
+					kind = "codex",
+					role = role,
+					flags = { ["inkdrop-mcp"] = mode },
+					args = { "--model", "native-model" },
+					prompt = "literal; assignment",
+				})
+				Test.eq(vim.list_slice(spec.argv, 1, 2), { "codex", "--no-daemon" })
+				if mode == "shared" then
+					Test.eq(vim.list_slice(spec.argv, 3, 4), { "-c", "mcp_servers.inkdrop.required=true" })
+				end
+				Test.eq(vim.list_slice(spec.argv, #spec.argv - 2), {
+					"--model",
+					"native-model",
+					"literal; assignment",
+				})
+			end
+		end
+	end)
+end)
+
 Test.test(
 	"providers scrub worker secrets while preserving harness auth and main environments",
 	function()
@@ -154,8 +179,11 @@ Test.test("providers scopers are read-only with role-specific Claude models", fu
 				Test.eq(spec.env.ORC_ROLE, "scoper")
 				Test.eq(spec.env.ORC_WORKER_FILE, "/worker.json")
 				if kind == "codex" then
-					Test.eq(vim.list_slice(spec.argv, 1, 3), { "codex", "--sandbox", "read-only" })
-					Test.eq(vim.list_slice(spec.argv, 4, 7), codex_policy)
+					Test.eq(
+						vim.list_slice(spec.argv, 1, 4),
+						{ "codex", "--no-daemon", "--sandbox", "read-only" }
+					)
+					Test.eq(vim.list_slice(spec.argv, 5, 8), codex_policy)
 					Test.eq(spec.argv[#spec.argv], "scope this")
 				else
 					Test.eq(options(spec.argv, "--model"), level == "high" and "sonnet" or "haiku")
@@ -285,7 +313,7 @@ Test.test(
 				rt,
 				{ kind = "codex", role = "implementer", args = { "-C", "/elsewhere", "-pwork" } }
 			)
-			Test.eq(vim.list_slice(inherited.argv, 8), { "-C", "/elsewhere", "-pwork" })
+			Test.eq(vim.list_slice(inherited.argv, 9), { "-C", "/elsewhere", "-pwork" })
 		end)
 	end
 )
@@ -324,9 +352,12 @@ Test.test(
 				workerFile = "/worker.json",
 				prompt = "literal; assignment\nline two",
 			})
-			Test.eq(vim.list_slice(worker.argv, 1, 3), { "codex", "--sandbox", "workspace-write" })
-			Test.eq(vim.list_slice(worker.argv, 4, 7), codex_policy)
-			Test.eq(worker.argv[8], "literal; assignment\nline two")
+			Test.eq(
+				vim.list_slice(worker.argv, 1, 4),
+				{ "codex", "--no-daemon", "--sandbox", "workspace-write" }
+			)
+			Test.eq(vim.list_slice(worker.argv, 5, 8), codex_policy)
+			Test.eq(worker.argv[9], "literal; assignment\nline two")
 			Test.eq(worker.cwd, "/worktree")
 			Test.eq(worker.env.ORC_ROLE, "implementer")
 			Test.eq(worker.env.ORC_WORKER_FILE, "/worker.json")
@@ -537,12 +568,16 @@ Test.test(
 				"--json",
 			})
 			Test.eq(state.probes[1].opts.cwd, "/task")
-			Test.eq(vim.list_slice(plan.argv, 6, 9), codex_policy)
-			Test.eq(vim.list_slice(plan.argv, 10), args)
-			Test.eq(
-				vim.list_slice(plan.argv, 1, 5),
-				{ "codex", "-c", "mcp_servers.inkdrop.required=true", "--sandbox", "workspace-write" }
-			)
+			Test.eq(vim.list_slice(plan.argv, 7, 10), codex_policy)
+			Test.eq(vim.list_slice(plan.argv, 11), args)
+			Test.eq(vim.list_slice(plan.argv, 1, 6), {
+				"codex",
+				"--no-daemon",
+				"-c",
+				"mcp_servers.inkdrop.required=true",
+				"--sandbox",
+				"workspace-write",
+			})
 			Test.eq(state.checks, 1)
 			assert(not table.concat(plan.argv, " "):find("synthetic-secret", 1, true))
 		end)
