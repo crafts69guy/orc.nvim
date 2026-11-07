@@ -76,6 +76,24 @@ local function cleanup()
 	end
 end
 
+local finished, current = false, "none"
+
+-- A quit mid-run (e.g. a test running `qa`) would otherwise exit 0 with specs unrun.
+vim.api.nvim_create_autocmd("VimLeavePre", {
+	callback = function()
+		if finished then
+			return
+		end
+		io.stderr:write(
+			"orc test runner: Neovim exited before the run finished (last test: " .. current .. ")\n"
+		)
+		cleanup()
+		io.stdout:flush()
+		io.stderr:flush()
+		os.exit(1)
+	end,
+})
+
 local function run()
 	if coverage then
 		local ok, module = pcall(require, "test.support.coverage")
@@ -90,6 +108,7 @@ local function run()
 	local passed, failed = 0, 0
 	for _, test in ipairs(tests) do
 		if not filter or test.name:find(filter, 1, true) then
+			current = test.name
 			local ok, err = xpcall(test.run, debug.traceback)
 			if ok then
 				passed = passed + 1
@@ -138,4 +157,5 @@ if not ok then
 end
 io.stdout:flush()
 io.stderr:flush()
+finished = true
 vim.cmd("cquit " .. result)
