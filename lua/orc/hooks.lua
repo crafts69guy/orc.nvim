@@ -215,7 +215,8 @@ function M.context(rt, cwd)
 			local checkout = require("orc.worktrees").checkout(rt, cwd)
 			for _, worker in ipairs(workers.collect(rt, cwd)) do
 				local own_pair = rt.env.ORC_PAIR == "1" and worker.sessionId == rt.env.REX_SESSION
-				local active = worker.state ~= "closed"
+				local active = worker.role ~= "scoper"
+					and worker.state ~= "closed"
 					and worker.state ~= "exited"
 					and worker.state ~= "error"
 				if
@@ -239,7 +240,11 @@ function M.context(rt, cwd)
 		assert(rt.env.REX_SESSION and rt.env.REX_BLOCK, "orc: pair/pane mode needs a Rex terminal")
 		text[#text + 1] = rt.env.ORC_PAIR == "1"
 				and "Pair mode: use one Codex worker with `orc pane start <feature> <task> --here --path <checkout> --brief <file> --kind codex`; do not write beside the worker."
-			or "Pane mode: dispatch independent tasks through `orc pane` in separate worktrees."
+			or table.concat({
+				"Pane mode (automatic in Rex): delegate scopers and implementers through `orc pane start <feature> <task> --path <checkout> --brief <file> --role scoper|implementer` Codex workers, rather than native subagents.",
+				"Reviewer and shipper stay native. For a single task add `--here` in the session checkout; the orchestrator must not edit beside the implementer.",
+				"For parallel tasks use dispatch worktrees. Run `orc pane wait` with the harness's background execution.",
+			}, "\n")
 	end
 	if rt.env.ORC_LEVEL == "high" then
 		text[#text + 1] =

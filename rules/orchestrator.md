@@ -19,9 +19,13 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   success. Partial, blocked, idle and process exit are not accepted completion.
 - Follow up with the same implementer at most twice; then sharpen the brief for a
   new worker. The orchestrator resolves architectural decisions and merge conflicts.
-- Use Rex panes only when pair/pane mode is explicitly enabled. Follow dispatch's
-  Rex reference. Pair mode uses one Codex worker in the session checkout; the main
-  agent reads/reviews while the worker owns all edits.
+- Pane mode is automatic inside Rex unless `--no-panes` or `ORC_PANES=0`.
+  In pane mode, delegate scopers and implementers through `orc pane start ... --role scoper|implementer`
+  Codex workers instead of native subagents; reviewer and shipper stay native.
+  Single task: use `--here` in the session checkout; do not edit beside its implementer.
+  Parallel tasks: use dispatch worktrees. Run `orc pane wait` with the harness's
+  background execution. Follow dispatch's Rex reference. Pair mode uses one Codex
+  implementer in the session checkout while the main agent reads/reviews.
 - Worker reports must identify their current Run and contain Status and Validation.
   A delivery without acknowledgment is unconfirmed: inspect before any retry.
 - Shipping is only through `orc:shipper`, after review and explicit user request.

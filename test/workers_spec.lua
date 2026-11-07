@@ -58,7 +58,7 @@ local function fake()
 		local record = assert(state.record())
 		local worker_rt = vim.tbl_extend("force", {}, rt, {
 			env = vim.tbl_extend("force", {}, rt.env, {
-				ORC_ROLE = "implementer",
+				ORC_ROLE = record.role or "implementer",
 				ORC_WORKER_FILE = rt.path(
 					root,
 					".orc",
@@ -278,6 +278,230 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	assert(not rt.exists(rt.path(rt.cwd, ".orc", "report.md")))
 end)
 
+Test.test("workers default to Codex implementers and normalize legacy roles", function()
+	local rt, state = fake()
+	Test.eq(
+		workers.run(rt, { "start", "feature", "task", "--path", rt.cwd, "--brief", "brief.md" }).code,
+		0
+	)
+	local record = state.record()
+	Test.eq(record.kind, "codex")
+	Test.eq(record.role, "implementer")
+	record.role = nil
+	state.store(record)
+	Test.eq(workers.collect(rt)[1].role, "implementer")
+	state.hook("UserPromptSubmit")
+	state.hook("Stop")
+	state.native = "idle"
+	Test.eq(state.run("prompt", { "--text", "continue" }).result.queued, true)
+	assert(state.writes[1]:find("agents/implementer.md", 1, true))
+	assert(state.writes[1]:find("Write the final report atomically", 1, true))
+	record = state.record()
+	record.role = "reviewer"
+	state.store(record)
+	Test.raises("invalid worker role", function()
+		workers.collect(rt)
+	end)
+	local _, invalid = fake()
+	Test.eq(invalid.start({ "--role", "reviewer" }).code, 1)
+	Test.eq(invalid.created, 0)
+end)
+
+Test.test(
+	"workers scoper prompts and followups request final-message reports without writes",
+	function()
+		local _, state = fake()
+		Test.eq(state.start({ "--role", "scoper", "--here" }).code, 0)
+		Test.eq(state.record().role, "scoper")
+		local command = table.concat(state.layout.block.options.command, " ")
+		for _, part in ipairs({
+			"ORC_ROLE=scoper",
+			"--sandbox read-only",
+			"agents/scoper.md",
+			"Do not modify files",
+			"End your final message with the report",
+			"Scope with file citations",
+			"Decisions",
+		}) do
+			assert(command:find(part, 1, true), part)
+		end
+		assert(not command:find("Write the final report", 1, true))
+		state.hook("UserPromptSubmit")
+		state.hook("Stop")
+		state.native = "idle"
+		Test.eq(state.run("prompt", { "--text", "scope callers too" }).result.queued, true)
+		assert(state.writes[1]:find("You are the orc scoper", 1, true))
+	end
+)
+
+Test.test("workers Stop saves only matching missing reports for either worker role", function()
+	for _, role in ipairs({ "implementer", "scoper" }) do
+		local rt, state = fake()
+		state.start({ "--role", role })
+		local record = state.record()
+		local message = "Run: "
+			.. record.runId
+			.. "\nStatus: done\nScope: callers\nValidation: checks passed\nDecisions: none\n"
+		state.hook("Stop", { last_assistant_message = message })
+		Test.eq(rt.exists(record.report), false)
+		state.hook("UserPromptSubmit")
+		for _, invalid in ipairs({
+			false,
+			rt.null,
+			"Run: stale\nStatus: done\nValidation: pass",
+			"no report",
+		}) do
+			state.hook("Stop", { last_assistant_message = invalid })
+			Test.eq(rt.exists(record.report), false)
+		end
+		state.hook("Stop", { last_assistant_message = message })
+		Test.eq(rt.read(record.report), message)
+		Test.eq(state.record().reportStatus, "done")
+		Test.eq(rt.read(rt.path(rt.cwd, ".orc", "report.md")), message)
+		state.native = "idle"
+		Test.eq(state.run("wait", { "--timeout", "0" }).result.evidence, true)
+		state.hook("Stop", {
+			last_assistant_message = "Run: " .. record.runId .. "\nStatus: blocked\nValidation: failed",
+		})
+		Test.eq(rt.read(record.report), message)
+		Test.eq(state.record().reportStatus, "done")
+	end
+end)
+
+Test.test("workers here ownership counts only active implementers", function()
+	for _, case in ipairs({
+		{ role = "scoper", native = "working", allowed = true },
+		{ role = "implementer", native = "working", allowed = false },
+		{ native = "working", allowed = false },
+		{ role = "implementer", native = "idle", allowed = false },
+		{ role = "implementer", exit = 0, allowed = true },
+		{ role = "implementer", exit = 1, allowed = true },
+	}) do
+		local rt, state = fake()
+		state.start()
+		local record = state.record()
+		record.role = case.role
+		state.store(record)
+		state.native, state.exitCode = case.native, case.exit
+		local launched = workers.run(
+			rt,
+			{ "start", "feature", "other", "--path", rt.cwd, "--brief", "brief.md", "--here" }
+		)
+		Test.eq(launched.code == 0, case.allowed)
+	end
+	local rt, state = fake()
+	state.start()
+	Test.eq(
+		workers.run(rt, {
+			"start",
+			"feature",
+			"scope",
+			"--path",
+			rt.cwd,
+			"--brief",
+			"brief.md",
+			"--here",
+			"--role",
+			"scoper",
+		}).code,
+		0
+	)
+end)
+
+Test.test("workers prune closes only successful exits or evidenced done workers", function()
+	for _, case in ipairs({
+		{ native = "working", exit = 0, close = true },
+		{ native = "idle", report = "done", ack = true, close = true },
+		{ native = "done", report = "done", ack = true, close = true },
+		{ native = "done", report = "partial", ack = true },
+		{ native = "idle", report = "blocked", ack = true },
+		{ native = "idle", report = "done" },
+		{ native = "done", ack = true },
+		{ native = "working", report = "done", ack = true },
+		{ native = "blocked", report = "done", ack = true },
+		{ native = "working", exit = 1 },
+		{ native = "idle", report = "done", ack = true, stale = true },
+		{ native = "idle", report = "done", ack = true, validation = "" },
+	}) do
+		local rt, state = fake()
+		state.start()
+		if case.ack then
+			state.hook("UserPromptSubmit")
+			state.hook("Stop")
+		end
+		if case.report then
+			state.report(case.report, case.stale and "old-run" or nil, case.validation)
+		end
+		state.native, state.exitCode = case.native, case.exit
+		local response = workers.run(rt, { "prune", "--path", rt.cwd })
+		Test.eq(response.code, 0)
+		Test.eq(response.result.status, "pruned")
+		if case.close then
+			Test.eq(response.result.closed, { { task = "task", pane = "block:worker" } })
+			Test.eq(response.result.skipped, {})
+			Test.eq(state.record().state, "closed")
+			Test.eq(workers.run(rt, { "prune", "--path", rt.cwd }).result.closed, {})
+		else
+			Test.eq(response.result.closed, {})
+			Test.eq(response.result.skipped[1].task, "task")
+			assert(response.result.skipped[1].reason:find("no completed report", 1, true))
+			Test.eq(#state.closed, 0)
+		end
+		assert(not rt.exists(state.file() .. ".lock"))
+	end
+end)
+
+Test.test(
+	"workers prune preserves locks and refuses stale servers changed processes and close failures",
+	function()
+		for _, failure in ipairs({ "lock", "identity", "process", "close" }) do
+			local rt, state = fake()
+			state.start()
+			state.hook("UserPromptSubmit")
+			state.hook("Stop")
+			state.report()
+			state.native = "idle"
+			if failure == "lock" then
+				rt.mkdir(state.file() .. ".lock")
+			elseif failure == "identity" then
+				state.instance = "replacement"
+			elseif failure == "process" then
+				local exec = rt.exec
+				local observations = 0
+				rt.exec = function(argv, opts)
+					if argv[2] == "block" and argv[8] == "process" then
+						observations = observations + 1
+						if observations == 3 then
+							state.pid = 99
+						end
+					end
+					return exec(argv, opts)
+				end
+			else
+				state.closeFail = true
+			end
+			local response = workers.run(rt, { "prune", "--path", rt.cwd }).result
+			Test.eq(response.closed, {})
+			Test.eq(#response.skipped, 1)
+			Test.eq(#state.closed, 0)
+			assert(response.skipped[1].reason:find("orc pane", 1, true))
+			Test.eq(rt.exists(state.file() .. ".lock"), failure == "lock")
+		end
+		local rt = fake()
+		for _, args in ipairs({
+			{ "prune" },
+			{ "prune", "task", "--path", rt.cwd },
+			{ "prune", "--path", rt.cwd, "--force" },
+			{ "prune", "--path", rt.cwd, "--role", "scoper" },
+		}) do
+			Test.eq(workers.run(rt, args).code, 1)
+		end
+		local response = workers.run(rt, { "prune", "--path", rt.cwd })
+		Test.eq(response.code, 0)
+		Test.eq(rt.decode(response.out), { status = "pruned", closed = {}, skipped = {} })
+	end
+)
+
 Test.test(
 	"workers shared plan removes Rex credentials and propagates opt-in without owning the service",
 	function()
@@ -370,6 +594,78 @@ Test.test("workers shared preflight failure leaves no durable run and can be ret
 	end, debug.traceback)
 	package.loaded["orc.inkdrop_mcp"] = old
 	assert(ok, err)
+end)
+
+Test.test("workers prune spans repository worktrees and continues after a failed close", function()
+	local rt, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.report()
+	state.hook("Stop")
+	state.native = "done"
+	local template = state.record()
+	for _, task in ipairs({ "other", "working", "closed" }) do
+		local record = vim.deepcopy(template)
+		record.task, record.path = task, rt.path(rt.cwd, task)
+		record.report = rt.path(record.path, ".orc", "reports", record.runId .. ".md")
+		rt.mkdir(record.path)
+		rt.write(record.report, "Run: " .. record.runId .. "\nStatus: done\nValidation: pass")
+		if task == "working" then
+			record.hookState = "working"
+		elseif task == "closed" then
+			record.state = "closed"
+		end
+		local name = vim.fn.sha256(record.path .. "\0" .. task) .. ".json"
+		rt.write(rt.path(rt.cwd, ".orc", "workers", name), rt.encode(record))
+	end
+	local exec, attempts = rt.exec, 0
+	rt.exec = function(argv, opts)
+		if argv[2] == "api" and vim.tbl_contains(argv, "block.close") then
+			attempts = attempts + 1
+			if attempts == 1 then
+				return { code = 1, stdout = "", stderr = "close unavailable" }
+			end
+		end
+		return exec(argv, opts)
+	end
+	local response = workers.run(rt, { "prune", "--path", rt.path(rt.cwd, "other") }).result
+	Test.eq(#response.closed, 1)
+	Test.eq(#response.skipped, 2)
+	Test.eq(attempts, 2)
+	Test.eq(#state.closed, 1)
+	for _, worker in ipairs(workers.collect(rt)) do
+		Test.eq(
+			rt.exists(
+				rt.path(
+					worker.root,
+					".orc",
+					"workers",
+					vim.fn.sha256(worker.path .. "\0" .. worker.task) .. ".json.lock"
+				)
+			),
+			false
+		)
+	end
+end)
+
+Test.test("workers prune rechecks eligibility after acquiring the task lock", function()
+	local rt, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.report()
+	state.hook("Stop")
+	state.native = "idle"
+	local exec = rt.exec
+	rt.exec = function(argv, opts)
+		if argv[1] == "mkdir" and argv[4] == state.file() .. ".lock" then
+			state.hook("UserPromptSubmit")
+		end
+		return exec(argv, opts)
+	end
+	local response = workers.run(rt, { "prune", "--path", rt.cwd }).result
+	Test.eq(response.closed, {})
+	Test.eq(response.skipped[1].state, "working")
+	Test.eq(#state.closed, 0)
 end)
 
 Test.test(
@@ -654,10 +950,18 @@ Test.test("workers pair creates one split and Claude loads only the new Lua plug
 	local rt, state = fake()
 	state.processName = "claude"
 	rt.env.ORC_LEVEL = "high"
-	local result = workers.run(
-		rt,
-		{ "start", "feature", "pair", "--path", rt.cwd, "--brief", rt.cwd .. "/brief.md", "--here" }
-	)
+	local result = workers.run(rt, {
+		"start",
+		"feature",
+		"pair",
+		"--path",
+		rt.cwd,
+		"--brief",
+		rt.cwd .. "/brief.md",
+		"--here",
+		"--kind",
+		"claude",
+	})
 	Test.eq(result.code, 0)
 	Test.eq(state.method, "session.new_split")
 	Test.eq(state.creation.anchor_id, "block:main")
@@ -945,12 +1249,15 @@ Test.test("workers hook boot ordering validates block identity and ignores stale
 end)
 
 Test.test(
-	"workers default Claude startup Git failures and malformed options are explicit",
+	"workers explicit Claude startup Git failures and malformed options are explicit",
 	function()
 		local rt, state = fake()
 		state.processName = "claude"
 		Test.eq(
-			workers.run(rt, { "start", "f", "claude", "--path", rt.cwd, "--brief", "brief.md" }).code,
+			workers.run(
+				rt,
+				{ "start", "f", "claude", "--path", rt.cwd, "--brief", "brief.md", "--kind", "claude" }
+			).code,
 			0
 		)
 		assert(table.concat(state.layout.block.options.command, " "):find("--model sonnet", 1, true))

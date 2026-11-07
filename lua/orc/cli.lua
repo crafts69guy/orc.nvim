@@ -2,9 +2,11 @@ local M = {}
 M.version = "0.1.0"
 M.usage = [[usage: orc <command> [args]
 
-  claude|codex [--yolo] [--level default|high] [--panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
+  claude|codex [--yolo] [--level default|high] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
   wt new|merge|remove|list|session ...
-  pane start|wait|prompt|close ...
+  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--here]
+  pane wait|prompt|close <task> --path <dir> ...
+  pane prune --path <dir>
   status|doctor [--json]
   context [--scope user|project|all] [--json]
   inkdrop init|inbox|claim|push|pull|lessons ...
@@ -15,6 +17,8 @@ M.usage = [[usage: orc <command> [args]
   --help | --version
 
 Pair and pane modes use Rex; pair mode is Claude-main with one Codex worker.
+Pane mode is automatic inside Rex; --no-panes or ORC_PANES=0 disables it.
+Pane workers default to Codex and the implementer role.
 --yolo bypasses harness permissions and sandbox only when explicitly requested.
 ]]
 
@@ -25,7 +29,7 @@ end
 local function own_flags(argv)
 	local flags, rest = {}, {}
 	local strings = { level = true, wt = true, base = true, ["inkdrop-mcp"] = true }
-	local booleans = { yolo = true, panes = true, pair = true }
+	local booleans = { yolo = true, panes = true, ["no-panes"] = true, pair = true }
 	local index = 1
 	while index <= #argv do
 		local word = argv[index]
@@ -57,10 +61,28 @@ local function own_flags(argv)
 	return flags, rest
 end
 
+-- Explicit flags win, then ORC_PANES; otherwise pane mode follows a Rex terminal.
+local function panes_enabled(rt, flags)
+	if flags.panes then
+		return true
+	end
+	if flags["no-panes"] or rt.env.ORC_PANES == "0" then
+		return false
+	end
+	if rt.env.ORC_PANES == "1" then
+		return true
+	end
+	if flags.pair then
+		return false
+	end
+	return (rt.env.REX_SESSION or "") ~= "" and (rt.env.REX_BLOCK or "") ~= ""
+end
+
 local function launch(rt, kind, argv)
 	local flags, rest = own_flags(argv)
+	assert(not (flags.panes and flags["no-panes"]), "--panes and --no-panes cannot be combined")
 	flags.pair = flags.pair or kind == "claude" and rt.env.ORC_PAIR == "1"
-	flags.panes = flags.panes or rt.env.ORC_PANES == "1"
+	flags.panes = panes_enabled(rt, flags)
 	flags.level = flags.level or rt.env.ORC_LEVEL
 	assert(not (flags.pair and flags.panes), "--pair and --panes cannot be combined")
 	assert(

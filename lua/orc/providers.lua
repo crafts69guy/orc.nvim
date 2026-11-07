@@ -154,7 +154,7 @@ end
 
 ---@class orc.ProviderRequest
 ---@field kind "claude"|"codex" Native provider executable.
----@field role "main"|"implementer" Existing workflow role.
+---@field role "main"|"implementer"|"scoper" Existing workflow role.
 ---@field cwd? string Working directory.
 ---@field flags? table Orc-owned launcher options.
 ---@field args? string[] Native arguments, passed through without shell parsing.
@@ -174,10 +174,11 @@ end
 function M.plan(rt, request)
 	local kind, role = request.kind, request.role
 	assert(kind == "claude" or kind == "codex", "orc: unknown provider")
-	assert(role == "main" or role == "implementer", "orc: unknown provider role")
+	assert(role == "main" or role == "implementer" or role == "scoper", "orc: unknown provider role")
 	local flags, args, cwd = request.flags or {}, request.args or {}, request.cwd or rt.cwd
-	local env = { ORC = "1", ORC_ROLE = role == "main" and "" or "implementer" }
+	local env = { ORC = "1", ORC_ROLE = role }
 	if role == "main" then
+		env.ORC_ROLE = ""
 		env.ORC_PAIR, env.ORC_PANES = flags.pair and "1" or false, flags.panes and "1" or false
 		if flags.level then
 			env.ORC_LEVEL = flags.level
@@ -215,17 +216,26 @@ function M.plan(rt, request)
 		end
 	end
 	if kind == "claude" then
-		-- --mcp-config is variadic, so a following option must precede any positional prompt.
+		-- --mcp-config and --disallowedTools are variadic, so a following option must
+		-- precede any positional prompt; --plugin-dir always follows them.
+		if role == "scoper" then
+			vim.list_extend(command, { "--disallowedTools", "Edit,Write,NotebookEdit" })
+		end
 		vim.list_extend(command, { "--plugin-dir", rt.root })
 		local model = false
 		for _, word in ipairs(args) do
 			model = model or word == "--model" or word:match("^%-%-model=") ~= nil
 		end
 		if not model then
-			vim.list_extend(command, {
-				"--model",
-				role == "main" and "opus" or rt.env.ORC_LEVEL == "high" and "opus" or "sonnet",
-			})
+			local selected = "sonnet"
+			if role == "scoper" then
+				if rt.env.ORC_LEVEL ~= "high" then
+					selected = "haiku"
+				end
+			elseif role == "main" or rt.env.ORC_LEVEL == "high" then
+				selected = "opus"
+			end
+			vim.list_extend(command, { "--model", selected })
 		end
 		if flags.yolo then
 			command[#command + 1] = "--dangerously-skip-permissions"
@@ -248,6 +258,8 @@ function M.plan(rt, request)
 		end
 	elseif role == "implementer" then
 		vim.list_extend(command, { "--sandbox", "workspace-write" })
+	elseif role == "scoper" then
+		vim.list_extend(command, { "--sandbox", "read-only" })
 	else
 		local context = require("orc.hooks").context(run_rt, cwd)
 		vim.list_extend(command, { "-c", "developer_instructions=" .. rt.encode(context) })

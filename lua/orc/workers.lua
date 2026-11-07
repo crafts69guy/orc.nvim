@@ -6,9 +6,10 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field runId string Identity of the current prompt attempt.
 ---@field feature string Feature name.
 ---@field task string Task identifier.
----@field path string Absolute checkout owned by the worker.
+---@field path string Absolute checkout used by the worker; scopers do not own edits.
 ---@field root string Main checkout containing the durable record.
 ---@field kind 'claude'|'codex' Harness executable.
+---@field role 'implementer'|'scoper' Missing roles in older records default to implementer.
 ---@field sessionId string Rex session ID.
 ---@field blockId? string Rex block created by this run.
 ---@field windowId? string Rex window returned during creation.
@@ -70,6 +71,10 @@ local function read_record(rt, file)
 	}) do
 		assert(type(record[field]) == "string", "orc pane: invalid worker record field " .. field)
 	end
+	if record.role == nil then
+		record.role = "implementer"
+	end
+	assert(record.role == "implementer" or record.role == "scoper", "orc pane: invalid worker role")
 	return record
 end
 
@@ -368,14 +373,23 @@ local function new_run(rt, record)
 end
 
 local function prompt_text(rt, record, body)
-	return "[orc-run:"
+	local prompt = "[orc-run:"
 		.. record.runId
-		.. "] You are the orc implementer. Read "
-		.. rt.path(rt.root, "agents", "implementer.md")
+		.. "] You are the orc "
+		.. record.role
+		.. ". Read "
+		.. rt.path(rt.root, "agents", record.role .. ".md")
 		.. ". Work only in "
 		.. record.path
 		.. ". Do not commit or push. "
 		.. body
+	if record.role == "scoper" then
+		return prompt
+			.. " Do not modify files. End your final message with the report. Include Run: "
+			.. record.runId
+			.. ", Status: done|partial|blocked, Scope with file citations, Validation with commands and results, Decisions."
+	end
+	return prompt
 		.. " Write the final report atomically to "
 		.. record.report
 		.. ". Include Run: "
@@ -404,8 +418,10 @@ local function start(rt, feature, task, values, file)
 	local client = require("orc.rex").new(rt)
 	local identity = client.identity()
 	assert(rt.env.REX_SESSION and rt.env.REX_SESSION ~= "", "orc pane: start needs a Rex session")
-	local kind = values.kind or "claude"
+	local kind = values.kind or "codex"
 	assert(kind == "claude" or kind == "codex", "orc pane: kind must be claude or codex")
+	local role = values.role or "implementer"
+	assert(role == "implementer" or role == "scoper", "orc pane: role must be implementer or scoper")
 	local path = rt.abspath(values.path)
 	assert(rt.exists(path), "orc pane: worktree does not exist")
 	local brief = rt.abspath(values.brief)
@@ -416,6 +432,7 @@ local function start(rt, feature, task, values, file)
 		path = path,
 		root = main_root(rt, path),
 		kind = kind,
+		role = role,
 		sessionId = rt.env.REX_SESSION,
 		hostId = identity.host_id,
 		instanceId = identity.instance_id,
@@ -435,17 +452,21 @@ local function start(rt, feature, task, values, file)
 	new_run(rt, record)
 	local launch = require("orc.providers").plan(rt, {
 		kind = kind,
-		role = "implementer",
+		role = role,
 		cwd = path,
 		workerFile = file,
 		prompt = prompt_text(rt, record, "Your brief: " .. brief .. "."),
 	})
 	require("orc.worktrees").ignore(rt, path)
-	if values.here then
+	if values.here and role == "implementer" then
 		assert(rt.env.REX_BLOCK, "orc pane: --here needs REX_BLOCK")
 		for _, worker in ipairs(M.collect(rt, path)) do
 			assert(
-				worker.state == "closed" or worker.path ~= path,
+				worker.role == "scoper"
+					or worker.state == "closed"
+					or worker.state == "exited"
+					or worker.state == "error"
+					or worker.path ~= path,
 				"orc pane: close the existing pair worker first"
 			)
 		end
@@ -758,7 +779,10 @@ end
 ---@param input table|string Harness hook payload.
 ---@return table result Quiet hook result; invalid worker identity is an error.
 function M.event(rt, input)
-	if rt.env.ORC_ROLE ~= "implementer" or not rt.env.ORC_WORKER_FILE then
+	if
+		(rt.env.ORC_ROLE ~= "implementer" and rt.env.ORC_ROLE ~= "scoper")
+		or not rt.env.ORC_WORKER_FILE
+	then
 		return { code = 0, out = "", err = "" }
 	end
 	if type(input) == "string" then
@@ -796,6 +820,14 @@ function M.event(rt, input)
 		record.state, record.hookState = "working", "working"
 	elseif event == "Stop" and record.acknowledged then
 		record.state, record.hookState = "idle", "idle"
+		local message = input.last_assistant_message
+		if
+			not rt.exists(record.report)
+			and type(message) == "string"
+			and M.parse_report(message).run == record.runId
+		then
+			rt.write(record.report, message)
+		end
 		report(rt, record)
 	else
 		return { code = 0, out = "", err = "" }
@@ -804,7 +836,49 @@ function M.event(rt, input)
 	return { code = 0, out = "", err = "" }
 end
 
----Run start/wait/prompt/close with a per-task lock and machine-readable output.
+local function with_task_lock(rt, file, fn)
+	local lock = file .. ".lock"
+	rt.mkdir(vim.fs.dirname(file))
+	assert(
+		rt.exec({ "mkdir", "-m", "700", lock }).code == 0,
+		"orc pane: another command holds this task lock; remove "
+			.. lock
+			.. " if no orc command is running"
+	)
+	local ok, value = xpcall(fn, debug.traceback)
+	rt.remove(lock)
+	assert(ok, value)
+	return value
+end
+
+local function prune(rt, path)
+	local closed, skipped = {}, {}
+	for _, worker in ipairs(M.collect(rt, path)) do
+		if worker.state ~= "closed" then
+			local file = record_path(rt, worker.root, worker.task, worker.path)
+			local ok, reason = pcall(with_task_lock, rt, file, function()
+				worker = assert(read_record(rt, file), "orc pane: worker not found")
+				local evidence = snapshot(rt, client_for(rt, worker), worker)
+				local completed = (worker.state == "idle" or worker.state == "done")
+					and worker.reportStatus == "done"
+					and evidence
+				if worker.state ~= "exited" and not completed then
+					return "worker has no completed report or successful exit"
+				end
+				close(rt, worker, false)
+			end)
+			if ok and not reason then
+				closed[#closed + 1] = { task = worker.task, pane = worker.blockId or rt.null }
+			else
+				skipped[#skipped + 1] =
+					{ task = worker.task, state = worker.state, reason = tostring(reason) }
+			end
+		end
+	end
+	return result(rt, 0, { status = "pruned", closed = closed, skipped = skipped })
+end
+
+---Run start/wait/prompt/close/prune with a per-task lock and machine-readable output.
 ---@param rt orc.Runtime
 ---@param argv string[]
 ---@return table result Exit code, JSON stdout and diagnostics.
@@ -815,6 +889,7 @@ function M.run(rt, argv)
 			path = "string",
 			brief = "string",
 			kind = "string",
+			role = "string",
 			here = "boolean",
 			timeout = "string",
 			text = "string",
@@ -823,6 +898,10 @@ function M.run(rt, argv)
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
 		assert(values.path and values.path ~= "", "orc pane: --path is required")
+		if command == "prune" then
+			assert(#pos == 0 and vim.tbl_count(values) == 1, "usage: orc pane prune --path <dir>")
+			return prune(rt, rt.abspath(values.path))
+		end
 		local task = command == "start" and pos[2] or pos[1]
 		assert(task and task:match("^[%w_.%-]+$") and not task:match("^%.+$"), "orc pane: invalid task")
 		assert(
@@ -838,15 +917,7 @@ function M.run(rt, argv)
 			assert(timeout and timeout >= 0, "orc pane: invalid timeout")
 			return wait_for(rt, record, timeout)
 		end
-		local lock = file .. ".lock"
-		rt.mkdir(vim.fs.dirname(file))
-		assert(
-			rt.exec({ "mkdir", "-m", "700", lock }).code == 0,
-			"orc pane: another command holds this task lock; remove "
-				.. lock
-				.. " if no orc command is running"
-		)
-		local locked, value = xpcall(function()
+		return with_task_lock(rt, file, function()
 			if command == "start" then
 				assert(
 					pos[1]:match("^[%w_.%-]+$") and not pos[1]:match("^%.+$"),
@@ -862,10 +933,7 @@ function M.run(rt, argv)
 				return close(rt, record, values.force)
 			end
 			error("orc pane: unknown command", 0)
-		end, debug.traceback)
-		rt.remove(lock)
-		assert(locked, value)
-		return value
+		end)
 	end, function(err)
 		return tostring(err)
 	end)

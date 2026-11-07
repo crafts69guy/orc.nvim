@@ -1,14 +1,22 @@
 # Rex workers
 
 Use Rex only through `orc pane`; never infer success from a screen capture.
+Pane mode is automatic inside Rex; `--no-panes` or `ORC_PANES=0` disables it.
+Delegate scopers and implementers through Codex pane workers instead of native
+subagents; reviewer and shipper stay native.
 
-- Start: `orc pane start <feature> <task> --path <worktree> --brief <file>`.
-  Add `--kind codex` to choose Codex; Claude is otherwise used.
-- Wait: `orc pane wait <task> --path <worktree> --timeout 1800000`.
+- Start: `orc pane start <feature> <task> --path <worktree> --brief <file> --role implementer`.
+  Codex and implementer are defaults; use `--role scoper` for read-only scoping
+  or `--kind claude` to choose Claude.
+- Wait: `orc pane wait <task> --path <worktree> --timeout 1800000`, using the
+  harness's background execution (foreground Bash is capped at 10 minutes).
 - Follow-up: `orc pane prompt <task> --path <worktree> --file <brief>` or `--text`.
 - Close: `orc pane close <task> --path <worktree>`. If Rex restarted or pane
   creation failed, close and start refuse the stranded record; after checking the
   pane is gone, add `--force` to mark it closed without touching Rex.
+- Prune: `orc pane prune --path <checkout>` closes successful exits and idle/done
+  workers with a matching done report and validation evidence across that repository.
+  It uses non-force close checks and per-task locks; JSON lists closed and skipped workers.
 
 Keep returned session/block/run IDs. `not-sent`, blocked or unconfirmed delivery
 is not success: surface the pane to the user and inspect current state before
@@ -17,6 +25,7 @@ Only the report belonging to the current run can be accepted; review its actual
 Status and Validation. `idle`, `done` program status and exit zero are insufficient.
 Close only panes created for your task. Closing Neovim leaves workers running.
 
-In pair mode use `start --here --kind codex --path <session checkout>` for one worker
-at a time. Do not create task worktrees or edit alongside it. Review the resulting
-checkout diff and rerun validation before closing. Parallel work uses dispatch.
+For a single task use `start --here --path <session checkout>`; the orchestrator
+does not edit beside its implementer. Scopers never claim checkout ownership.
+Pair mode uses one Codex implementer at a time in that checkout. Review the diff
+and rerun validation before closing. Parallel work uses dispatch task worktrees.

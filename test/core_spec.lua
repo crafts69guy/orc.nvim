@@ -179,6 +179,41 @@ Test.test("core Claude high mode and Rex mode are explicit per-run options", fun
 end)
 
 Test.test(
+	"core launcher automatically enables Rex panes with explicit opt-outs and conflicts",
+	function()
+		for _, kind in ipairs({ "claude", "codex" }) do
+			for _, case in ipairs({
+				{ env = {}, args = {}, panes = true },
+				{ env = {}, args = { "--no-panes" }, panes = false },
+				{ env = { ORC_PANES = "0" }, args = {}, panes = false },
+				{ env = { ORC_PANES = "0" }, args = { "--panes" }, panes = true },
+				{ env = { ORC_PANES = "1" }, args = { "--no-panes" }, panes = false },
+				{ env = { ORC_PANES = "1" }, args = {}, panes = true },
+				{ env = { REX_SESSION = "" }, args = {}, panes = false },
+				{ env = { REX_BLOCK = "" }, args = {}, panes = false },
+			}) do
+				local rt = fake()
+				rt.env = vim.tbl_extend("force", { REX_SESSION = "s", REX_BLOCK = "b" }, case.env)
+				Test.eq(cli.run(rt, vim.list_extend({ kind }, case.args)).code, 0)
+				Test.eq(rt.launched[1].options.env.ORC_PANES, case.panes and "1" or false)
+			end
+			local rt = fake()
+			for _, args in ipairs({
+				{ "--panes", "--no-panes" },
+				{ "--no-panes=true" },
+				{ "--no-panes", "--no-panes" },
+			}) do
+				Test.eq(cli.run(rt, vim.list_extend({ kind }, args)).code, 1)
+			end
+		end
+		local completion = require("orc.completion").fish()
+		assert(completion:find("-l no-panes", 1, true))
+		assert(completion:find("start wait prompt close prune", 1, true))
+		assert(completion:find("-l role -x -a 'implementer scoper'", 1, true))
+	end
+)
+
+Test.test(
 	"core launcher honors documented environment modes and detects combined conflicts",
 	function()
 		local rt = fake()
@@ -210,6 +245,7 @@ Test.test(
 				return {
 					{ path = "/repo", task = "T1", blockId = "worker", sessionId = "own", state = "working" },
 					{ path = "/repo", task = "closed", blockId = "old", state = "closed" },
+					{ path = "/repo", task = "scope", role = "scoper", blockId = "scope", state = "working" },
 				}
 			end,
 		}, function()
@@ -438,7 +474,17 @@ Test.test(
 				and context:find("Remember", 1, true)
 		)
 		rt.env.ORC_PAIR, rt.env.ORC_PANES = nil, "1"
-		assert(hooks.context(rt):find("Pane mode", 1, true))
+		local pane_context = hooks.context(rt)
+		for _, guidance in ipairs({
+			"Pane mode",
+			"--role scoper|implementer",
+			"Reviewer and shipper stay native",
+			"--here",
+			"dispatch worktrees",
+			"background execution",
+		}) do
+			assert(pane_context:find(guidance, 1, true), guidance)
+		end
 		rt.env.REX_BLOCK = nil
 		Test.raises("Rex terminal", function()
 			hooks.context(rt)

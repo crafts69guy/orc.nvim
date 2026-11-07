@@ -98,9 +98,11 @@ and updates the installed plugins.
 | --- | --- |
 | `orc claude`, `orc codex` | Start an orchestrator with shared rules and approved lessons |
 | `orc claude --pair` | One Codex worker beside the orchestrator in Rex |
-| `orc claude --panes` | Dispatch workers in Rex panes, one task worktree each |
+| `orc claude --panes`, `orc codex --panes` | Force pane delegation (automatic inside Rex) |
+| `orc claude --no-panes`, `orc codex --no-panes` | Disable automatic pane mode |
 | `orc wt new\|merge\|remove\|list\|session` | Manage isolated worktrees and serial merges |
 | `orc pane start\|wait\|prompt\|close [--force]` | Manage a worker and its report; `close --force` marks an unreachable record closed without calling Rex |
+| `orc pane prune --path <dir>` | Close successful exits or idle/done workers with a matching done report and evidence; print closed/skipped JSON |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
 | `orc doctor --json` | Prerequisite and integration checks |
 | `orc context --scope all --json` | Audit static Claude/Codex context sources |
@@ -111,6 +113,20 @@ and updates the installed plugins.
 | `orc update` | Fast-forward the clean Git checkout and update installed plugins |
 
 Run `orc --help` for arguments.
+
+Inside Rex (`REX_SESSION` and `REX_BLOCK` set), pane mode turns on automatically
+unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
+forces it; `--panes` conflicts with `--no-panes`. Start workers with
+`orc pane start <feature> <task> --path <checkout> --brief <file>`: Codex and
+`--role implementer` are defaults. Use `--role scoper` for read-only scoping or
+`--kind claude` for Claude. Scopers return reports in their final message; the
+Stop hook saves a matching Run report when its file is absent.
+
+In pane mode, scopers and implementers use Codex pane workers; reviewers and
+shippers stay native. For one task add `--here` in the session checkout and
+do not edit beside its implementer. Parallel tasks use dispatch worktrees.
+Run `orc pane wait` with the harness's background execution. Prune uses the same
+ownership/process checks as non-force close and a lock per task across the repository.
 
 **Safety defaults:** permission bypass is explicit (`--yolo`), never the default.
 Workers must not commit or push. A terminal's `done` indicator is not validation —

@@ -26,7 +26,7 @@ function M.fish()
 	end
 	table.sort(lines)
 	for _, name in ipairs({ "claude", "codex" }) do
-		for _, flag in ipairs({ "yolo", "panes", "pair" }) do
+		for _, flag in ipairs({ "yolo", "panes", "no-panes", "pair" }) do
 			lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from "
 				.. name
 				.. "' -l "
@@ -45,7 +45,7 @@ function M.fish()
 	end
 	for _, pair in ipairs({
 		{ "wt", "new merge remove list session" },
-		{ "pane", "start wait prompt close" },
+		{ "pane", "start wait prompt close prune" },
 		{ "inkdrop", "init inbox claim push pull lessons" },
 		{
 			"inkdrop-mcp",
@@ -65,6 +65,8 @@ function M.fish()
 			.. " -r"
 	end
 	lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from inkdrop-mcp' -l apply"
+	lines[#lines + 1] =
+		"complete -c orc -n '__fish_seen_subcommand_from pane' -l role -x -a 'implementer scoper'"
 	for _, flag in ipairs({
 		"path",
 		"brief",

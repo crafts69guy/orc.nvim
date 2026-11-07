@@ -64,6 +64,35 @@ local function options(argv, flag)
 	end
 end
 
+Test.test("providers scopers are read-only with role-specific Claude models", function()
+	fixture(function(rt, state)
+		for _, level in ipairs({ "default", "high" }) do
+			rt.env.ORC_LEVEL = level
+			for _, kind in ipairs({ "claude", "codex" }) do
+				local spec = providers.plan(rt, {
+					kind = kind,
+					role = "scoper",
+					workerFile = "/worker.json",
+					prompt = "scope this",
+				})
+				Test.eq(spec.env.ORC_ROLE, "scoper")
+				Test.eq(spec.env.ORC_WORKER_FILE, "/worker.json")
+				if kind == "codex" then
+					Test.eq(spec.argv, { "codex", "--sandbox", "read-only", "scope this" })
+				else
+					Test.eq(options(spec.argv, "--model"), level == "high" and "sonnet" or "haiku")
+					Test.eq(options(spec.argv, "--disallowedTools"), "Edit,Write,NotebookEdit")
+					-- The variadic tool list must be closed by an option before the prompt.
+					Test.eq(options(spec.argv, "Edit,Write,NotebookEdit"), "--plugin-dir")
+					Test.eq(spec.argv[#spec.argv], "scope this")
+				end
+			end
+		end
+		Test.eq(#state.probes, 0)
+		Test.eq(state.checks, 0)
+	end)
+end)
+
 Test.test(
 	"providers retain Claude local policy selected through a canonical directory alias",
 	function()
