@@ -189,6 +189,7 @@ function M.handback(rt, path)
 end
 
 ---Build the common orchestration context for both harnesses.
+---Includes only the active ORC_LEVEL routing paragraph (default: Single).
 ---@param rt orc.Runtime
 ---@param cwd? string
 ---@return string
@@ -241,14 +242,20 @@ function M.context(rt, cwd)
 		text[#text + 1] = rt.env.ORC_PAIR == "1"
 				and "Pair mode: use one Codex worker with `orc pane start <feature> <task> --here --path <checkout> --brief <file> --kind codex`; do not write beside the worker."
 			or table.concat({
-				"Pane mode (automatic in Rex): delegate scopers and implementers through `orc pane start <feature> <task> --path <checkout> --brief <file> --role scoper|implementer` Codex workers, rather than native subagents.",
-				"Reviewer and shipper stay native. For a single task add `--here` in the session checkout; the orchestrator must not edit beside the implementer.",
+				"Pane mode (automatic in Rex): delegate scopers and implementers through `orc pane start <feature> <task> --path <checkout> --brief <file> --role scoper|implementer` workers (Codex by default), rather than native subagents.",
+				"Use cross-vendor review per the orchestrator rules; shipper stays native. For a single task add `--here` in the session checkout; the orchestrator must not edit beside the implementer.",
 				"For parallel tasks use dispatch worktrees. Run `orc pane wait` with the harness's background execution.",
 			}, "\n")
 	end
 	if rt.env.ORC_LEVEL == "high" then
 		text[#text + 1] =
-			"High level: implementer on opus; scoper and shipper on sonnet; reviewer unchanged."
+			"Level high (Cascade): run deterministic checks first; after a review round fails, escalate instead of retrying the same tier: switch the worker to the other --kind or a stronger Claude model, and record why."
+	elseif rt.env.ORC_LEVEL == "max" then
+		text[#text + 1] =
+			"Level max (Critique): run deterministic checks first; every substantial diff gets two independent reviews in parallel from different vendors; merge findings into one follow-up for the same implementer."
+	else
+		text[#text + 1] =
+			"Level default (Single): one implementer per task; run deterministic checks first; use the reviewer only for risky diffs (security, concurrency, migrations, public APIs)."
 	end
 	local loaded, inkdrop = pcall(require, "orc.inkdrop")
 	if loaded then

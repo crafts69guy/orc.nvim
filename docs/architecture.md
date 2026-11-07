@@ -21,6 +21,9 @@ The harness makes decisions using canonical Markdown roles, rules and skills.
 The Lua workflow manages identities, files, subprocesses and reports. Rex owns
 terminal processes, layout and events. Neovim renders state and invokes the same
 workflow commands asynchronously. This is not an independent LLM agent loop.
+Execution levels select Single (`default`), Cascade (`high`) or Critique (`max`)
+in the injected context, with the launch level stored on worker records and shown
+in picker rows; Claude `high`/`max` share model routing while Codex selection stays native.
 
 ## Runtime
 

@@ -176,7 +176,33 @@ Test.test("core Claude high mode and Rex mode are explicit per-run options", fun
 	Test.eq(agents.implementer.tools, { "Read", "Write", "Edit", "Bash" })
 	Test.eq(cli.run(rt, { "claude", "--panes", "--level=default" }).code, 0)
 	Test.eq(rt.launched[2].options.env.ORC_PANES, "1")
+	Test.eq(cli.run(rt, { "claude", "--level", "max", "--pair", "prompt" }).code, 0)
+	Test.eq(rt.launched[3].options.env.ORC_LEVEL, "max")
+	Test.eq(rt.launched[3].argv, rt.launched[1].argv)
 end)
+
+Test.test(
+	"core levels accept max from flags and environment without native Codex model flags",
+	function()
+		for _, kind in ipairs({ "claude", "codex" }) do
+			local rt = fake()
+			rt.env.ORC_LEVEL = "max"
+			Test.eq(cli.run(rt, { kind }).code, 0)
+			Test.eq(rt.launched[1].options.env.ORC_LEVEL, "max")
+			Test.eq(cli.run(rt, { kind, "--level=default" }).code, 0)
+			Test.eq(rt.launched[2].options.env.ORC_LEVEL, "default")
+			if kind == "codex" then
+				assert(not vim.tbl_contains(rt.launched[1].argv, "--model"))
+				assert(not vim.tbl_contains(rt.launched[1].argv, "--agents"))
+			end
+			local invalid = cli.run(rt, { kind, "--level=bad" })
+			Test.eq(invalid.code, 1)
+			assert(invalid.err:find("--level must be default, high or max", 1, true))
+			Test.eq(#rt.launched, 2)
+		end
+		assert(cli.usage:find("--level default|high|max", 1, true))
+	end
+)
 
 Test.test(
 	"core launcher automatically enables Rex panes with explicit opt-outs and conflicts",
@@ -210,6 +236,7 @@ Test.test(
 		assert(completion:find("-l no-panes", 1, true))
 		assert(completion:find("start wait prompt close prune", 1, true))
 		assert(completion:find("-l role -x -a 'implementer scoper'", 1, true))
+		assert(completion:find("-l level -x -a 'default high max'", 1, true))
 	end
 )
 
@@ -470,7 +497,7 @@ Test.test(
 		local context = hooks.context(rt)
 		assert(
 			context:find("Pair mode", 1, true)
-				and context:find("High level", 1, true)
+				and context:find("Level high (Cascade)", 1, true)
 				and context:find("Remember", 1, true)
 		)
 		rt.env.ORC_PAIR, rt.env.ORC_PANES = nil, "1"
@@ -478,7 +505,7 @@ Test.test(
 		for _, guidance in ipairs({
 			"Pane mode",
 			"--role scoper|implementer",
-			"Reviewer and shipper stay native",
+			"cross-vendor review",
 			"--here",
 			"dispatch worktrees",
 			"background execution",
@@ -1327,6 +1354,46 @@ Test.test(
 	end
 )
 
+Test.test("core context injects only the active level with its routing instructions", function()
+	for _, case in ipairs({
+		{
+			pattern = "Single",
+			guidance = { "one implementer per task", "only for risky diffs", "public APIs" },
+		},
+		{
+			level = "default",
+			pattern = "Single",
+			guidance = { "security", "concurrency", "migrations" },
+		},
+		{
+			level = "high",
+			pattern = "Cascade",
+			guidance = { "escalate", "other --kind", "stronger Claude model", "record why" },
+		},
+		{
+			level = "max",
+			pattern = "Critique",
+			guidance = {
+				"every substantial diff",
+				"two independent reviews in parallel",
+				"different vendors",
+				"same implementer",
+			},
+		},
+	}) do
+		local rt = fake()
+		rt.env.ORC_LEVEL = case.level
+		local context = hooks.context(rt)
+		assert(context:find("deterministic checks first", 1, true))
+		for _, pattern in ipairs({ "Single", "Cascade", "Critique" }) do
+			Test.eq(context:find("(" .. pattern .. ")", 1, true) ~= nil, pattern == case.pattern)
+		end
+		for _, guidance in ipairs(case.guidance) do
+			assert(context:find(guidance, 1, true), guidance)
+		end
+	end
+end)
+
 Test.test(
 	"core lessons rank by score and denied hooks tolerate unavailable signal storage",
 	function()
@@ -1344,7 +1411,7 @@ Test.test(
 		rt.files["/transcript"] = "{}"
 		Test.eq(hooks.handback(rt, "/transcript"), nil)
 		Test.eq(hooks.run(rt, "subagent-stop", '{"agent_type":"reviewer"}').out, "")
-		Test.eq(hooks.context(rt), "Fixture rules\n\nCLI: `/plugin/bin/orc`.")
+		assert(hooks.context(rt):find("Fixture rules\n\nCLI: `/plugin/bin/orc`.", 1, true) == 1)
 	end
 )
 

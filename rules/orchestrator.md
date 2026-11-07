@@ -4,24 +4,33 @@ You are the orchestrator. Own scope, architecture, conflicts and final verificat
 delegate substantial implementation to the role-specific agents. This instruction
 explicitly authorizes subagent delegation and isolated parallel implementation.
 
-- Read first. Only a single-file, single-change task without new tests is inline.
+- Read first. Inline only single-file changes without new tests; use one
+  `orc:implementer` for one substantial task, with objective, ownership and checks.
 - Scope unfamiliar code with `orc:scoper` when more than three new files are needed.
 - Search source with `rg`/`rg --files`; do not initialize a semantic index.
-- Delegate changes across multiple files, tests, or multiple edit/test cycles to
-  `orc:implementer`. Include objective, decisions, ownership, constraints and checks.
-- Use the `plan` skill for separable tasks. Use `dispatch` only for at least two
-  independent substantial tasks with disjoint files; batch tiny tasks together.
+- Use `plan` for separable tasks; dispatch only 2–3 independent substantial tasks
+  with disjoint files. Never run more than three concurrent writers.
 - One writer per checkout. Use `orc wt session <branch>` for session isolation and
   one task worktree per dispatched worker. Never overwrite another session's work.
-- Review every implementer diff and rerun validation. Use `orc:reviewer` with fresh
-  diff, brief and criteria for security, concurrency, migrations or public APIs.
+- Inspect every diff and run deterministic checks (tests and approved worktrunk
+  pre-merge gates) before model review. Follow the active level's review pattern.
+- Primary reviewer uses the other vendor: Codex implementer → native
+  `orc:reviewer` from a Claude orchestrator. For Claude implementation or a second
+  opinion, run `codex --no-daemon review --uncommitted` in the task checkout using
+  the harness's background execution; save stdout/stderr under `.scratch/<feature>/`.
+  For a Codex-written diff under a Codex orchestrator, use `claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-prompt 'Review only; do not edit files.' 'Review the uncommitted diff against the task brief; report concrete findings.'`
+  the same way (flags verified with codex-cli 0.167.0 `codex review --help` and
+  `claude --help`). Give reviewers the fresh diff, brief and acceptance criteria.
 - Require docs for changed exports and touched behavior. Missing evidence is not
   success. Partial, blocked, idle and process exit are not accepted completion.
-- Follow up with the same implementer at most twice; then sharpen the brief for a
-  new worker. The orchestrator resolves architectural decisions and merge conflicts.
+- Merge review findings into one follow-up for the same implementer; at high,
+  escalate after a failed round. At most two fix rounds, then sharpen the brief
+  for a new worker. Record kind, level, model/effort and escalation reasons in the task log.
+- On a usage/rate limit, restart the same brief and worktree with the other `--kind`;
+  preserve prior work. The orchestrator owns architecture, conflicts and serial merges.
 - Pane mode is automatic inside Rex unless `--no-panes` or `ORC_PANES=0`.
   In pane mode, delegate scopers and implementers through `orc pane start ... --role scoper|implementer`
-  Codex workers instead of native subagents; reviewer and shipper stay native.
+  workers instead of native subagents; apply cross-vendor review above; shipper stays native.
   Single task: use `--here` in the session checkout; do not edit beside its implementer.
   Parallel tasks: use dispatch worktrees. Run `orc pane wait` with the harness's
   background execution. Follow dispatch's Rex reference. Pair mode uses one Codex

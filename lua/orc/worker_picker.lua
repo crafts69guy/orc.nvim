@@ -23,6 +23,8 @@ local function worker_items(document)
 			end
 			local role = worker.role or "implementer"
 			assert(type(role) == "string", "orc: invalid worker role")
+			local level = worker.level or "default"
+			assert(type(level) == "string", "orc: invalid worker level")
 			items[#items + 1] = {
 				text = worker.feature
 					.. "/"
@@ -31,6 +33,8 @@ local function worker_items(document)
 					.. role
 					.. "  "
 					.. worker.kind
+					.. "  "
+					.. level
 					.. "  "
 					.. worker.state,
 				value = worker,
@@ -41,6 +45,7 @@ local function worker_items(document)
 end
 
 ---List workers asynchronously with Snacks; focusing validates the recorded Rex identity.
+---Rows include the recorded execution level, defaulting to default for older records.
 ---@param rt orc.Runtime Runtime supplying asynchronous subprocesses and the project cwd.
 ---@param opts? orc.WorkerPickerOptions Popup context.
 ---@return orc.ProcessHandle handle Closing stops only owned CLI children, never Rex workers.

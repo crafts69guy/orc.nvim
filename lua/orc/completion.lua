@@ -32,13 +32,16 @@ function M.fish()
 				.. "' -l "
 				.. flag
 		end
-		for _, flag in ipairs({ "level", "wt", "base" }) do
+		for _, flag in ipairs({ "wt", "base" }) do
 			lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from "
 				.. name
 				.. "' -l "
 				.. flag
 				.. " -r"
 		end
+		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from "
+			.. name
+			.. "' -l level -x -a 'default high max'"
 		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from "
 			.. name
 			.. "' -l inkdrop-mcp -x -a 'inherit shared'"

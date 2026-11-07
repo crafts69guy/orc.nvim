@@ -271,6 +271,7 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	Test.eq(record.blockId, "block:worker")
 	Test.eq(record.hostId, "host")
 	Test.eq(record.instanceId, "instance")
+	Test.eq(record.level, "default")
 	local command = table.concat(state.layout.block.options.command, " ")
 	assert(command:find("--sandbox workspace-write", 1, true))
 	assert(not command:find("--add-dir", 1, true))
@@ -282,7 +283,7 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	assert(not rt.exists(rt.path(rt.cwd, ".orc", "report.md")))
 end)
 
-Test.test("workers default to Codex implementers and normalize legacy roles", function()
+Test.test("workers default to Codex implementers and normalize legacy roles and levels", function()
 	local rt, state = fake()
 	Test.eq(
 		workers.run(rt, { "start", "feature", "task", "--path", rt.cwd, "--brief", "brief.md" }).code,
@@ -291,9 +292,10 @@ Test.test("workers default to Codex implementers and normalize legacy roles", fu
 	local record = state.record()
 	Test.eq(record.kind, "codex")
 	Test.eq(record.role, "implementer")
-	record.role = nil
+	record.role, record.level = nil, nil
 	state.store(record)
 	Test.eq(workers.collect(rt)[1].role, "implementer")
+	Test.eq(workers.collect(rt)[1].level, "default")
 	state.hook("UserPromptSubmit")
 	state.hook("Stop")
 	state.native = "idle"
@@ -309,6 +311,18 @@ Test.test("workers default to Codex implementers and normalize legacy roles", fu
 	local _, invalid = fake()
 	Test.eq(invalid.start({ "--role", "reviewer" }).code, 1)
 	Test.eq(invalid.created, 0)
+end)
+
+Test.test("workers persist the start level independently of later caller environments", function()
+	for _, level in ipairs({ "default", "high", "max" }) do
+		local rt, state = fake()
+		rt.env.ORC_LEVEL = level
+		Test.eq(state.start().code, 0)
+		Test.eq(state.record().level, level)
+		rt.env.ORC_LEVEL = "default"
+		Test.eq(workers.collect(rt)[1].level, level)
+		Test.eq(state.record().level, level)
+	end
 end)
 
 Test.test(

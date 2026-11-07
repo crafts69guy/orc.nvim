@@ -15,11 +15,16 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
 3. Start implementers concurrently in their assigned worktrees. Do not allow commits.
 4. Read each report and inspect each diff. Rerun checks. A partial/blocked report
    requires a follow-up, never a merge. At most two fix rounds per worker.
-5. Close the accepted task's owned worker pane, then merge tasks one at a time:
+5. Apply the active level and cross-vendor rules: default (Single) reviews risky
+   diffs only; high (Cascade) escalates kind or Claude model after a failed review
+   round and records why; max (Critique) runs two independent vendor reviews in
+   parallel for every substantial diff and merges findings into one follow-up
+   for the same implementer. Deterministic checks precede model review.
+6. Close the accepted task's owned worker pane, then merge tasks one at a time:
    `orc wt merge <base> <task> --message "feat: concrete behavior"`.
    A successful merge removes the task checkout, so `orc pane close` no longer
    resolves it. A conflict retains the checkout; the orchestrator resolves it.
-6. Run combined validation after each wave.
+7. Run combined validation after each wave.
 
 For an abandoned task, close its pane and use `orc wt remove <base> <task>`;
 this discards its worktree and branch. Never apply it to unrelated work.

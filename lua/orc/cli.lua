@@ -2,7 +2,7 @@ local M = {}
 M.version = "0.1.0"
 M.usage = [[usage: orc <command> [args]
 
-  claude|codex [--yolo] [--level default|high] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
+  claude|codex [--yolo] [--level default|high|max] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
   wt new|merge|remove|list|session ...
   pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--here]
   pane wait|prompt|close <task> --path <dir> ...
@@ -86,8 +86,8 @@ local function launch(rt, kind, argv)
 	flags.level = flags.level or rt.env.ORC_LEVEL
 	assert(not (flags.pair and flags.panes), "--pair and --panes cannot be combined")
 	assert(
-		not flags.level or flags.level == "default" or flags.level == "high",
-		"--level must be default or high"
+		not flags.level or flags.level == "default" or flags.level == "high" or flags.level == "max",
+		"--level must be default, high or max"
 	)
 	assert(not flags.pair or kind == "claude", "--pair requires a Claude orchestrator")
 	if flags.pair or flags.panes then

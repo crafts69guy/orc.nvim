@@ -116,6 +116,19 @@ workers can be acknowledged.
 
 Run `orc --help` for arguments.
 
+Choose `--level default|high|max` (or `ORC_LEVEL`; the flag wins):
+
+| Level | Routing after deterministic checks |
+| --- | --- |
+| `default` (Single) | One implementer per task; reviewer only for security, concurrency, migrations or public API risks |
+| `high` (Cascade) | Escalate kind or Claude model after a failed review round; record why |
+| `max` (Critique) | Two independent vendor reviews in parallel for every substantial diff; one combined follow-up to the same implementer |
+
+Claude `high` and `max` share elevated role models; Codex model selection stays
+native. Worker records and picker rows show the level captured at start; older
+records show `default`. Primary review uses the other vendor. On a usage/rate
+limit, restart the same brief and worktree with the other `--kind`.
+
 Inside Rex (`REX_SESSION` and `REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with
@@ -124,9 +137,10 @@ forces it; `--panes` conflicts with `--no-panes`. Start workers with
 `--kind claude` for Claude. Scopers return reports in their final message; the
 Stop hook saves a matching Run report when its file is absent.
 
-In pane mode, scopers and implementers use Codex pane workers; reviewers and
-shippers stay native. For one task add `--here` in the session checkout and
-do not edit beside its implementer. Parallel tasks use dispatch worktrees.
+In pane mode, scopers and implementers use pane workers (Codex by default);
+review follows the cross-vendor rules and shippers stay native. For one task add
+`--here` in the session checkout and do not edit beside its implementer. Parallel
+tasks use dispatch worktrees.
 Run `orc pane wait` with the harness's background execution. If the worker prompt
 is still unacknowledged after 60 s (for example untrusted hooks in Codex), wait
 returns `unacknowledged` with a hint instead of running to timeout. Prune uses the same

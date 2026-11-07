@@ -194,6 +194,7 @@ end
 ---Shared mode performs a bounded connection/configuration preflight and never falls back to STDIO.
 ---Worker launches remove caller-known secret names except harness auth prefixes;
 ---Codex additionally filters secret patterns from model-run shell environments.
+---Claude high/max levels share elevated role models; explicit native models win.
 ---@param rt orc.Runtime
 ---@param request orc.ProviderRequest
 ---@return orc.LaunchSpec
@@ -251,6 +252,7 @@ function M.plan(rt, request)
 		end
 	end
 	if kind == "claude" then
+		local elevated = run_rt.env.ORC_LEVEL == "high" or run_rt.env.ORC_LEVEL == "max"
 		-- --mcp-config and --disallowedTools are variadic, so a following option must
 		-- precede any positional prompt; --plugin-dir always follows them.
 		if role == "scoper" then
@@ -264,10 +266,10 @@ function M.plan(rt, request)
 		if not model then
 			local selected = "sonnet"
 			if role == "scoper" then
-				if rt.env.ORC_LEVEL ~= "high" then
+				if not elevated then
 					selected = "haiku"
 				end
-			elseif role == "main" or rt.env.ORC_LEVEL == "high" then
+			elseif role == "main" or elevated then
 				selected = "opus"
 			end
 			vim.list_extend(command, { "--model", selected })
@@ -275,7 +277,7 @@ function M.plan(rt, request)
 		if flags.yolo then
 			command[#command + 1] = "--dangerously-skip-permissions"
 		end
-		if role == "main" and flags.level == "high" then
+		if role == "main" and elevated then
 			local definitions = {}
 			for _, file in ipairs(rt.list(rt.path(rt.root, "agents"))) do
 				if file:match("%.md$") then

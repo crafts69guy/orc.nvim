@@ -167,7 +167,7 @@ Test.test(
 
 Test.test("providers scopers are read-only with role-specific Claude models", function()
 	fixture(function(rt, state)
-		for _, level in ipairs({ "default", "high" }) do
+		for _, level in ipairs({ "default", "high", "max" }) do
 			rt.env.ORC_LEVEL = level
 			for _, kind in ipairs({ "claude", "codex" }) do
 				local spec = providers.plan(rt, {
@@ -186,7 +186,7 @@ Test.test("providers scopers are read-only with role-specific Claude models", fu
 					Test.eq(vim.list_slice(spec.argv, 5, 8), codex_policy)
 					Test.eq(spec.argv[#spec.argv], "scope this")
 				else
-					Test.eq(options(spec.argv, "--model"), level == "high" and "sonnet" or "haiku")
+					Test.eq(options(spec.argv, "--model"), level == "default" and "haiku" or "sonnet")
 					Test.eq(options(spec.argv, "--disallowedTools"), "Edit,Write,NotebookEdit")
 					-- The variadic tool list must be closed by an option before the prompt.
 					Test.eq(options(spec.argv, "Edit,Write,NotebookEdit"), "--plugin-dir")
@@ -198,6 +198,41 @@ Test.test("providers scopers are read-only with role-specific Claude models", fu
 		Test.eq(state.checks, 0)
 	end)
 end)
+
+Test.test(
+	"providers max matches high Claude routing and preserves native model overrides",
+	function()
+		fixture(function(rt, state)
+			state.lists =
+				{ ["/plugin/agents"] = { "implementer.md", "reviewer.md", "scoper.md", "shipper.md" } }
+			for _, name in ipairs({ "implementer", "reviewer", "scoper", "shipper" }) do
+				state.files["/plugin/agents/" .. name .. ".md"] = "---\nname: "
+					.. name
+					.. "\ndescription: role\n---\nBody"
+			end
+			for _, level in ipairs({ "high", "max" }) do
+				rt.env.ORC_LEVEL = level
+				for _, role in ipairs({ "main", "implementer", "scoper" }) do
+					local spec = providers.plan(rt, { kind = "claude", role = role })
+					Test.eq(options(spec.argv, "--model"), role == "scoper" and "sonnet" or "opus")
+					if role == "main" then
+						local agents = rt.decode(options(spec.argv, "--agents"))
+						Test.eq(agents.implementer.model, "opus")
+						Test.eq(agents.reviewer.model, "opus")
+						Test.eq(agents.scoper.model, "sonnet")
+						Test.eq(agents.shipper.model, "sonnet")
+					end
+					local native =
+						providers.plan(rt, { kind = "claude", role = role, args = { "--model", "custom" } })
+					Test.eq(options(native.argv, "--model"), "custom")
+				end
+				local overridden =
+					providers.plan(rt, { kind = "claude", role = "main", flags = { level = "default" } })
+				Test.eq(options(overridden.argv, "--agents"), nil)
+			end
+		end)
+	end
+)
 
 Test.test(
 	"providers retain Claude local policy selected through a canonical directory alias",

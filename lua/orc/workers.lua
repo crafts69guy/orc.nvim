@@ -10,6 +10,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field root string Main checkout containing the durable record.
 ---@field kind 'claude'|'codex' Harness executable.
 ---@field role 'implementer'|'scoper' Missing roles in older records default to implementer.
+---@field level 'default'|'high'|'max' ORC_LEVEL at start; missing levels default to default.
 ---@field sessionId string Rex session ID.
 ---@field blockId? string Rex block created by this run.
 ---@field windowId? string Rex window returned during creation.
@@ -74,6 +75,7 @@ local function read_record(rt, file)
 	if record.role == nil then
 		record.role = "implementer"
 	end
+	record.level = record.level or "default"
 	assert(record.role == "implementer" or record.role == "scoper", "orc pane: invalid worker role")
 	return record
 end
@@ -433,6 +435,7 @@ local function start(rt, feature, task, values, file)
 		root = main_root(rt, path),
 		kind = kind,
 		role = role,
+		level = rt.env.ORC_LEVEL or "default",
 		sessionId = rt.env.REX_SESSION,
 		hostId = identity.host_id,
 		instanceId = identity.instance_id,

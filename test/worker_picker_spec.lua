@@ -143,12 +143,16 @@ Test.test(
 	"worker picker lists non-closed workers and focuses exact Rex identity before closing",
 	function()
 		fixture(function(rt, state)
-			local scoper =
-				vim.tbl_extend("force", state.worker, { task = "T2", role = "scoper", state = "idle" })
-			local closed = vim.tbl_extend("force", state.worker, { task = "T3", state = "closed" })
+			local scoper = vim.tbl_extend(
+				"force",
+				state.worker,
+				{ task = "T2", role = "scoper", level = "high", state = "idle" }
+			)
+			local max = vim.tbl_extend("force", state.worker, { task = "T3", level = "max" })
+			local closed = vim.tbl_extend("force", state.worker, { task = "T4", state = "closed" })
 			local handle = state.open(
 				{ client_id = "client:origin", cwd = rt.cwd },
-				{ state.worker, scoper, closed }
+				{ state.worker, scoper, max, closed }
 			)
 			Test.eq(state.calls, {
 				{
@@ -162,8 +166,9 @@ Test.test(
 					return item.text
 				end, opts.items),
 				{
-					"feature/T1  implementer  codex  running",
-					"feature/T2  scoper  codex  idle",
+					"feature/T1  implementer  codex  default  running",
+					"feature/T2  scoper  codex  high  idle",
+					"feature/T3  implementer  codex  max  running",
 				}
 			)
 			Test.eq(opts.items[2].value, scoper)
@@ -319,6 +324,10 @@ Test.test("worker picker rejects malformed status documents with a diagnostic", 
 		{
 			schemaVersion = 1,
 			workers = { { feature = "f", task = "t", kind = "codex", state = "idle", role = {} } },
+		},
+		{
+			schemaVersion = 1,
+			workers = { { feature = "f", task = "t", kind = "codex", state = "idle", level = {} } },
 		},
 	}) do
 		fixture(function(rt, state)
