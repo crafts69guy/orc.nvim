@@ -5,17 +5,20 @@ local M = {}
 ---@field client_id? string Originating Rex app, used when focusing a worker.
 ---@field quit_on_close? boolean Exit the dedicated popup process on close; false in a normal editor.
 
+local function assert_cwd(cwd)
+	if not cwd then
+		return
+	end
+	local stat = type(cwd) == "string" and cwd:sub(1, 1) == "/" and vim.uv.fs_stat(cwd)
+	assert(stat and stat.type == "directory", "orc: cwd must be an existing absolute directory")
+end
+
 ---Open the task view; neither closing the view nor its popup closes a Rex worker.
 ---@param opts? orc.ViewOptions Explicit popup context.
 ---@return integer buffer Task panel buffer.
 function M.open(opts)
 	opts = opts or {}
-	if opts.cwd then
-		local stat = type(opts.cwd) == "string"
-			and opts.cwd:sub(1, 1) == "/"
-			and vim.uv.fs_stat(opts.cwd)
-		assert(stat and stat.type == "directory", "orc: cwd must be an existing absolute directory")
-	end
+	assert_cwd(opts.cwd)
 	return require("orc.ui").open(require("orc.runtime").new({ cwd = opts.cwd }), opts)
 end
 
@@ -31,12 +34,7 @@ end
 ---@return orc.ProcessHandle handle Stops only the view's owned subprocesses.
 function M.workers(opts)
 	opts = opts or {}
-	if opts.cwd then
-		local stat = type(opts.cwd) == "string"
-			and opts.cwd:sub(1, 1) == "/"
-			and vim.uv.fs_stat(opts.cwd)
-		assert(stat and stat.type == "directory", "orc: cwd must be an existing absolute directory")
-	end
+	assert_cwd(opts.cwd)
 	return require("orc.worker_picker").open(require("orc.runtime").new({ cwd = opts.cwd }), opts)
 end
 
