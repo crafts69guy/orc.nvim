@@ -2,6 +2,13 @@ local cli = require("orc.cli")
 local providers = require("orc.providers")
 local runtime = require("orc.runtime")
 
+local codex_policy = {
+	"-c",
+	"shell_environment_policy.ignore_default_excludes=false",
+	"-c",
+	'shell_environment_policy.exclude=["INKDROP_LOCAL_*","*KEY*","*TOKEN*","*SECRET*","*PASSWORD*","*PASSWD*","*CREDENTIAL*","*PRIVATE*"]',
+}
+
 local function fixture(fn)
 	local rt = runtime.new({ root = "/plugin", cwd = "/repo" })
 	rt.env = { HOME = "/home", PATH = "/tools", INKDROP_LOCAL_PASSWORD = "synthetic-secret" }
@@ -64,6 +71,75 @@ local function options(argv, flag)
 	end
 end
 
+Test.test(
+	"providers scrub worker secrets while preserving harness auth and main environments",
+	function()
+		fixture(function(rt)
+			local secrets = {
+				"github_token",
+				"Api_Key",
+				"APP_SECRET",
+				"Db_Password",
+				"SSH_PASSWD",
+				"SERVICE_CREDENTIALS",
+				"private_cert",
+				"INKDROP_LOCAL_SERVER_URL",
+				"inkdrop_local_username",
+				"INKDROP_LOCAL_EXTRA",
+				"OTHER_OPENAI_KEY",
+			}
+			local auth = { "ANTHROPIC_API_KEY", "CLAUDE_TOKEN", "OPENAI_API_KEY", "codex_private_token" }
+			for _, name in ipairs(vim.list_extend(vim.deepcopy(secrets), auth)) do
+				rt.env[name] = "synthetic-secret"
+			end
+			rt.env.MONKEY = "also-matches-key"
+			rt.env.NORMAL_SETTING = "safe"
+			local original = vim.deepcopy(rt.env)
+			for _, kind in ipairs({ "claude", "codex" }) do
+				for _, mode in ipairs({ "inherit", "shared" }) do
+					for _, role in ipairs({ "implementer", "scoper", "main" }) do
+						local spec = providers.plan(rt, {
+							kind = kind,
+							role = role,
+							flags = { ["inkdrop-mcp"] = mode },
+							args = { "--model", "native-model" },
+							prompt = "literal; worker assignment",
+						})
+						for _, name in ipairs(secrets) do
+							local expected
+							if role ~= "main" or mode == "shared" and name == "INKDROP_LOCAL_SERVER_URL" then
+								expected = false
+							end
+							Test.eq(spec.env[name], expected)
+						end
+						for _, name in ipairs(auth) do
+							Test.eq(spec.env[name], nil)
+							Test.eq(vim.tbl_extend("force", {}, rt.env, spec.env)[name], "synthetic-secret")
+						end
+						Test.eq(spec.env.NORMAL_SETTING, nil)
+						if role ~= "main" then
+							Test.eq(spec.env.MONKEY, false)
+						end
+						Test.eq(spec.argv[#spec.argv], "literal; worker assignment")
+						Test.eq(vim.list_slice(spec.argv, #spec.argv - 2), {
+							"--model",
+							"native-model",
+							"literal; worker assignment",
+						})
+						if kind == "codex" and role ~= "main" then
+							Test.eq(vim.list_slice(spec.argv, #spec.argv - 6, #spec.argv - 3), codex_policy)
+						else
+							assert(not table.concat(spec.argv, " "):find("shell_environment_policy", 1, true))
+						end
+						assert(not table.concat(spec.argv, " "):find("synthetic-secret", 1, true))
+						Test.eq(rt.env, original)
+					end
+				end
+			end
+		end)
+	end
+)
+
 Test.test("providers scopers are read-only with role-specific Claude models", function()
 	fixture(function(rt, state)
 		for _, level in ipairs({ "default", "high" }) do
@@ -78,7 +154,9 @@ Test.test("providers scopers are read-only with role-specific Claude models", fu
 				Test.eq(spec.env.ORC_ROLE, "scoper")
 				Test.eq(spec.env.ORC_WORKER_FILE, "/worker.json")
 				if kind == "codex" then
-					Test.eq(spec.argv, { "codex", "--sandbox", "read-only", "scope this" })
+					Test.eq(vim.list_slice(spec.argv, 1, 3), { "codex", "--sandbox", "read-only" })
+					Test.eq(vim.list_slice(spec.argv, 4, 7), codex_policy)
+					Test.eq(spec.argv[#spec.argv], "scope this")
 				else
 					Test.eq(options(spec.argv, "--model"), level == "high" and "sonnet" or "haiku")
 					Test.eq(options(spec.argv, "--disallowedTools"), "Edit,Write,NotebookEdit")
@@ -207,7 +285,7 @@ Test.test(
 				rt,
 				{ kind = "codex", role = "implementer", args = { "-C", "/elsewhere", "-pwork" } }
 			)
-			Test.eq(vim.list_slice(inherited.argv, 4), { "-C", "/elsewhere", "-pwork" })
+			Test.eq(vim.list_slice(inherited.argv, 8), { "-C", "/elsewhere", "-pwork" })
 		end)
 	end
 )
@@ -246,10 +324,9 @@ Test.test(
 				workerFile = "/worker.json",
 				prompt = "literal; assignment\nline two",
 			})
-			Test.eq(
-				worker.argv,
-				{ "codex", "--sandbox", "workspace-write", "literal; assignment\nline two" }
-			)
+			Test.eq(vim.list_slice(worker.argv, 1, 3), { "codex", "--sandbox", "workspace-write" })
+			Test.eq(vim.list_slice(worker.argv, 4, 7), codex_policy)
+			Test.eq(worker.argv[8], "literal; assignment\nline two")
 			Test.eq(worker.cwd, "/worktree")
 			Test.eq(worker.env.ORC_ROLE, "implementer")
 			Test.eq(worker.env.ORC_WORKER_FILE, "/worker.json")
@@ -460,7 +537,8 @@ Test.test(
 				"--json",
 			})
 			Test.eq(state.probes[1].opts.cwd, "/task")
-			Test.eq(vim.list_slice(plan.argv, 6), args)
+			Test.eq(vim.list_slice(plan.argv, 6, 9), codex_policy)
+			Test.eq(vim.list_slice(plan.argv, 10), args)
 			Test.eq(
 				vim.list_slice(plan.argv, 1, 5),
 				{ "codex", "-c", "mcp_servers.inkdrop.required=true", "--sandbox", "workspace-write" }

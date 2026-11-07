@@ -6,6 +6,30 @@ local credential_names = {
 	"INKDROP_LOCAL_SERVER_URL",
 }
 
+local secret_fragments = { "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE" }
+
+local function worker_secret(name)
+	name = name:upper()
+	-- shortcut: harness auth prefixes stay at launch until provider authentication can be isolated.
+	if
+		name:match("^ANTHROPIC_")
+		or name:match("^CLAUDE_")
+		or name:match("^OPENAI_")
+		or name:match("^CODEX_")
+	then
+		return false
+	end
+	if name:match("^INKDROP_LOCAL_") then
+		return true
+	end
+	for _, fragment in ipairs(secret_fragments) do
+		if name:find(fragment, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
 local function decoded(rt, path)
 	local text, err = rt.read(path)
 	if not text then
@@ -168,6 +192,8 @@ end
 
 ---Build a native provider launch without starting its process or managing a shared service.
 ---Shared mode performs a bounded connection/configuration preflight and never falls back to STDIO.
+---Worker launches remove caller-known secret names except harness auth prefixes;
+---Codex additionally filters secret patterns from model-run shell environments.
 ---@param rt orc.Runtime
 ---@param request orc.ProviderRequest
 ---@return orc.LaunchSpec
@@ -185,6 +211,11 @@ function M.plan(rt, request)
 		end
 	else
 		env.ORC_WORKER_FILE, env.PATH = request.workerFile, rt.env.PATH or ""
+		for name in pairs(rt.env) do
+			if worker_secret(name) then
+				env[name] = false
+			end
+		end
 	end
 	local mcp = require("orc.inkdrop_mcp")
 	local config = mcp.resolve(rt, flags["inkdrop-mcp"])
@@ -280,6 +311,18 @@ function M.plan(rt, request)
 		if flags.yolo then
 			command[#command + 1] = "--dangerously-bypass-approvals-and-sandbox"
 		end
+	end
+	if kind == "codex" and role ~= "main" then
+		local exclude = { "INKDROP_LOCAL_*" }
+		for _, fragment in ipairs(secret_fragments) do
+			exclude[#exclude + 1] = "*" .. fragment .. "*"
+		end
+		vim.list_extend(command, {
+			"-c",
+			"shell_environment_policy.ignore_default_excludes=false",
+			"-c",
+			"shell_environment_policy.exclude=" .. rt.encode(exclude),
+		})
 	end
 	vim.list_extend(command, args)
 	if request.prompt then
