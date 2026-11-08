@@ -19,6 +19,7 @@ local function status(state)
 end
 
 ---Stream a Codex exec child into a raw JSONL file and short, control-safe pane messages.
+---Skip malformed metadata events while preserving their raw lines in the log.
 ---No stdin or approval replies are sent. Hook acknowledgement/report validation stays in workers.
 ---@param rt orc.Runtime
 ---@param launch orc.LaunchSpec
@@ -31,19 +32,16 @@ function M.run(rt, launch, log, update)
 	local rate_limited = false
 	local function event(line)
 		local ok, value = pcall(rt.decode, line)
-		assert(
-			ok and type(value) == "table" and type(value.type) == "string",
-			"orc worker: invalid JSONL event"
-		)
+		if not ok or type(value) ~= "table" or type(value.type) ~= "string" then
+			return
+		end
 		local kind, summary = value.type, nil
-		if kind == "thread.started" then
-			assert(type(value.thread_id) == "string", "orc worker: missing thread ID")
+		if kind == "thread.started" and type(value.thread_id) == "string" then
 			update({ threadId = value.thread_id })
 			summary = "thread started"
 		elseif kind == "turn.started" then
 			summary = "turn started"
-		elseif kind == "turn.completed" then
-			assert(type(value.usage) == "table", "orc worker: missing turn usage")
+		elseif kind == "turn.completed" and type(value.usage) == "table" then
 			update({ usage = value.usage })
 			summary = "turn completed"
 		elseif kind == "error" or kind == "turn.failed" then
@@ -51,17 +49,19 @@ function M.run(rt, launch, log, update)
 			if kind == "turn.failed" then
 				message = type(value.error) == "table" and value.error.message
 			end
-			assert(type(message) == "string", "orc worker: missing error message")
+			if type(message) ~= "string" then
+				return
+			end
 			if limited(message) then
 				rate_limited = true
 				update({ rateLimited = true })
 			end
 			summary = kind .. ": " .. message
-		elseif kind == "item.started" or kind == "item.completed" then
-			assert(
-				type(value.item) == "table" and type(value.item.type) == "string",
-				"orc worker: missing item type"
-			)
+		elseif
+			(kind == "item.started" or kind == "item.completed")
+			and type(value.item) == "table"
+			and type(value.item.type) == "string"
+		then
 			summary = kind .. ": " .. value.item.type
 		end
 		if summary then

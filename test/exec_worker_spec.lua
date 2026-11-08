@@ -171,7 +171,7 @@ Test.test(
 )
 
 Test.test(
-	"exec runner fails malformed events, stops the child, and preserves raw evidence",
+	"exec runner skips malformed events without stopping the child or losing raw evidence",
 	function()
 		for _, line in ipairs({
 			"invalid",
@@ -182,23 +182,34 @@ Test.test(
 			'{"type":"thread.started"}',
 			'{"type":"turn.completed"}',
 			'{"type":"error"}',
+			'{"type":"error","error":{"message":"x"}}',
 			'{"type":"turn.failed","error":"bad"}',
 			'{"type":"turn.failed","error":{}}',
 			'{"type":"item.started"}',
 			'{"type":"item.completed","item":{}}',
 		}) do
-			fixture(function(rt, state)
-				state.chunks = { line .. "\n", "raw evidence after failure\n" }
-				Test.eq(state.run().code, 1)
-				Test.eq(state.stops, 1)
-				Test.eq(rt.read(state.log), line .. "\nraw evidence after failure\n")
-				Test.eq(state.fields.execFinished, true)
-			end)
+			for _, code in ipairs({ 0, 7 }) do
+				fixture(function(rt, state)
+					state.code = code
+					local usage = { input_tokens = 10, output_tokens = 2 }
+					local valid = table.concat({
+						rt.encode({ type = "thread.started", thread_id = "thread-abc" }),
+						rt.encode({ type = "turn.completed", usage = usage }),
+					}, "\n")
+					state.chunks = { line .. "\n", valid .. "\n", line }
+					Test.eq(state.run(), { code = code, out = "", err = "" })
+					Test.eq(state.stops, 0)
+					Test.eq(rt.read(state.log), table.concat(state.chunks))
+					Test.eq(state.fields, {
+						threadId = "thread-abc",
+						usage = usage,
+						exitCode = code,
+						execFinished = true,
+						rateLimited = false,
+					})
+				end)
+			end
 		end
-		fixture(function(_, state)
-			state.chunks = { "invalid without newline" }
-			Test.eq(state.run().code, 1)
-		end)
 	end
 )
 

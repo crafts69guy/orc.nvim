@@ -3,7 +3,15 @@
 Use Rex only through `orc pane`; never infer success from a screen capture.
 Pane mode is automatic inside Rex; `--no-panes` or `ORC_PANES=0` disables it.
 Delegate scopers and implementers through Codex pane workers instead of native
-subagents; reviewer and shipper stay native.
+subagents; review follows the orchestrator rules' cross-vendor rule; shipper stays native.
+
+For a Codex-written diff under a Codex orchestrator, run the read-only Claude
+review with the harness's background execution and save stdout/stderr under
+`.scratch/<feature>/`:
+
+```sh
+claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-prompt 'Review only; do not edit files.' 'Review the uncommitted diff against the task brief; report concrete findings.'
+```
 
 - Start: `orc pane start <feature> <task> --path <worktree> --brief <file> --role implementer [--transport tui|exec]`.
   Codex and implementer are defaults; use `--role scoper` for read-only scoping

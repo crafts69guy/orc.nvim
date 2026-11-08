@@ -18,8 +18,8 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   `orc:reviewer` from a Claude orchestrator. For Claude implementation or a second
   opinion, run `codex --no-daemon review --uncommitted` in the task checkout using
   the harness's background execution; save stdout/stderr under `.scratch/<feature>/`.
-  For a Codex-written diff under a Codex orchestrator, use `claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-prompt 'Review only; do not edit files.' 'Review the uncommitted diff against the task brief; report concrete findings.'`
-  the same way (flags verified with codex-cli 0.167.0 `codex review --help` and
+  For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex reference
+  for the Claude review command (flags verified with codex-cli 0.167.0 `codex review --help` and
   `claude --help`). Give reviewers the fresh diff, brief and acceptance criteria.
 - Require docs for changed exports and touched behavior. Missing evidence is not
   success. Partial, blocked, idle and process exit are not accepted completion.
