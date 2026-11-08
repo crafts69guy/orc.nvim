@@ -97,6 +97,18 @@ Test.test("core CLI help, version, errors and lazy routing", function()
 	Test.eq(cli.run(rt, { "unknown" }).code, 1)
 	Test.eq(cli.run(rt, { "completion", "zsh" }).code, 1)
 	assert(cli.run(rt, { "completion", "fish" }).out:find("complete -c orc", 1, true))
+	assert(cli.usage:find("--transport tui|exec", 1, true))
+	assert(cli.run(rt, { "completion", "fish" }).out:find("-l transport -x -a 'tui exec'", 1, true))
+	assert(not cli.run(rt, { "completion", "fish" }).out:find("worker-run", 1, true))
+	Test.eq(cli.run(rt, { "worker-run" }).code, 1)
+	with_module("orc.workers", {
+		worker_run = function(_, file)
+			Test.eq(file, "/record.json")
+			return { code = 42, out = "", err = "child failed" }
+		end,
+	}, function()
+		Test.eq(cli.run(rt, { "worker-run", "/record.json" }).code, 42)
+	end)
 	for command, module in pairs({
 		pane = "workers",
 		context = "context",

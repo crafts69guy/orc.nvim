@@ -4,7 +4,7 @@ M.usage = [[usage: orc <command> [args]
 
   claude|codex [--yolo] [--level default|high|max] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
   wt new|merge|remove|list|session ...
-  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--here]
+  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--transport tui|exec] [--here]
   pane wait|prompt|close <task> --path <dir> ...
   pane prune --path <dir>
   status|doctor [--json]
@@ -18,7 +18,7 @@ M.usage = [[usage: orc <command> [args]
 
 Pair and pane modes use Rex; pair mode is Claude-main with one Codex worker.
 Pane mode is automatic inside Rex; --no-panes or ORC_PANES=0 disables it.
-Pane workers default to Codex and the implementer role.
+Pane workers default to Codex, the implementer role and tui transport; exec is Codex-only.
 --yolo bypasses harness permissions and sandbox only when explicitly requested.
 ]]
 
@@ -156,6 +156,9 @@ function M.run(rt, argv, input)
 		elseif command == "hook" then
 			assert(#rest == 1, "usage: orc hook <event>")
 			return require("orc.hooks").run(rt, rest[1], input or "")
+		elseif command == "worker-run" then
+			assert(#rest == 1, "usage: orc worker-run <record-file>")
+			return require("orc.workers").worker_run(rt, rest[1])
 		elseif command == "wt" then
 			local response = require("orc.worktrees").run(rt, rest)
 			if response.result.status == "merged" then

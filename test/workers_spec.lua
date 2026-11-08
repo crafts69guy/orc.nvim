@@ -272,6 +272,7 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	Test.eq(record.hostId, "host")
 	Test.eq(record.instanceId, "instance")
 	Test.eq(record.level, "default")
+	Test.eq(record.transport, "tui")
 	local command = table.concat(state.layout.block.options.command, " ")
 	assert(command:find("--sandbox workspace-write", 1, true))
 	assert(not command:find("--add-dir", 1, true))
@@ -292,10 +293,11 @@ Test.test("workers default to Codex implementers and normalize legacy roles and 
 	local record = state.record()
 	Test.eq(record.kind, "codex")
 	Test.eq(record.role, "implementer")
-	record.role, record.level = nil, nil
+	record.role, record.level, record.transport = nil, nil, nil
 	state.store(record)
 	Test.eq(workers.collect(rt)[1].role, "implementer")
 	Test.eq(workers.collect(rt)[1].level, "default")
+	Test.eq(workers.collect(rt)[1].transport, "tui")
 	state.hook("UserPromptSubmit")
 	state.hook("Stop")
 	state.native = "idle"
@@ -324,6 +326,281 @@ Test.test("workers persist the start level independently of later caller environ
 		Test.eq(state.record().level, level)
 	end
 end)
+
+local function with_exec_runner(fn, body)
+	local previous = package.loaded["orc.exec_worker"]
+	package.loaded["orc.exec_worker"] = { run = fn }
+	local ok, err = xpcall(body, debug.traceback)
+	package.loaded["orc.exec_worker"] = previous
+	assert(ok, err)
+end
+
+Test.test(
+	"workers exec transport launches the owned Lua runner and recognizes its OSC app",
+	function()
+		local rt, state = fake()
+		state.processName, state.app = "nvim", "orc"
+		rt.env.APP_SECRET = "synthetic-secret"
+		Test.eq(state.start({ "--transport", "exec" }).code, 0)
+		local record = state.record()
+		Test.eq(record.transport, "exec")
+		Test.eq(
+			workers.run(rt, {
+				"start",
+				"feature",
+				"task",
+				"--path",
+				rt.cwd,
+				"--brief",
+				"brief.md",
+				"--kind",
+				"claude",
+				"--transport",
+				"exec",
+			}).code,
+			1
+		)
+		Test.eq(record.state, "working")
+		Test.eq(record.nativeState, "working")
+		Test.eq(record.process.name, "nvim")
+		local command = state.layout.block.options.command
+		Test.eq(
+			vim.list_slice(command, #command - 2),
+			{ rt.path(rt.root, "bin", "orc"), "worker-run", state.file() }
+		)
+		assert(not table.concat(command, " "):find("synthetic-secret", 1, true))
+		assert(table.concat(command, " "):find("-u APP_SECRET", 1, true))
+		local response = state.run("prompt", { "--text", "continue" })
+		Test.eq(response.code, 1)
+		assert(response.result.stderr:find("exec follow-ups are not supported", 1, true))
+		Test.eq(#state.writes, 0)
+		Test.eq(state.record().runId, record.runId)
+		Test.eq(state.run("wait", { "--transport", "exec" }).code, 1)
+		state.exitCode = 0
+		Test.eq(state.run("close").code, 0)
+		Test.eq(state.record().state, "closed")
+	end
+)
+
+Test.test("workers reject unsupported transports before creating a block", function()
+	for _, transport in ipairs({ "bad", "exec" }) do
+		local rt, state = fake()
+		local response = workers.run(rt, {
+			"start",
+			"feature",
+			"task",
+			"--path",
+			rt.cwd,
+			"--brief",
+			"brief.md",
+			"--kind",
+			"claude",
+			"--transport",
+			transport,
+		})
+		Test.eq(response.code, 1)
+		assert(response.result.stderr:find("transport", 1, true))
+		Test.eq(state.created, 0)
+	end
+	local rt, state = fake()
+	state.start()
+	local record = state.record()
+	record.transport = "bad"
+	state.store(record)
+	Test.raises("invalid worker transport", function()
+		workers.collect(rt)
+	end)
+	record.transport, record.kind = "exec", "claude"
+	state.store(record)
+	Test.raises("exec transport requires Codex", function()
+		workers.collect(rt)
+	end)
+end)
+
+Test.test(
+	"workers exec snapshots retain unexpected exits and ignore provider root readiness",
+	function()
+		local rt, state = fake()
+		state.start({ "--transport", "exec" })
+		state.hook("UserPromptSubmit")
+		state.hook("Stop")
+		state.report()
+		state.native, state.app = "done", "codex"
+		Test.eq(state.run("wait", { "--timeout", "0" }).result.state, "timeout")
+		state.exitCode = 143
+		Test.eq(state.run("wait", { "--timeout", "0" }).result.state, "error")
+		Test.eq(state.record().exitCode, 143)
+		Test.eq(state.record().execFinished, nil)
+		Test.eq(workers.collect(rt)[1].exitCode, 143)
+	end
+)
+
+Test.test("workers exec runner persists metadata with hook evidence and terminal exit", function()
+	for _, code in ipairs({ 0, 9 }) do
+		local rt, state = fake()
+		state.processName, state.app = "nvim", "orc"
+		state.start({ "--transport", "exec", "--role", "scoper" })
+		local record = state.record()
+		rt.env.ORC_WORKER_FILE, rt.env.REX_BLOCK = state.file(), record.blockId
+		with_exec_runner(function(_, launch, log, update)
+			Test.eq(log, rt.path(rt.cwd, ".orc", "runs", record.runId .. ".jsonl"))
+			Test.eq(
+				vim.list_slice(launch.argv, 1, 6),
+				{ "codex", "--no-daemon", "exec", "--json", "--sandbox", "read-only" }
+			)
+			assert(launch.argv[#launch.argv]:find("[orc-run:" .. record.runId .. "]", 1, true))
+			assert(launch.argv[#launch.argv]:find("Do not modify files", 1, true))
+			state.hook("UserPromptSubmit")
+			update({ threadId = "abc", usage = { input_tokens = 42 } })
+			state.hook("Stop", {
+				last_assistant_message = "Run: "
+					.. record.runId
+					.. "\nStatus: done\nValidation: tests passed\n",
+			})
+			update({ exitCode = code, execFinished = true, rateLimited = false })
+			return { code = code, out = "", err = "" }
+		end, function()
+			Test.eq(workers.worker_run(rt, state.file()).code, code)
+		end)
+		state.exitCode = code
+		local response = state.run("wait", { "--timeout", "0" })
+		Test.eq(response.code, 0)
+		Test.eq(response.result.state, code == 0 and "exited" or "error")
+		Test.eq(response.result.evidence, true)
+		Test.eq(response.result.status, "done")
+		Test.eq(response.result.hint, nil)
+		Test.eq(state.record().usage, { input_tokens = 42 })
+		Test.eq(state.record().threadId, "abc")
+		Test.eq(state.record().exitCode, code)
+		Test.eq(state.record().hookState, "idle")
+		Test.eq(rt.exists(state.file() .. "." .. record.runId .. ".exec.lock"), false)
+		Test.eq(state.run("close").code, 0)
+		Test.eq(state.record().state, "closed")
+	end
+end)
+
+Test.test(
+	"workers exec rate limits survive snapshots and hooks and wait suggests the other kind",
+	function()
+		local rt, state = fake()
+		state.start({ "--transport", "exec" })
+		local record = state.record()
+		record.rateLimited, record.execFinished, record.exitCode = true, true, 1
+		state.store(record)
+		state.hook("UserPromptSubmit")
+		state.hook("Stop")
+		state.exitCode = 1
+		local response = state.run("wait", { "--timeout", "0" })
+		Test.eq(response.result.state, "rate-limited")
+		Test.eq(response.result.evidence, false)
+		assert(response.result.hint:find("--kind claude --transport tui", 1, true))
+		Test.eq(workers.collect(rt)[1].state, "rate-limited")
+		Test.eq(state.run("close").code, 0)
+		Test.eq(state.record().state, "closed")
+	end
+)
+
+Test.test(
+	"workers snapshot merges exec metadata saved during a concurrent hook revision",
+	function()
+		local rt, state = fake()
+		state.start({ "--transport", "exec" })
+		state.onLock = function()
+			local record = state.record()
+			record.threadId, record.usage = "concurrent", { output_tokens = 7 }
+			record.rateLimited, record.execFinished, record.exitCode = true, true, 1
+			record.eventRevision = record.revision + 1
+			state.store(record)
+		end
+		Test.eq(workers.collect(rt)[1].state, "rate-limited")
+		Test.eq(state.record().threadId, "concurrent")
+		Test.eq(state.record().usage, { output_tokens = 7 })
+	end
+)
+
+Test.test(
+	"workers hidden runner validates identity, waits for block ownership and releases its lock",
+	function()
+		local rt, state = fake()
+		Test.raises("missing record", function()
+			workers.worker_run(rt, "/missing")
+		end)
+		state.start()
+		Test.raises("unfinished exec", function()
+			workers.worker_run(rt, state.file())
+		end)
+		local record = state.record()
+		record.transport = "exec"
+		state.store(record)
+		Test.raises("record path mismatch", function()
+			workers.worker_run(rt, state.file())
+		end)
+		rt.env.ORC_WORKER_FILE = state.file()
+		Test.raises("Rex block identity mismatch", function()
+			workers.worker_run(rt, state.file())
+		end)
+		rt.env.REX_BLOCK = record.blockId
+		with_exec_runner(function()
+			error("runner failure")
+		end, function()
+			Test.raises("runner failure", function()
+				workers.worker_run(rt, state.file())
+			end)
+		end)
+		local lock = state.file() .. "." .. record.runId .. ".exec.lock"
+		Test.eq(rt.exists(lock), false)
+		rt.mkdir(lock)
+		Test.raises("already active", function()
+			workers.worker_run(rt, state.file())
+		end)
+		rt.remove(lock)
+		local block = record.blockId
+		record.blockId = nil
+		state.store(record)
+		state.onSleep = function()
+			record.blockId = block
+			state.store(record)
+		end
+		with_exec_runner(function(_, _, _, update)
+			record.runId = "replacement"
+			state.store(record)
+			update({ threadId = "stale" })
+		end, function()
+			Test.raises("current run changed", function()
+				workers.worker_run(rt, state.file())
+			end)
+		end)
+	end
+)
+
+Test.test(
+	"workers exec restarts ignore old runner locks and reject a changed launch run",
+	function()
+		local rt, state = fake()
+		state.start({ "--transport", "exec" })
+		local previous = state.record()
+		rt.mkdir(state.file() .. "." .. previous.runId .. ".exec.lock")
+		Test.eq(state.run("close").code, 0)
+		Test.eq(state.start({ "--transport", "exec" }).code, 0)
+		local record = state.record()
+		assert(record.runId ~= previous.runId)
+		rt.env.ORC_WORKER_FILE, rt.env.REX_BLOCK = state.file(), record.blockId
+		with_exec_runner(function()
+			return { code = 0, out = "", err = "" }
+		end, function()
+			Test.eq(workers.worker_run(rt, state.file()).code, 0)
+		end)
+		record.blockId = nil
+		state.store(record)
+		state.onSleep = function()
+			record.runId = "changed-during-launch"
+			state.store(record)
+		end
+		Test.raises("current run changed during launch", function()
+			workers.worker_run(rt, state.file())
+		end)
+	end
+)
 
 Test.test(
 	"workers scoper prompts and followups request final-message reports without writes",

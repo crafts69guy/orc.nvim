@@ -70,6 +70,8 @@ function M.fish()
 	lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from inkdrop-mcp' -l apply"
 	lines[#lines + 1] =
 		"complete -c orc -n '__fish_seen_subcommand_from pane' -l role -x -a 'implementer scoper'"
+	lines[#lines + 1] =
+		"complete -c orc -n '__fish_seen_subcommand_from pane' -l transport -x -a 'tui exec'"
 	for _, flag in ipairs({
 		"path",
 		"brief",

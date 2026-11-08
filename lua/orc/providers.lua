@@ -184,6 +184,7 @@ end
 ---@field args? string[] Native arguments, passed through without shell parsing.
 ---@field prompt? string Worker assignment appended as one argument.
 ---@field workerFile? string Durable record passed to worker hooks.
+---@field transport? 'tui'|'exec' Codex-only headless worker transport; defaults to tui.
 
 ---@class orc.LaunchSpec
 ---@field argv string[] Provider executable and native arguments.
@@ -202,6 +203,12 @@ function M.plan(rt, request)
 	local kind, role = request.kind, request.role
 	assert(kind == "claude" or kind == "codex", "orc: unknown provider")
 	assert(role == "main" or role == "implementer" or role == "scoper", "orc: unknown provider role")
+	local transport = request.transport or "tui"
+	assert(transport == "tui" or transport == "exec", "orc: transport must be tui or exec")
+	assert(
+		transport ~= "exec" or kind == "codex" and role ~= "main",
+		"orc: exec transport requires a Codex worker"
+	)
 	local flags, args, cwd = request.flags or {}, request.args or {}, request.cwd or rt.cwd
 	local env = { ORC = "1", ORC_ROLE = role }
 	if role == "main" then
@@ -228,6 +235,9 @@ function M.plan(rt, request)
 	if kind == "codex" then
 		-- Keep hooks and model shell commands in the launch environment, not a shared daemon's.
 		command[#command + 1] = "--no-daemon"
+		if transport == "exec" then
+			vim.list_extend(command, { "exec", "--json" })
+		end
 	end
 	if config.mode == "shared" then
 		local extra = shared_args(rt, kind, cwd, args, config)

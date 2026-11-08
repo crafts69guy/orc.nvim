@@ -4,6 +4,14 @@ Rex owns terminals, windows and sessions. Orc owns project selection, task views
 and worker records. Personal keybindings and popup placement belong in the user's
 Rex configuration. All owned integration code is Lua.
 
+Start a headless Codex block with `orc pane start <feature> <task> --path <dir>
+--brief <file> --transport exec`. The Lua runner writes OSC 7501 root status with
+`app=orc`, so Rex activity indicators and worker snapshots recognize it. Raw JSONL
+events live in `<dir>/.orc/runs/<runId>.jsonl`; thread ID, usage and exit status
+are saved on the worker record. The default `--transport tui` supports steering
+and follow-up prompts; exec currently supports start/wait/close only. See the
+[transport comparison](../README.md) for limitations and rate-limit recovery.
+
 ## Setup
 
 Use `:Orc` for tasks, `:Orc projects` for the Snacks GHQ picker, and `:Orc workers`

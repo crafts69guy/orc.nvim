@@ -137,6 +137,23 @@ forces it; `--panes` conflicts with `--no-panes`. Start workers with
 `--kind claude` for Claude. Scopers return reports in their final message; the
 Stop hook saves a matching Run report when its file is absent.
 
+Choose a worker transport with `--transport tui|exec`:
+
+| Transport | Providers | Trade-off |
+| --- | --- | --- |
+| `tui` (default, including older records) | Codex, Claude | Interactive steering, approvals and `pane prompt` follow-ups; hook-based reports |
+| `exec` (opt-in) | Codex | Headless JSONL events and token usage; no interactive steering or `pane prompt` follow-ups |
+
+For example, add `--transport exec` to `orc pane start`. Exec workers save raw
+events to `<checkout>/.orc/runs/<runId>.jsonl` and store `threadId`, last-turn
+`usage`, `exitCode` and `rateLimited` on the worker record. They retain the same
+hook acknowledgement and Markdown report checks. `pane wait` returns
+`rate-limited` with a restart hint when an exec error or stderr indicates a quota,
+usage or rate limit. Close that worker and restart the same brief and worktree
+with `--kind claude --transport tui`. Exec follow-ups currently require closing
+and starting a new worker; the saved thread ID is diagnostic metadata, not an
+automatic resume. Workers never answer approvals.
+
 In pane mode, scopers and implementers use pane workers (Codex by default);
 review follows the cross-vendor rules and shippers stay native. For one task add
 `--here` in the session checkout and do not edit beside its implementer. Parallel

@@ -41,6 +41,29 @@ the launch's `ORC_*` and Rex identity variables. The shared app-server daemon ca
 retain another session's environment, preventing worker acknowledgement. Bypassing
 it means no shared daemon MCP connections and slower startup.
 
+`pane start --transport exec` opts Codex workers into a Lua runner in the owned
+Rex block: `orc worker-run <record-file>`. `providers.plan` builds the same
+scrubbed environment and role sandbox with `codex --no-daemon exec --json`.
+The prompt keeps the run marker and hook/report protocol. TUI remains the default
+for both providers and for records written before the transport field existed.
+
+The runner tees stdout bytes to `<checkout>/.orc/runs/<runId>.jsonl`, emits short
+event summaries, and reports root `app=orc` working/done/error states using
+[OSC 7501](https://www.superlogical.com/rex/docs/build/program-status).
+Thread identity, last-turn usage, exit status and rate-limit detection use the
+same atomic state lock and run-ID checks as hooks and snapshots. Terminal
+metadata survives concurrent hook updates; a closed record stays closed.
+An exec usage/rate limit takes precedence over native status and `pane wait`
+returns `rate-limited` with an alternate-provider restart hint. Exec does not
+send stdin or answer approvals. `pane prompt` rejects exec workers; resume with
+a new Rex block is deferred, so close/start creates a fresh thread.
+
+The [Codex JSONL event definitions at 0.167.0](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/exec/src/exec_events.rs)
+define top-level `error.message`, nested `turn.failed.error.message`,
+`thread.started.thread_id` and `turn.completed.usage`. These shapes were checked
+alongside local `codex exec --help` and `codex exec resume --help`; no paid model
+smoke is part of ordinary validation.
+
 ## Identity and recovery
 
 Every assignment has a distinct `runId`. A durable record associates its feature,

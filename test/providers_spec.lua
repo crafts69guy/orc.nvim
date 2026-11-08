@@ -71,6 +71,44 @@ local function options(argv, flag)
 	end
 end
 
+Test.test(
+	"providers exec workers preserve sandbox, environment policy and literal prompts",
+	function()
+		fixture(function(rt)
+			for _, role in ipairs({ "implementer", "scoper" }) do
+				for _, mode in ipairs({ "inherit", "shared" }) do
+					local plan = providers.plan(rt, {
+						kind = "codex",
+						role = role,
+						transport = "exec",
+						workerFile = "/worker.json",
+						flags = { ["inkdrop-mcp"] = mode },
+						prompt = "[orc-run:abc] literal; $(prompt)",
+					})
+					Test.eq(vim.list_slice(plan.argv, 1, 4), { "codex", "--no-daemon", "exec", "--json" })
+					Test.eq(
+						options(plan.argv, "--sandbox"),
+						role == "scoper" and "read-only" or "workspace-write"
+					)
+					Test.eq(vim.list_slice(plan.argv, #plan.argv - 4, #plan.argv - 1), codex_policy)
+					Test.eq(plan.argv[#plan.argv], "[orc-run:abc] literal; $(prompt)")
+					Test.eq(plan.env.ORC_WORKER_FILE, "/worker.json")
+					Test.eq(plan.env.INKDROP_LOCAL_PASSWORD, false)
+				end
+			end
+			for _, request in ipairs({
+				{ kind = "claude", role = "implementer", transport = "exec" },
+				{ kind = "codex", role = "main", transport = "exec" },
+				{ kind = "codex", role = "scoper", transport = "invalid" },
+			}) do
+				Test.raises("transport", function()
+					providers.plan(rt, request)
+				end)
+			end
+		end)
+	end
+)
+
 Test.test("providers Codex bypasses daemon for all roles and Inkdrop modes", function()
 	fixture(function(rt)
 		for _, role in ipairs({ "main", "implementer", "scoper" }) do

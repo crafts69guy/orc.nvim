@@ -9,6 +9,11 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field path string Absolute checkout used by the worker; scopers do not own edits.
 ---@field root string Main checkout containing the durable record.
 ---@field kind 'claude'|'codex' Harness executable.
+---@field transport 'tui'|'exec' Missing transports in older records default to tui.
+---@field threadId? string Codex exec thread identity.
+---@field usage? table<string,number> Last completed exec turn's token usage.
+---@field rateLimited? boolean Exec errors indicated a usage or rate limit.
+---@field execFinished? boolean Runner has saved final usage and child exit status.
 ---@field role 'implementer'|'scoper' Missing roles in older records default to implementer.
 ---@field level 'default'|'high'|'max' ORC_LEVEL at start; missing levels default to default.
 ---@field sessionId string Rex session ID.
@@ -76,6 +81,15 @@ local function read_record(rt, file)
 		record.role = "implementer"
 	end
 	record.level = record.level or "default"
+	record.transport = record.transport or "tui"
+	assert(
+		record.transport == "tui" or record.transport == "exec",
+		"orc pane: invalid worker transport"
+	)
+	assert(
+		record.transport ~= "exec" or record.kind == "codex",
+		"orc pane: exec transport requires Codex"
+	)
 	assert(record.role == "implementer" or record.role == "scoper", "orc pane: invalid worker role")
 	return record
 end
@@ -133,9 +147,16 @@ local function save(rt, record, mode)
 				)
 			else
 				assert(latest.runId == record.runId, "orc pane: current run changed while writing")
+				if record.transport == "exec" and mode ~= "exec" then
+					for _, field in ipairs({ "threadId", "usage", "exitCode", "rateLimited", "execFinished" }) do
+						if latest[field] ~= nil then
+							record[field] = latest[field]
+						end
+					end
+				end
 				record.acknowledged = record.acknowledged or latest.acknowledged
 				stale_event = (latest.eventRevision or 0) > (record.eventRevision or 0)
-				if (mode == "snapshot" or mode == "event") and stale_event then
+				if (mode == "snapshot" or mode == "event" or mode == "exec") and stale_event then
 					record.state = latest.state
 					record.inputReady = false
 				end
@@ -143,6 +164,13 @@ local function save(rt, record, mode)
 					record.hookState = latest.hookState
 				end
 				record.eventRevision = latest.eventRevision
+			end
+		end
+		if record.state ~= "closed" then
+			if record.rateLimited then
+				record.state = "rate-limited"
+			elseif record.execFinished then
+				record.state = record.exitCode == 0 and "exited" or "error"
 			end
 		end
 		record.revision = (latest and latest.revision or 0) + 1
@@ -255,7 +283,9 @@ local function process_matches(process, record)
 			foreground.script or "",
 		}, " ")
 		:lower()
-	if not identity:find(record.kind, 1, true) then
+	local runner = record.transport == "exec"
+		and (child.name == "nvim" or identity:find("orc", 1, true))
+	if not runner and not identity:find(record.kind, 1, true) then
 		return false
 	end
 	record.process = { pid = child.pid, name = child.name, path = child.path, script = child.script }
@@ -306,7 +336,11 @@ local function snapshot(rt, client, record)
 		if got then
 			for _, entry in ipairs(status.records or {}) do
 				local app = entry.effective_app or entry.app or ""
-				if app:lower():find(record.kind, 1, true) and (entry.id == nil or entry.id == rt.null) then
+				local matching_app = app:lower():find(record.kind, 1, true)
+				if record.transport == "exec" then
+					matching_app = app == "orc"
+				end
+				if matching_app and (entry.id == nil or entry.id == rt.null) then
 					local state = entry.state
 					if
 						state == "working"
@@ -400,6 +434,12 @@ local function prompt_text(rt, record, body)
 end
 
 local function start(rt, feature, task, values, file)
+	local transport = values.transport or "tui"
+	assert(transport == "tui" or transport == "exec", "orc pane: transport must be tui or exec")
+	assert(
+		transport ~= "exec" or (values.kind or "codex") == "codex",
+		"orc pane: exec transport requires --kind codex"
+	)
 	local previous = read_record(rt, file)
 	if previous and previous.state ~= "closed" then
 		hinted(previous, function()
@@ -434,6 +474,7 @@ local function start(rt, feature, task, values, file)
 		path = path,
 		root = main_root(rt, path),
 		kind = kind,
+		transport = transport,
 		role = role,
 		level = rt.env.ORC_LEVEL or "default",
 		sessionId = rt.env.REX_SESSION,
@@ -456,6 +497,7 @@ local function start(rt, feature, task, values, file)
 	local launch = require("orc.providers").plan(rt, {
 		kind = kind,
 		role = role,
+		transport = transport,
 		cwd = path,
 		workerFile = file,
 		prompt = prompt_text(rt, record, "Your brief: " .. brief .. "."),
@@ -487,7 +529,11 @@ local function start(rt, feature, task, values, file)
 			command[#command + 1] = name .. "=" .. launch.env[name]
 		end
 	end
-	vim.list_extend(command, launch.argv)
+	if transport == "exec" then
+		vim.list_extend(command, { rt.path(rt.root, "bin", "orc"), "worker-run", file })
+	else
+		vim.list_extend(command, launch.argv)
+	end
 	local layout = {
 		block = {
 			flavor = "com.superlogical.terminal.shell",
@@ -548,6 +594,11 @@ local function start(rt, feature, task, values, file)
 end
 
 local function follow_up(rt, record, values)
+	-- shortcut: exec resume needs a new owned block; add it when follow-ups are required.
+	assert(
+		record.transport ~= "exec",
+		"orc pane: exec follow-ups are not supported; close and start a new worker, or use --transport tui"
+	)
 	local client = client_for(rt, record)
 	snapshot(rt, client, record)
 	if not record.acknowledged or not record.inputReady then
@@ -626,6 +677,65 @@ local function follow_up(rt, record, values)
 	})
 end
 
+---Run the owned Codex exec child from its Rex block; used by the hidden worker-run command.
+---Runner metadata shares the hook/snapshot state lock and cannot update a different run.
+---@param rt orc.Runtime
+---@param file string Absolute durable worker record path.
+---@return table result Child exit status and diagnostics; progress is streamed to stdout.
+function M.worker_run(rt, file)
+	local record = assert(read_record(rt, file), "orc worker: missing record")
+	local run_id = record.runId
+	assert(
+		record.transport == "exec" and not record.execFinished,
+		"orc worker: expected an unfinished exec worker"
+	)
+	assert(
+		file == record_path(rt, record.root, record.task, record.path)
+			and rt.env.ORC_WORKER_FILE == file,
+		"orc worker: record path mismatch"
+	)
+	local deadline = rt.clock() + 5000
+	while not record.blockId and rt.clock() < deadline do
+		rt.sleep(25)
+		record = assert(read_record(rt, file), "orc worker: missing record")
+		assert(record.runId == run_id, "orc worker: current run changed during launch")
+	end
+	assert(
+		record.state ~= "closed"
+			and type(record.blockId) == "string"
+			and rt.env.REX_SESSION == record.sessionId
+			and rt.env.REX_BLOCK == record.blockId,
+		"orc worker: Rex block identity mismatch"
+	)
+	local launch = require("orc.providers").plan(rt, {
+		kind = record.kind,
+		role = record.role,
+		cwd = record.path,
+		transport = "exec",
+		workerFile = file,
+		prompt = prompt_text(rt, record, "Your brief: " .. record.brief .. "."),
+	})
+	local lock = file .. "." .. run_id .. ".exec.lock"
+	assert(rt.mkdir_lock(lock), "orc worker: exec runner already active")
+	local ok, response = pcall(
+		require("orc.exec_worker").run,
+		rt,
+		launch,
+		rt.path(record.path, ".orc", "runs", record.runId .. ".jsonl"),
+		function(fields)
+			local latest = assert(read_record(rt, file), "orc worker: missing record")
+			assert(latest.runId == record.runId, "orc worker: current run changed")
+			for name, value in pairs(fields) do
+				latest[name] = value
+			end
+			save(rt, latest, "exec")
+		end
+	)
+	rt.remove(lock)
+	assert(ok, response)
+	return response
+end
+
 -- Untrusted Codex hooks never acknowledge the prompt; stop waiting after this long.
 local UNACKNOWLEDGED_WAIT_MS = 60000
 
@@ -688,10 +798,11 @@ local function wait_for(rt, record, timeout)
 					record.state == "blocked"
 					or record.state == "closed"
 					or record.state == "error"
+					or record.state == "rate-limited"
 					or record.state == "exited"
 					or (evidence and (record.state == "idle" or record.state == "done"))
 				then
-					return {
+					local answer = {
 						task = record.task,
 						runId = record.runId,
 						state = record.state,
@@ -699,6 +810,11 @@ local function wait_for(rt, record, timeout)
 						evidence = evidence,
 						status = record.reportStatus or rt.null,
 					}
+					if record.state == "rate-limited" then
+						answer.hint =
+							"close this worker and restart the same brief and worktree with --kind claude --transport tui"
+					end
+					return answer
 				end
 				if not connected then
 					connect()
@@ -907,6 +1023,7 @@ function M.run(rt, argv)
 			path = "string",
 			brief = "string",
 			kind = "string",
+			transport = "string",
 			role = "string",
 			here = "boolean",
 			timeout = "string",
@@ -915,6 +1032,10 @@ function M.run(rt, argv)
 			force = "boolean",
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
+		assert(
+			not values.transport or command == "start",
+			"orc pane: --transport only applies to start"
+		)
 		assert(values.path and values.path ~= "", "orc pane: --path is required")
 		if command == "prune" then
 			assert(#pos == 0 and vim.tbl_count(values) == 1, "usage: orc pane prune --path <dir>")
