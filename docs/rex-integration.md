@@ -29,7 +29,8 @@ LazyVim already ships snacks.nvim. Otherwise add alongside the orc lazy.nvim spe
 
 ## Popup entrypoints
 
-Rex actions can launch a dedicated terminal using the normal Neovim configuration:
+Rex actions can launch a dedicated terminal running Neovim with orc on its
+runtimepath:
 
 ```lua
 require("orc").open({ cwd = project_path, client_id = originating_client, quit_on_close = true })
@@ -39,9 +40,15 @@ require("orc").workers({ cwd = project_path, client_id = originating_client, qui
 
 `quit_on_close` defaults to false. Set it only for a dedicated popup, never an
 existing editor with user buffers. With it, the projects and workers pickers fill
-the whole popup editor, so size the Rex layer to the picker you want to see. Use an argv array with `nvim -n -i NONE -c`
-and a correctly quoted Lua command. Quote strings with Lua `%q`, not shell
-interpolation. The normal Neovim configuration must expose the orc module.
+the whole popup editor, so size the Rex layer to the picker you want to see.
+
+Use an argv array with `nvim -n -i NONE -c` and a correctly quoted Lua command.
+Quote strings with Lua `%q`, not shell interpolation. The Neovim it starts must
+expose the orc module and, for the pickers, snacks.nvim. Either use the normal
+configuration, or keep the popup free of editor UI such as dashboards and
+statuslines with `nvim --clean -u <init>`, where a minimal init adds orc and
+snacks.nvim to the runtimepath and calls `require("snacks").setup({ picker = {},
+notifier = {} })`. The notifier keeps errors out of the command line.
 
 The workers picker runs `orc status --json` asynchronously in `cwd` (the editor's
 current directory by default). Rows show `feature/task`, role (older records
