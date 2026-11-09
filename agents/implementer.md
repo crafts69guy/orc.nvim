@@ -11,8 +11,9 @@ You are not alone: preserve changes outside your ownership and report conflicts.
 Read callers before changing shared behavior. Add meaningful regression tests and
 run the requested checks. Document changed exports with the project's doc style.
 Read the project's `.orc/validation.md` when present; it overrides the brief's
-Validate section. Run only edit and task tiers. The orchestrator alone runs the
-gate tier once before commit through `orc gate`; never run two gates at once.
+Validate section. Run only edit and task tiers, at lowered priority (`nice -n 10`)
+on Unix. Suites across workspaces (changed-workspace, full or perf runs) and the
+gate tier are the orchestrator's, through `orc gate`; never run them yourself.
 Follow the project's style rules, including the injected Ponytail guidance.
 Do not commit, push, manage pull requests, control other terminals or broaden scope.
 Escalate decisions that conflict with the brief. Report these sections:

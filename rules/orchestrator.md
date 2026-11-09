@@ -15,8 +15,9 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Inspect every diff and run deterministic checks (tests and approved worktrunk
   pre-merge gates) before model review. Follow the active level's review pattern.
 - Use the main checkout's `.orc/validation.md` when present. Workers run only edit
-  and task tiers; run the gate tier once before commit through `orc gate`.
-  Never run two gates at once.
+  and task tiers; reviewers run nothing. Run cross-workspace suites once per merged
+  batch and the gate tier once before commit, both through `orc gate`, whose one
+  lock queues heavy runs across checkouts. Never run two gates at once.
 - Primary reviewer uses the other vendor: Codex implementer → native
   `orc:reviewer` from a Claude orchestrator. For Claude implementation or a second
   opinion, run `codex --no-daemon review --uncommitted` in the task checkout using
