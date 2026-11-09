@@ -187,6 +187,22 @@ local function replacing(object, key, replacement, fn)
 	assert(ok, err)
 end
 
+Test.test("runtime mkdir rejects null and empty paths without creating entries", function()
+	local rt, dir = runtime.new(), Test.temp()
+	local cwd = assert(vim.uv.cwd())
+	assert(vim.uv.chdir(dir))
+	local ok, err = xpcall(function()
+		for _, path in ipairs({ vim.NIL, "" }) do
+			Test.raises("mkdir needs a path", function()
+				rt.mkdir(path)
+			end)
+		end
+		Test.eq(rt.list(dir), {})
+	end, debug.traceback)
+	assert(vim.uv.chdir(cwd))
+	assert(ok, err)
+end)
+
 Test.test(
 	"runtime mkdir_lock acquires privately and reports contention without replacing data",
 	function()

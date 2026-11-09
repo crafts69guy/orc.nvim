@@ -174,8 +174,10 @@ continues through missing-evidence stops until the current run has a report with
 Status and Validation, a native user-action block, process exit/error or timeout.
 Plain wait reports `turn-ended-no-report` for a turn without evidence. If the prompt
 is still unacknowledged after 60 s (for example untrusted hooks in Codex), plain wait
-returns `unacknowledged` with a hint instead of running to timeout. Prune uses the same
-ownership/process checks as non-force close and a lock per task across the repository.
+returns `unacknowledged` with a hint instead of running to timeout. `--until report`
+keeps waiting and includes the same hint if it times out without acknowledgment.
+Prune uses the same ownership/process checks as non-force close and a lock per task
+across the repository.
 `pane prompt --queue` uses Codex Tab or Claude Enter on acknowledged working TUI
 workers; `queued` awaits the same UserPromptSubmit acknowledgment as other delivery.
 Without `--queue`, busy workers still return `not-sent`.
@@ -226,11 +228,14 @@ for session selection. See [Rex integration](docs/rex-integration.md).
 - Every assignment has a `runId`; reports must identify it. An unconfirmed
   delivery is never resent automatically, and a failed follow-up never erases the
   previous report.
+- Worker scans skip records whose root or file identity no longer matches; `status`
+  lists their file paths in `warnings`. Unreadable or invalid JSON records remain errors.
 - `status`, `doctor` and `context` emit `schemaVersion: 1` JSON. New fields are
   additive; consumers should ignore unknown fields and keep the distinction
   between `null`, empty arrays and empty objects. Each task carries a `state`
   (merged, agent, report status, `worktree` or `pending`); plain-text `orc status`
-  prints it. A worker report counts only with `Status:` (`done|partial|blocked`)
+  prints it. Task report status comes from the matching worker's run-specific report,
+  never a shared checkout report. A worker report counts only with `Status:` (`done|partial|blocked`)
   and a nonempty `Validation`; markdown bold labels are accepted.
 
 **Inkdrop** (optional) reads `INKDROP_LOCAL_USERNAME`, `INKDROP_LOCAL_PASSWORD`

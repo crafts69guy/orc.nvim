@@ -139,7 +139,7 @@ end
 ---@param task string
 ---@param message string
 ---@param yes? boolean
----@return table result
+---@return {status:string,task:string,base?:string,commit?:string,files?:string[]} result
 ---@return integer code
 function M.merge(rt, base, task, message, yes)
 	local branch = M.branch(base, task)
@@ -188,7 +188,7 @@ function M.merge(rt, base, task, message, yes)
 			"merged as " .. commit .. " but worktree remains: " .. path .. ": " .. tostring(err)
 		)
 	end
-	return { status = "merged", task = task, commit = commit }, 0
+	return { status = "merged", base = base, task = task, commit = commit }, 0
 end
 
 ---Execute worktree commands. All command output is a JSON document.

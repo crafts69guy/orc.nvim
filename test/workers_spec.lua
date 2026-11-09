@@ -2,7 +2,7 @@ local runtime = require("orc.runtime")
 local workers = require("orc.workers")
 
 local function fake()
-	local root = Test.temp()
+	local root = assert(vim.uv.fs_realpath(Test.temp()))
 	local rt = runtime.new({
 		cwd = root,
 		env = {
@@ -262,6 +262,74 @@ local function fake()
 	return rt, state
 end
 
+Test.test("workers symlink paths share one canonical record for start wait and close", function()
+	local rt, state = fake()
+	local git_rt, exec = runtime.new({ cwd = rt.cwd }), rt.exec
+	Test.eq(git_rt.exec({ "git", "init", "--quiet" }).code, 0)
+	rt.exec = function(argv, opts)
+		if argv[1] == "git" then
+			return git_rt.exec(argv, opts)
+		end
+		return exec(argv, opts)
+	end
+	local alias = Test.temp() .. "/checkout"
+	assert(vim.uv.fs_symlink(rt.cwd, alias, { dir = true }))
+	local started = workers.run(rt, {
+		"start",
+		"feature",
+		"task",
+		"--path",
+		alias,
+		"--brief",
+		rt.cwd .. "/brief.md",
+	})
+	Test.eq(started.code, 0)
+	Test.eq(state.record().path, rt.cwd)
+	Test.eq(state.layout.block.options.cwd, rt.cwd)
+	Test.eq(state.start().result.runId, started.result.runId)
+	Test.eq(state.created, 1)
+	local pair = workers.run(rt, {
+		"start",
+		"feature",
+		"second",
+		"--path",
+		alias,
+		"--brief",
+		rt.cwd .. "/brief.md",
+		"--here",
+	})
+	Test.eq(pair.code, 1)
+	assert(pair.result.stderr:find("close the existing pair worker first", 1, true))
+	Test.eq(state.run("wait", { "--timeout", "0" }).code, 0)
+	Test.eq(state.run("close").result.status, "closed")
+	Test.eq(#state.closed, 1)
+end)
+
+Test.test("workers collection skips stale identities and status warns with their paths", function()
+	for _, mismatch in ipairs({ "root", "path" }) do
+		for _, closed in ipairs({ false, true }) do
+			local rt, state = fake()
+			state.start()
+			local stale = state.record()
+			stale[mismatch] = "/old/repo"
+			stale.state = closed and "closed" or stale.state
+			local file = rt.path(rt.cwd, ".orc", "workers", "abc123.json")
+			rt.write(file, rt.encode(stale))
+			local found, skipped = workers.collect(rt)
+			Test.eq(#found, 1)
+			Test.eq(skipped, { file })
+			local status = require("orc.status").run(rt, { "--json" })
+			Test.eq(status.code, 0)
+			Test.eq(#rt.decode(status.out).workers, 1)
+			assert(rt.decode(status.out).warnings[1]:find(file, 1, true))
+			assert(require("orc.status").run(rt, {}).err:find(file, 1, true))
+			assert(require("orc.hooks").context(rt):find("Scratch dir:", 1, true))
+			Test.eq(workers.run(rt, { "prune", "--path", rt.cwd }).code, 0)
+			Test.eq(rt.read(file), rt.encode(stale))
+		end
+	end
+end)
+
 Test.test("workers validation profile follows shared project memory and is optional", function()
 	for _, present in ipairs({ false, true }) do
 		local rt, state = fake()
@@ -469,6 +537,11 @@ Test.test(
 			})[outcome] or "timeout"
 			Test.eq(response.result.state, expected)
 			Test.eq(response.result.evidence, outcome == "report")
+			if outcome == "unacknowledged" then
+				assert(response.result.hint:find("trust orc hooks", 1, true))
+			else
+				Test.eq(response.result.hint, nil)
+			end
 			Test.eq(state.stopped, outcome == "unacknowledged" and 1 or 2)
 		end
 	end
@@ -915,7 +988,7 @@ Test.test("workers Stop saves only matching missing reports for either worker ro
 		state.hook("Stop", { last_assistant_message = message })
 		Test.eq(rt.read(record.report), message)
 		Test.eq(state.record().reportStatus, "done")
-		Test.eq(rt.read(rt.path(rt.cwd, ".orc", "report.md")), message)
+		Test.eq(rt.read(rt.path(rt.cwd, ".orc", "report.md")), nil)
 		state.native = "idle"
 		Test.eq(state.run("wait", { "--timeout", "0" }).result.evidence, true)
 		state.hook("Stop", {
@@ -1267,7 +1340,8 @@ Test.test(
 		local result = state.run("wait", { "--timeout", "0" })
 		Test.eq(result.result.evidence, true)
 		Test.eq(result.result.status, "partial")
-		Test.eq(rt.read(rt.path(rt.cwd, ".orc", "report.md")), rt.read(state.record().report))
+		Test.eq(state.record().reportStatus, "partial")
+		Test.eq(rt.read(rt.path(rt.cwd, ".orc", "report.md")), nil)
 	end
 )
 
@@ -1284,7 +1358,7 @@ Test.test("workers followup is a new unconfirmed run and retains the previous re
 	Test.eq(result.result.queued, true)
 	assert(result.result.runId ~= old.runId)
 	Test.eq(state.record().previousReport, old.report)
-	assert(rt.read(rt.path(rt.cwd, ".orc", "report.md")))
+	assert(rt.read(old.report))
 	assert(state.writes[1]:find("[orc-run:" .. result.result.runId .. "]", 1, true))
 	Test.eq(state.enter, "\r")
 	Test.eq(state.run("prompt", { "--text", "retry" }).result.status, "not-sent")
@@ -1395,7 +1469,9 @@ end)
 Test.test("workers wait timeout below the unacknowledged limit stays a timeout", function()
 	local _, state = fake()
 	state.start()
-	Test.eq(state.run("wait", { "--timeout", "1000" }).result.state, "timeout")
+	local result = state.run("wait", { "--timeout", "1000" }).result
+	Test.eq(result.state, "timeout")
+	Test.eq(result.hint, nil)
 end)
 
 Test.test(
@@ -1765,9 +1841,9 @@ Test.test("workers corrupted unreadable and malformed durable metadata fail clos
 	local record = state.record()
 	record.root = "/elsewhere"
 	state.store(record)
-	Test.raises("identity mismatch", function()
-		workers.collect(rt)
-	end)
+	local found, skipped = workers.collect(rt)
+	Test.eq(found, {})
+	Test.eq(skipped, { state.file() })
 	local read = rt.read
 	rt.read = function(path)
 		if path:match("%.json$") then
@@ -1776,6 +1852,9 @@ Test.test("workers corrupted unreadable and malformed durable metadata fail clos
 		return read(path)
 	end
 	Test.eq(state.run("close").code, 1)
+	Test.raises("cannot read worker record", function()
+		workers.collect(rt)
+	end)
 	Test.eq(#state.closed, 0)
 	local _, no_block = fake()
 	no_block.noBlock = true
@@ -2056,9 +2135,9 @@ Test.test(
 			end
 			return read(path)
 		end
-		Test.raises("identity mismatch", function()
-			workers.collect(rt)
-		end)
+		local found, skipped = workers.collect(rt)
+		Test.eq(found, {})
+		Test.eq(skipped, { state.file() })
 		local other_rt, other = fake()
 		other_rt.env.PATH = nil
 		other.start()

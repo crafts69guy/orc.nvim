@@ -315,6 +315,30 @@ Test.test(
 	end
 )
 
+Test.test("core context and status surface failures loading owned modules", function()
+	for _, name in ipairs({ "orc.workers", "orc.inkdrop" }) do
+		local previous = package.preload[name]
+		package.preload[name] = function()
+			error("module '" .. name .. "' not found: fixture")
+		end
+		local ok, err = xpcall(function()
+			with_module(name, nil, function()
+				Test.raises("not found: fixture", function()
+					hooks.context(fake())
+				end)
+				if name == "orc.workers" then
+					package.loaded[name] = nil
+					Test.raises("not found: fixture", function()
+						status.collect(fake())
+					end)
+				end
+			end)
+		end, debug.traceback)
+		package.preload[name] = previous
+		assert(ok, err)
+	end
+end)
+
 Test.test(
 	"core generator validates frontmatter, sandbox and drift without writes in check mode",
 	function()
@@ -561,7 +585,6 @@ Test.test(
 			"Base branch: feat/x\n## Tasks\n```yaml\n- id: T1\n  goal: Task\n- id: T2\n```\n"
 		rt.files["/repo/.scratch/f/merged"] = "T2 abc123\n"
 		rt.files["/repo/.scratch/f/inkdrop.json"] = '{"noteId":"note:test"}'
-		rt.files["/repo/task/.orc/report.md"] = "git status: clean\nStatus: done\nValidation\npassed"
 		rt.files["/repo/.scratch/no-plan/log.md"] = "ignore"
 		route(rt, {
 			["wt list --format=json"] = result(
@@ -576,9 +599,25 @@ Test.test(
 			),
 		})
 		with_module("orc.workers", {
-			parse_report = require("orc.workers").parse_report,
 			collect = function()
-				return { { feature = "f", task = "T2", runId = "run", state = "idle", path = "/repo/pair" } }
+				return {
+					{
+						feature = "f",
+						task = "T1",
+						runId = "one",
+						state = "done",
+						path = "/repo/pair",
+						reportStatus = "done",
+					},
+					{
+						feature = "f",
+						task = "T2",
+						runId = "run",
+						state = "idle",
+						path = "/repo/pair",
+						reportStatus = "blocked",
+					},
+				}
 			end,
 		}, function()
 			local snapshot = status.collect(rt)
@@ -589,6 +628,7 @@ Test.test(
 			Test.eq(feature.tasks[1].report, { status = "done" })
 			Test.eq(feature.tasks[1].state, "done")
 			Test.eq(feature.tasks[2].state, "merged")
+			Test.eq(feature.tasks[2].report, { status = "blocked" })
 			Test.eq(feature.tasks[3].state, "worktree")
 			Test.eq(feature.tasks[2].agent, { name = "run", state = "idle" })
 			Test.eq(feature.tasks[2].worktree, rt.null)
@@ -712,7 +752,7 @@ Test.test(
 			["git rev-parse feat"] = result(0, "commit\n"),
 		})
 		local merged = wt.run(rt, { "merge", "feat", "T1", "--message=feat: work", "--yes" })
-		Test.eq(merged.result, { status = "merged", task = "T1", commit = "commit" })
+		Test.eq(merged.result, { status = "merged", base = "feat", task = "T1", commit = "commit" })
 		Test.eq(wt.run(rt, { "remove", "feat", "T1", "--yes" }).result.status, "removed")
 		route(rt, { ["git add -A"] = result(1, "", "write denied") })
 		assert(
@@ -1106,7 +1146,10 @@ Test.test(
 		)
 		Test.eq(#wt.run(rt, { "list", "feat" }).result, 1)
 		rt.files["/repo/.scratch/feature/plan.md"] = "Base branch: feat\n"
-		Test.eq(cli.run(rt, { "wt", "merge", "feat", "T1", "--message=x" }).code, 0)
+		local merged = cli.run(rt, { "wt", "merge", "feat", "T1", "--message=x", "--base", "other" })
+		Test.eq(merged.code, 0)
+		Test.eq(merged.result.base, "feat")
+		Test.eq(merged.result.task, "T1")
 		Test.eq(rt.files["/repo/.scratch/feature/merged"], "T1 sha\n")
 		Test.eq(wt.run(rt, { "list", "feat", "extra" }).code, 1)
 		route(rt, {
@@ -1180,7 +1223,8 @@ Test.test(
 			Test.eq(status.collect(rt).features[1].tasks[1].branch, "empty--orphan")
 			assert(status.run(rt, {}).out:find("worktree", 1, true))
 			rt.files["/orphan/.orc/report.md"] = "Status: partial\n"
-			assert(status.run(rt, {}).out:find("partial", 1, true))
+			Test.eq(status.collect(rt).features[1].tasks[1].report, rt.null)
+			assert(status.run(rt, {}).out:find("worktree", 1, true))
 		end)
 		Test.eq(
 			status.parse_tasks(
@@ -1291,8 +1335,11 @@ end)
 
 Test.test("core merge receipts warn without changing a completed merge's exit status", function()
 	local rt = fake()
-	local response =
-		{ code = 0, out = "merged\n", result = { status = "merged", task = "T1", commit = "sha" } }
+	local response = {
+		code = 0,
+		out = "merged\n",
+		result = { status = "merged", base = "main", task = "T1", commit = "sha" },
+	}
 	with_module("orc.worktrees", {
 		run = function()
 			return response

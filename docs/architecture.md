@@ -85,6 +85,7 @@ Queued TUI prompts retain process/owner and hook revision checks, submit using
 Codex Tab or Claude Enter, and await the next run's UserPromptSubmit acknowledgment.
 `wait --until report` ignores missing-evidence stops; plain wait exposes them as
 `turn-ended-no-report`. Native user-action blocks remain distinct from turn endings.
+An unacknowledged report wait keeps waiting until timeout, then includes the hook-trust hint.
 Native `working` clears an observed hook block after an auto-resolved permission.
 
 The shared main checkout's `.orc/validation.md` is optional project memory and is
@@ -114,7 +115,10 @@ harness/OS sandbox and available credentials.
 ## Persistence and external interfaces
 
 Plans and managed-note links belong to the main checkout; task reports belong to
-their worktree. State writes are atomic. No UI process is required for worker
+their run-specific paths. Task status uses the matching worker's report status; there
+is no shared checkout report copy. Worker scans skip mismatched record identities and
+status warns with their paths; unreadable or invalid records remain errors.
+State writes are atomic. No UI process is required for worker
 liveness. JSON command fields keep their established schemaVersion 1 meaning,
 with additive worker metadata for new clients.
 

@@ -134,7 +134,7 @@ Test.test("ui render preserves merged agent report pending and previous-report s
 	assert(lines[6]:find("partial", 1, true))
 	assert(lines[7]:find("pending", 1, true))
 	Test.eq(rows[8].report, "/old")
-	Test.eq(rows[6].report, "/r/.orc/report.md")
+	Test.eq(rows[6].report, nil)
 end)
 
 Test.test("ui opens one read-only panel and coalesces asynchronous refresh", function()

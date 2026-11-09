@@ -23,6 +23,7 @@ awaits UserPromptSubmit; without the flag, a busy worker returns `not-sent`.
 Use `pane wait --until report` to continue until a matching report with Status and
 Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
 `turn-ended-no-report` from `blocked`; missing evidence does not end a report wait.
+If a report wait times out before acknowledgment, its hint explains how to trust the hooks.
 
 ## Setup
 

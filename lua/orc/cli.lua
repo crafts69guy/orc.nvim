@@ -165,9 +165,13 @@ function M.run(rt, argv, input)
 		elseif command == "wt" then
 			local response = require("orc.worktrees").run(rt, rest)
 			if response.result.status == "merged" then
-				local _, pos = require("orc.args").parse(rest, { yes = "boolean", message = "string" })
-				local recorded, warning =
-					pcall(require("orc.status").record_merge, rt, pos[2], pos[3], response.result.commit)
+				local recorded, warning = pcall(
+					require("orc.status").record_merge,
+					rt,
+					response.result.base,
+					response.result.task,
+					response.result.commit
+				)
 				if not recorded or warning then
 					response.err = "orc: " .. tostring(warning) .. "\n"
 				end

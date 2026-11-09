@@ -6,7 +6,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field runId string Identity of the current prompt attempt.
 ---@field feature string Feature name.
 ---@field task string Task identifier.
----@field path string Absolute checkout used by the worker; scopers do not own edits.
+---@field path string Canonical absolute checkout used by the worker; scopers do not own edits.
 ---@field root string Main checkout containing the durable record.
 ---@field kind 'claude'|'codex' Harness executable.
 ---@field transport 'tui'|'exec' Missing transports in older records default to tui.
@@ -178,13 +178,8 @@ local function save(rt, record, mode)
 			record.eventRevision = record.revision
 		end
 		record.updatedAt = rt.now()
-		local report_text = record._reportText
-		record._reportText = nil
 		record._authorizedHook = nil
 		rt.write(file, rt.encode(record) .. "\n")
-		if report_text then
-			rt.write(rt.path(record.path, ".orc", "report.md"), report_text)
-		end
 	end)
 	rt.remove(lock)
 	assert(ok, err)
@@ -258,7 +253,6 @@ local function report(rt, record)
 		return false
 	end
 	record.reportStatus = parsed.status
-	record._reportText = text
 	return true
 end
 
@@ -496,7 +490,7 @@ local function start(rt, feature, task, values, file)
 	assert(kind == "claude" or kind == "codex", "orc pane: kind must be claude or codex")
 	local role = values.role or "implementer"
 	assert(role == "implementer" or role == "scoper", "orc pane: role must be implementer or scoper")
-	local path = rt.abspath(values.path)
+	local path = values.path
 	assert(rt.exists(path), "orc pane: worktree does not exist")
 	local brief = rt.abspath(values.brief)
 	assert(rt.read(brief), "orc pane: cannot read brief")
@@ -795,6 +789,8 @@ end
 
 -- Untrusted Codex hooks never acknowledge the prompt; stop waiting after this long.
 local UNACKNOWLEDGED_WAIT_MS = 60000
+local UNACKNOWLEDGED_HINT =
+	"worker prompt was not acknowledged; trust orc hooks in Codex (/hooks) or Claude, then inspect the pane"
 
 local function wait_for(rt, record, timeout, until_report)
 	if record.state == "closed" then
@@ -890,7 +886,7 @@ local function wait_for(rt, record, timeout, until_report)
 					state = "unacknowledged",
 					report = rt.null,
 					evidence = false,
-					hint = "worker prompt was not acknowledged; trust orc hooks in Codex (/hooks) or Claude, then inspect the pane",
+					hint = UNACKNOWLEDGED_HINT,
 				}
 			end
 			if rt.clock() >= deadline then
@@ -904,6 +900,10 @@ local function wait_for(rt, record, timeout, until_report)
 			state = "timeout",
 			report = rt.null,
 			evidence = false,
+			hint = not record.acknowledged
+					and rt.clock() - started > UNACKNOWLEDGED_WAIT_MS
+					and UNACKNOWLEDGED_HINT
+				or nil,
 		}
 	end, debug.traceback)
 	if stream then
@@ -945,30 +945,34 @@ end
 ---@param rt orc.Runtime
 ---@param cwd? string
 ---@return orc.Worker[]
+---@return string[] skipped Paths with mismatched or missing record identities.
 function M.collect(rt, cwd)
 	local root = main_root(rt, cwd or rt.cwd)
-	local dir, workers = rt.path(root, ".orc", "workers"), {}
+	local dir, workers, skipped = rt.path(root, ".orc", "workers"), {}, {}
 	for _, name in ipairs(rt.list(dir)) do
 		if name:match("^[%x]+%.json$") then
-			local record = read_record(rt, rt.path(dir, name))
-			assert(
+			local file = rt.path(dir, name)
+			local record = read_record(rt, file)
+			if
 				record
-					and record.root == root
-					and record_path(rt, root, record.task, record.path) == rt.path(dir, name),
-				"orc pane: worker record identity mismatch"
-			)
-			if record.state ~= "closed" and record.blockId then
-				local ok, err = pcall(function()
-					snapshot(rt, client_for(rt, record), record)
-				end)
-				if not ok then
-					record.state, record.observationError = "disconnected", tostring(err)
+				and record.root == root
+				and record_path(rt, root, record.task, record.path) == file
+			then
+				if record.state ~= "closed" and record.blockId then
+					local ok, err = pcall(function()
+						snapshot(rt, client_for(rt, record), record)
+					end)
+					if not ok then
+						record.state, record.observationError = "disconnected", tostring(err)
+					end
 				end
+				workers[#workers + 1] = record
+			else
+				skipped[#skipped + 1] = file
 			end
-			workers[#workers + 1] = record
 		end
 	end
-	return workers
+	return workers, skipped
 end
 
 ---Acknowledge only matching worker hook events; a queued terminal write is not delivery.
@@ -1113,9 +1117,12 @@ function M.run(rt, argv)
 			"orc pane: --transport only applies to start"
 		)
 		assert(values.path and values.path ~= "", "orc pane: --path is required")
+		local path = rt.abspath(values.path)
+		path = vim.uv.fs_realpath(path) or path
+		values.path = path
 		if command == "prune" then
 			assert(#pos == 0 and vim.tbl_count(values) == 1, "usage: orc pane prune --path <dir>")
-			return prune(rt, rt.abspath(values.path))
+			return prune(rt, path)
 		end
 		local task = command == "start" and pos[2] or pos[1]
 		assert(task and task:match("^[%w_.%-]+$") and not task:match("^%.+$"), "orc pane: invalid task")
@@ -1123,14 +1130,12 @@ function M.run(rt, argv)
 			(command == "start" and #pos == 2 and values.brief) or (command ~= "start" and #pos == 1),
 			"orc pane: invalid arguments"
 		)
-		local path = rt.abspath(values.path)
 		local root = main_root(rt, path)
 		if command == "start" then
 			local checkout =
 				assert(require("orc.worktrees").checkout(rt, path), "orc pane: not a git checkout")
-			local canonical = vim.uv.fs_realpath(path) or path
 			assert(
-				values["allow-subdir"] or canonical == (vim.uv.fs_realpath(checkout) or checkout),
+				values["allow-subdir"] or path == (vim.uv.fs_realpath(checkout) or checkout),
 				"orc pane: --path must be checkout toplevel "
 					.. checkout
 					.. "; use --allow-subdir to override"

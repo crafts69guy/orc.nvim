@@ -95,11 +95,10 @@ end
 function M.collect(rt, cwd)
 	local root = assert(wt.root(rt, cwd), "orc status: not a Git repository")
 	local result = { schemaVersion = 1, root = root, warnings = {}, features = {}, workers = {} }
-	local worker_ok, worker_module = pcall(require, "orc.workers")
-	if worker_ok then
-		result.workers = worker_module.collect(rt, cwd)
-	elseif not tostring(worker_module):find("module 'orc.workers' not found", 1, true) then
-		error(worker_module, 0)
+	local skipped
+	result.workers, skipped = require("orc.workers").collect(rt, cwd)
+	for _, file in ipairs(skipped or {}) do
+		result.warnings[#result.warnings + 1] = "worker record identity mismatch; skipped " .. file
 	end
 	local trees = nil
 	for _, feature in ipairs(rt.list(rt.path(root, ".scratch"))) do
@@ -141,18 +140,10 @@ function M.collect(rt, cwd)
 			for _, task in ipairs(tasks) do
 				task.branch, task.worktree = wt.branch(branch, task.id), paths[task.id] or rt.null
 				task.agent, task.report, task.merged = rt.null, rt.null, rt.null
-				local report_path = paths[task.id]
 				for _, worker in ipairs(result.workers) do
 					if worker.feature == feature and worker.task == task.id then
 						task.agent = { name = worker.runId, state = worker.state }
-						report_path = worker.path
-					end
-				end
-				if report_path then
-					local report = rt.read(rt.path(report_path, ".orc", "report.md")) or ""
-					local status = require("orc.workers").parse_report(report).status
-					if status then
-						task.report = { status = status }
+						task.report = worker.reportStatus and { status = worker.reportStatus } or rt.null
 					end
 				end
 				if merges[task.id] then

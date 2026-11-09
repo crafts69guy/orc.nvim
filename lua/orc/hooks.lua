@@ -211,30 +211,25 @@ function M.context(rt, cwd)
 			text[#text + 1] =
 				"Checkout already has uncommitted changes. Preserve work from other sessions; isolate with `orc wt session <branch>` when ownership is uncertain."
 		end
-		local available, workers = pcall(require, "orc.workers")
-		if available then
-			local checkout = require("orc.worktrees").checkout(rt, cwd)
-			for _, worker in ipairs(workers.collect(rt, cwd)) do
-				local own_pair = rt.env.ORC_PAIR == "1" and worker.sessionId == rt.env.REX_SESSION
-				local active = worker.role ~= "scoper"
-					and worker.state ~= "closed"
-					and worker.state ~= "exited"
-					and worker.state ~= "error"
-				if
-					active
-					and worker.path == checkout
-					and worker.blockId ~= rt.env.REX_BLOCK
-					and not own_pair
-				then
-					text[#text + 1] = "Another worker owns this checkout ("
-						.. worker.task
-						.. ", "
-						.. worker.blockId
-						.. "). Isolate with `orc wt session <branch>` before editing."
-				end
+		local checkout = require("orc.worktrees").checkout(rt, cwd)
+		for _, worker in ipairs(require("orc.workers").collect(rt, cwd)) do
+			local own_pair = rt.env.ORC_PAIR == "1" and worker.sessionId == rt.env.REX_SESSION
+			local active = worker.role ~= "scoper"
+				and worker.state ~= "closed"
+				and worker.state ~= "exited"
+				and worker.state ~= "error"
+			if
+				active
+				and worker.path == checkout
+				and worker.blockId ~= rt.env.REX_BLOCK
+				and not own_pair
+			then
+				text[#text + 1] = "Another worker owns this checkout ("
+					.. worker.task
+					.. ", "
+					.. worker.blockId
+					.. "). Isolate with `orc wt session <branch>` before editing."
 			end
-		elseif not tostring(workers):find("module 'orc.workers' not found", 1, true) then
-			error(workers, 0)
 		end
 	end
 	if rt.env.ORC_PAIR == "1" or rt.env.ORC_PANES == "1" then
@@ -257,16 +252,13 @@ function M.context(rt, cwd)
 		text[#text + 1] =
 			"Level default (Single): one implementer per task; run deterministic checks first; use the reviewer only for risky diffs (security, concurrency, migrations, public APIs)."
 	end
-	local loaded, inkdrop = pcall(require, "orc.inkdrop")
-	if loaded then
-		local flag = inkdrop.flag(rt, cwd)
-		if flag then
-			text[#text + 1] = "Inkdrop notebook: "
-				.. flag.name
-				.. " ("
-				.. flag.id
-				.. "). Use `orc inkdrop` for feature notes."
-		end
+	local flag = require("orc.inkdrop").flag(rt, cwd)
+	if flag then
+		text[#text + 1] = "Inkdrop notebook: "
+			.. flag.name
+			.. " ("
+			.. flag.id
+			.. "). Use `orc inkdrop` for feature notes."
 	end
 	return table.concat(text, "\n\n")
 end

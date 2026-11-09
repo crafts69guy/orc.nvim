@@ -55,8 +55,7 @@ function M.render(document)
 			path = path,
 			worker = worker,
 			brief = worker and worker.brief or plan,
-			report = worker and (not worker.acknowledged and worker.previousReport or worker.report)
-				or path and (path .. "/.orc/report.md"),
+			report = worker and (not worker.acknowledged and worker.previousReport or worker.report),
 		}
 		lines[#lines + 1] = string.format(
 			"%-28s %-12s %s",

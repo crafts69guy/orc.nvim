@@ -266,6 +266,7 @@ function M.new(opts)
 		return uv.fs_stat(path) ~= nil
 	end
 	rt.mkdir = function(path)
+		assert(type(path) == "string" and path ~= "", "mkdir needs a path")
 		if vim.fn.mkdir(path, "p") == 0 and not rt.exists(path) then
 			error("cannot create directory: " .. path, 0)
 		end
