@@ -123,6 +123,29 @@ local function fake(options)
 	return rt, files, calls, requests
 end
 
+Test.test(
+	"integrations context lists the optional shared validation profile for both harnesses",
+	function()
+		for _, present in ipairs({ false, true }) do
+			local profile = "/repo/.orc/validation.md"
+			local rt = fake({
+				cwd = "/repo/linked/subdir",
+				files = present and { [profile] = "edit: format\ntask: test\ngate: coverage\n" } or {},
+			})
+			local found = {}
+			for _, source in ipairs(context.collect(rt).sources) do
+				if source.path == profile then
+					Test.eq(source.kind, "memory")
+					Test.eq(source.scope, "project")
+					assert(source.always > 0)
+					found[#found + 1] = source.harness
+				end
+			end
+			Test.eq(found, present and { "claude", "codex" } or {})
+		end
+	end
+)
+
 local function with_status(fn, features)
 	local previous = package.loaded["orc.status"]
 	package.loaded["orc.status"] = {

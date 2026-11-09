@@ -78,6 +78,22 @@ retrying an ambiguous send must not type a duplicate prompt. Report validation
 checks the current run ID and required sections. Only the orchestrator accepts
 work after reading the diff and rerunning the task's validation.
 
+`pane start` guards the checkout's own git toplevel (`--allow-subdir` is explicit),
+including `--here` starts in another repository. `--precheck` runs via `sh -c`
+before pane or record creation; failure includes its exit code and last 40 output lines.
+Queued TUI prompts retain process/owner and hook revision checks, submit using
+Codex Tab or Claude Enter, and await the next run's UserPromptSubmit acknowledgment.
+`wait --until report` ignores missing-evidence stops; plain wait exposes them as
+`turn-ended-no-report`. Native user-action blocks remain distinct from turn endings.
+Native `working` clears an observed hook block after an auto-resolved permission.
+
+The shared main checkout's `.orc/validation.md` is optional project memory and is
+injected into implementer prompts. Workers run edit/task tiers; the orchestrator
+runs the gate tier once before commit through `orc gate`. The gate uses an exclusive
+private machine-wide JSON lock with owner metadata, sleeps between polls, recovers
+dead pids and pre-boot owners, streams both output channels and releases on
+command/error/handled exit.
+
 Use Worktrunk project hooks in `.config/wt.toml` as the deterministic gate before
 agent review: an approved `pre-merge` hook runs the project's validation and
 aborts `orc wt merge` on failure. A `post-start` hook running

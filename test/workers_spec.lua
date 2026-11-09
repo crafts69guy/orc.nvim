@@ -101,6 +101,9 @@ local function fake()
 		opts = opts or {}
 		state.calls[#state.calls + 1] = { argv = argv, opts = opts }
 		if argv[1] == "git" then
+			if argv[3] == "--show-toplevel" then
+				return { code = 0, stdout = state.toplevel or root, stderr = "" }
+			end
 			if argv[2] == "check-ignore" then
 				return { code = state.ignored == false and 1 or 0, stdout = "", stderr = "" }
 			end
@@ -259,10 +262,270 @@ local function fake()
 	return rt, state
 end
 
+Test.test("workers validation profile follows shared project memory and is optional", function()
+	for _, present in ipairs({ false, true }) do
+		local rt, state = fake()
+		local profile = rt.path(rt.cwd, ".orc", "validation.md")
+		if present then
+			rt.write(profile, "# Validation\nedit: syntax\ntask: focused tests\ngate: full suite\n")
+		end
+		Test.eq(state.start().code, 0)
+		local prompt = table.concat(state.layout.block.options.command, " ")
+		Test.eq(prompt:find("Validation profile: read " .. profile, 1, true) ~= nil, present)
+		Test.eq(prompt:find("it overrides the brief's Validate section.", 1, true) ~= nil, present)
+	end
+end)
+
+Test.test("workers reject subdirectories and allow here starts in another checkout", function()
+	for _, allow in ipairs({ false, true }) do
+		local rt, state = fake()
+		local sub = rt.path(rt.cwd, ".scratch", "feature")
+		rt.mkdir(sub)
+		local args = { "start", "feature", "task", "--path", sub, "--brief", "brief.md", "--here" }
+		if allow then
+			args[#args + 1] = "--allow-subdir"
+		end
+		local response = workers.run(rt, args)
+		Test.eq(response.code, allow and 0 or 1)
+		Test.eq(state.created, allow and 1 or 0)
+		if not allow then
+			assert(response.result.stderr:find(rt.cwd, 1, true))
+		end
+	end
+	local rt, state = fake()
+	local other = rt.path(rt.cwd, "other-checkout")
+	rt.mkdir(other)
+	local exec = rt.exec
+	rt.exec = function(argv, opts)
+		if argv[3] == "--show-toplevel" then
+			return { code = 0, stdout = opts.cwd, stderr = "" }
+		end
+		return exec(argv, opts)
+	end
+	local response = workers.run(rt, {
+		"start",
+		"feature",
+		"task",
+		"--path",
+		other,
+		"--brief",
+		"brief.md",
+		"--here",
+	})
+	Test.eq(response.code, 0)
+	Test.eq(state.created, 1)
+	Test.eq(state.method, "session.new_split")
+	Test.eq(state.layout.block.options.cwd, other)
+end)
+
+Test.test("workers precheck failure tails output without creating a pane or record", function()
+	for _, code in ipairs({ 0, 7 }) do
+		local rt, state = fake()
+		local exec = rt.exec
+		rt.env.SHELL = "fish"
+		rt.exec = function(argv, opts)
+			if argv[1] == "sh" then
+				Test.eq(argv, { "sh", "-c", "verify prerequisite" })
+				Test.eq(opts.cwd, rt.cwd)
+				local lines = {}
+				for i = 1, 45 do
+					lines[i] = tostring(i)
+				end
+				return { code = code, stdout = table.concat(lines, "\n") .. "\n", stderr = "failure\n" }
+			end
+			return exec(argv, opts)
+		end
+		local response = state.start({ "--precheck", "verify prerequisite" })
+		Test.eq(response.code, 0)
+		if code == 0 then
+			Test.eq(state.created, 1)
+		else
+			Test.eq(response.result.status, "precheck-failed")
+			Test.eq(response.result.exitCode, 7)
+			Test.eq(#vim.split(response.result.output, "\n"), 40)
+			assert(response.result.output:match("^7\n"))
+			assert(response.result.output:match("failure$"))
+			Test.eq(state.created, 0)
+			Test.eq(state.record(), nil)
+		end
+	end
+end)
+
+Test.test("workers precheck uses sh syntax regardless of the configured shell", function()
+	for _, present in ipairs({ false, true }) do
+		local rt, state = fake()
+		rt.env.SHELL = "orc-nonexistent-shell"
+		if present then
+			rt.write(rt.path(rt.cwd, "x"), "fixture")
+		end
+		local exec = rt.exec
+		local shell_exec = runtime.new({ cwd = rt.cwd, env = rt.env }).exec
+		rt.exec = function(argv, opts)
+			if argv[1] == "sh" or argv[1] == rt.env.SHELL then
+				return shell_exec(argv, opts)
+			end
+			return exec(argv, opts)
+		end
+		local response = state.start({ "--precheck", "if [ -f x ]; then exit 0; else exit 3; fi" })
+		Test.eq(response.code, 0)
+		Test.eq(state.created, present and 1 or 0)
+		if not present then
+			Test.eq(response.result.status, "precheck-failed")
+			Test.eq(response.result.exitCode, 3)
+			Test.eq(state.record(), nil)
+		end
+	end
+end)
+
+Test.test("workers queue working followups with native keys and preserve process checks", function()
+	for _, kind in ipairs({ "codex", "claude" }) do
+		for _, mutation in ipairs({ "none", "before", "after", "authorization" }) do
+			local rt, state = fake()
+			state.processName = kind
+			Test.eq(
+				workers.run(
+					rt,
+					{ "start", "feature", "task", "--path", rt.cwd, "--brief", "brief.md", "--kind", kind }
+				).code,
+				0
+			)
+			state.hook("UserPromptSubmit")
+			Test.eq(state.run("prompt", { "--text", "later" }).result.status, "not-sent")
+			Test.eq(#state.writes, 0)
+			if mutation == "before" then
+				state.pid = 99
+			elseif mutation == "after" then
+				state.onPaste = function()
+					state.pid = 99
+				end
+			elseif mutation == "authorization" then
+				state.onPaste = function()
+					state.hook("PermissionRequest")
+				end
+			end
+			local previous = state.record().runId
+			local response = state.run("prompt", { "--queue", "--text", "later" })
+			if mutation == "before" then
+				Test.eq(response.result.status, "not-sent")
+				Test.eq(#state.writes, 0)
+			elseif mutation ~= "none" then
+				Test.eq(response.result.status, "unconfirmed")
+				Test.eq(state.enter, nil)
+			else
+				Test.eq(response.result.status, "queued")
+				Test.eq(state.enter, kind == "codex" and "\t" or "\r")
+				assert(state.record().runId ~= previous)
+				Test.eq(state.record().acknowledged, false)
+				state.hook("UserPromptSubmit")
+				Test.eq(state.record().acknowledged, true)
+			end
+		end
+	end
+end)
+
+Test.test(
+	"workers wait until report ignores missing evidence and exits on real outcomes",
+	function()
+		for _, outcome in ipairs({
+			"report",
+			"permission",
+			"exit",
+			"error",
+			"timeout",
+			"unacknowledged",
+		}) do
+			local rt, state = fake()
+			state.start()
+			if outcome ~= "unacknowledged" then
+				state.hook("UserPromptSubmit")
+				state.hook("Stop")
+				state.native = "idle"
+				Test.eq(state.run("wait", { "--timeout", "0" }).result.state, "turn-ended-no-report")
+			end
+			state.onSleep = function()
+				if state.clock >= 500 then
+					if outcome == "report" then
+						state.report()
+					elseif outcome == "permission" then
+						state.native = "blocked"
+					elseif outcome == "exit" then
+						state.exitCode = 0
+					elseif outcome == "error" then
+						state.exitCode = 3
+					end
+					state.onEvent('{"type":"block_event"}\n')
+				end
+			end
+			local response = state.run(
+				"wait",
+				{ "--until", "report", "--timeout", outcome == "unacknowledged" and "61000" or "1000" }
+			)
+			Test.eq(response.code, 0)
+			local expected = ({
+				report = "idle",
+				permission = "blocked",
+				exit = "exited",
+				error = "error",
+			})[outcome] or "timeout"
+			Test.eq(response.result.state, expected)
+			Test.eq(response.result.evidence, outcome == "report")
+			Test.eq(state.stopped, outcome == "unacknowledged" and 1 or 2)
+		end
+	end
+)
+
+Test.test(
+	"workers report waits accept working reports and ignore native no-evidence blocks",
+	function()
+		local _, state = fake()
+		state.start()
+		state.hook("UserPromptSubmit")
+		state.report()
+		local response = state.run("wait", { "--until", "report", "--timeout", "0" })
+		Test.eq(response.result.state, "working")
+		Test.eq(response.result.evidence, true)
+		local rt, missing = fake()
+		missing.start()
+		missing.hook("UserPromptSubmit")
+		missing.hook("Stop")
+		missing.entries = { { app = "codex", state = "blocked", kind = "no-evidence" } }
+		Test.eq(missing.run("wait", { "--timeout", "0" }).result.state, "turn-ended-no-report")
+		Test.eq(missing.run("wait", { "--until", "report", "--timeout", "0" }).result.state, "timeout")
+		for _, kind in ipairs({ rt.null, "" }) do
+			missing.entries[1].kind = kind
+			Test.eq(
+				missing.run("wait", { "--until", "report", "--timeout", "0" }).result.state,
+				"timeout"
+			)
+		end
+		missing.hook("PermissionRequest")
+		missing.exitCode = 0
+		Test.eq(missing.run("wait", { "--until", "report", "--timeout", "0" }).result.state, "exited")
+		for _, flags in ipairs({
+			{ "--until", "idle" },
+			{ "--queue" },
+			{ "--allow-subdir" },
+			{ "--precheck", "true" },
+		}) do
+			Test.eq(missing.run("wait", flags).code, 1)
+		end
+		rt.env.SHELL = nil
+		local exec = rt.exec
+		rt.exec = function(argv, opts)
+			if argv[1] == "sh" then
+				return { code = 1, stdout = "", stderr = "failed" }
+			end
+			return exec(argv, opts)
+		end
+		missing.run("close", { "--force" })
+		Test.eq(missing.start({ "--precheck", "false" }).result.output, "failed")
+	end
+)
+
 Test.test("workers launch persists exact ownership and native codex sandbox", function()
 	local rt, state = fake()
 	local result = state.start()
-	Test.eq(result.code, 0)
+	assert(result.code == 0, vim.inspect(result))
 	Test.eq(result.result.status, "unconfirmed")
 	Test.eq(state.created, 1)
 	Test.eq(state.method, "session.new_window")
@@ -1655,7 +1918,7 @@ Test.test(
 		Test.eq(other.run("nonsense").code, 1)
 		other.closeFail = true
 		Test.eq(other.run("close").code, 1)
-		Test.eq(other.record().state, "idle")
+		Test.eq(other.record().state, "turn-ended-no-report")
 	end
 )
 
@@ -2171,6 +2434,25 @@ Test.test(
 
 		Test.eq(state.run("wait", { "--force" }).code, 1)
 		assert(state.run("wait", { "--force" }).result.stderr:find("only applies to close", 1, true))
+	end
+)
+
+Test.test(
+	"workers plain wait resumes after an auto-resolved permission but keeps native blocks",
+	function()
+		for _, native in ipairs({ "working", "blocked" }) do
+			local _, state = fake()
+			state.start()
+			state.hook("UserPromptSubmit")
+			state.hook("PermissionRequest")
+			state.native = native
+			local response = state.run("wait", { "--timeout", "1000" })
+			Test.eq(response.code, 0)
+			Test.eq(response.result.state, native == "working" and "timeout" or "blocked")
+			Test.eq(state.record().state, native)
+			Test.eq(state.record().blockedKind, native == "blocked" and "permission" or nil)
+			Test.eq(state.record().hookState, "blocked")
+		end
 	end
 )
 

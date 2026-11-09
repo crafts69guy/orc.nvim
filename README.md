@@ -105,6 +105,10 @@ workers can be acknowledged.
 | `orc wt new\|merge\|remove\|list\|session` | Manage isolated worktrees and serial merges |
 | `orc pane start\|wait\|prompt\|close [--force]` | Manage a worker and its report; `close --force` marks an unreachable record closed without calling Rex |
 | `orc pane prune --path <dir>` | Close successful exits or idle/done workers with a matching done report and evidence; print closed/skipped JSON |
+| `orc pane start ... [--allow-subdir] [--precheck '<cmd>']` | Require a checkout toplevel by default; check prerequisites before pane creation |
+| `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
+| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error or timeout |
+| `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
 | `orc doctor --json` | Prerequisite and integration checks |
 | `orc context --scope all --json` | Audit static Claude/Codex context sources |
@@ -156,12 +160,48 @@ automatic resume. Workers never answer approvals.
 
 In pane mode, scopers and implementers use pane workers (Codex by default);
 review follows the cross-vendor rules and shippers stay native. For one task add
-`--here` in the session checkout and do not edit beside its implementer. Parallel
+`--here --path <checkout>` and do not edit beside its implementer. Parallel
 tasks use dispatch worktrees.
-Run `orc pane wait` with the harness's background execution. If the worker prompt
-is still unacknowledged after 60 s (for example untrusted hooks in Codex), wait
+Start requires the checkout's git toplevel; `--allow-subdir` explicitly permits a
+subdirectory. `--here` also supports a checkout in another repository.
+`--precheck '<cmd>'` runs in `--path` using `sh -c` before creation;
+failure returns `precheck-failed`, `exitCode` and the last 40 output lines without
+creating a pane or worker record. Check prerequisites that already exist, not a
+version bump or export assigned to the worker.
+
+Run `orc pane wait --until report` with the harness's background execution. It
+continues through missing-evidence stops until the current run has a report with
+Status and Validation, a native user-action block, process exit/error or timeout.
+Plain wait reports `turn-ended-no-report` for a turn without evidence. If the prompt
+is still unacknowledged after 60 s (for example untrusted hooks in Codex), plain wait
 returns `unacknowledged` with a hint instead of running to timeout. Prune uses the same
 ownership/process checks as non-force close and a lock per task across the repository.
+`pane prompt --queue` uses Codex Tab or Claude Enter on acknowledged working TUI
+workers; `queued` awaits the same UserPromptSubmit acknowledgment as other delivery.
+Without `--queue`, busy workers still return `not-sent`.
+
+### Validation profile
+
+Place optional free Markdown in the main checkout's `.orc/validation.md`, beside
+`.orc/lessons.md`. Context audits list it as project memory and implementer prompts
+tell workers to read it; it overrides the brief's Validate section. Describe three
+tiers with concrete commands, for example:
+
+```markdown
+# Validation
+- edit: run syntax and formatting checks on touched files.
+- task: run focused behavior tests for the task.
+- gate: run the full suite and coverage once before commit.
+```
+
+Workers run only edit and task tiers. The orchestrator alone runs the gate tier once
+before commit through `orc gate`; never run two gates at once. `orc gate` preserves
+the child exit code, streams stdout/stderr and tees both to `--log` when supplied.
+Its lock is `$ORC_GATE_LOCK`, otherwise `${XDG_CACHE_HOME:-~/.cache}/orc/gate.lock`.
+The private JSON lock records pid, label, cwd and start time; waiting prints the
+holder and age once, then sleeps. Dead owners and owners predating the last boot
+by more than five seconds are recovered with a diagnostic. If uptime is unavailable,
+live owners are retained.
 
 **Safety defaults:** permission bypass is explicit (`--yolo`), never the default.
 Workers must not commit or push. A terminal's `done` indicator is not validation —
@@ -224,9 +264,10 @@ review. For this project's validation, the recommended configuration is:
 ```toml
 [pre-merge]
 validate = """
+orc gate --label orc-pre-merge -- sh -c '
 nvim --clean -l test/run.lua --coverage &&
 nvim --clean -l scripts/gen-agents.lua --check &&
-stylua --check lua test scripts bin/orc plugin evals
+stylua --check lua test scripts bin/orc plugin evals'
 """
 
 [post-start]

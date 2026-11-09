@@ -12,6 +12,18 @@ are saved on the worker record. The default `--transport tui` supports steering
 and follow-up prompts; exec currently supports start/wait/close only. See the
 [transport comparison](../README.md) for limitations and rate-limit recovery.
 
+`pane start` requires the checkout's git toplevel unless `--allow-subdir` is given;
+`--here` can target another repository's checkout. Optional
+`--precheck '<cmd>'` runs in `--path` using `sh -c` before creation; failure returns
+`precheck-failed`, the exit code and the last 40 lines, with no pane or worker record.
+
+For TUI follow-ups, `pane prompt --queue` queues on acknowledged working programs
+using Codex Tab or Claude Enter, with the same ownership and hook checks. `queued`
+awaits UserPromptSubmit; without the flag, a busy worker returns `not-sent`.
+Use `pane wait --until report` to continue until a matching report with Status and
+Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
+`turn-ended-no-report` from `blocked`; missing evidence does not end a report wait.
+
 ## Setup
 
 Use `:Orc` for tasks, `:Orc projects` for the Snacks GHQ picker, and `:Orc workers`

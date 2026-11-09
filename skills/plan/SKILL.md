@@ -8,6 +8,16 @@ description: "orc workflow: record implementation decisions and task ownership b
 Write `.scratch/<feature>/plan.md` in the main checkout's scratch directory.
 Resolve interfaces and significant tradeoffs before handing work to implementers.
 
+## Prerequisites
+
+Verify claims such as "released", "merged" and "exported" before briefing, using
+commands such as `npm view <package> version`, `git merge-base --is-ancestor <ref> HEAD`
+and `rg <symbol> <source>`. Pass key checks as `orc pane start --precheck '<cmd>'`.
+A precheck tests the worker's starting state: do not check for a version or export
+that the worker must first add or bump.
+
+## Plan format
+
 Use this shape:
 
 ````markdown

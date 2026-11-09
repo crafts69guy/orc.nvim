@@ -9,6 +9,7 @@ function M.fish()
 		codex = "Run Codex",
 		wt = "Manage worktrees",
 		pane = "Manage Rex workers",
+		gate = "Serialize heavy validation",
 		status = "Show tasks",
 		doctor = "Check prerequisites",
 		context = "Audit context",
@@ -72,6 +73,10 @@ function M.fish()
 		"complete -c orc -n '__fish_seen_subcommand_from pane' -l role -x -a 'implementer scoper'"
 	lines[#lines + 1] =
 		"complete -c orc -n '__fish_seen_subcommand_from pane' -l transport -x -a 'tui exec'"
+	lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from pane' -l until -x -a report"
+	for _, flag in ipairs({ "label", "log" }) do
+		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from gate' -l " .. flag .. " -r"
+	end
 	for _, flag in ipairs({
 		"path",
 		"brief",
@@ -84,6 +89,7 @@ function M.fish()
 		"book",
 		"parent",
 		"scope",
+		"precheck",
 	}) do
 		lines[#lines + 1] = "complete -c orc -l " .. flag .. " -r"
 	end
@@ -97,6 +103,8 @@ function M.fish()
 		"help",
 		"version",
 		"bench",
+		"queue",
+		"allow-subdir",
 	}) do
 		lines[#lines + 1] = "complete -c orc -l " .. flag
 	end

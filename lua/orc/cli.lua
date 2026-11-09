@@ -4,9 +4,12 @@ M.usage = [[usage: orc <command> [args]
 
   claude|codex [--yolo] [--level default|high|max] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
   wt new|merge|remove|list|session ...
-  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--transport tui|exec] [--here]
-  pane wait|prompt|close <task> --path <dir> ...
+  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--transport tui|exec] [--here] [--allow-subdir] [--precheck <cmd>]
+  pane wait <task> --path <dir> [--until report] [--timeout <ms>]
+  pane prompt <task> --path <dir> --text <text>|--file <file> [--queue]
+  pane close <task> --path <dir> [--force]
   pane prune --path <dir>
+  gate [--label <name>] [--log <file>] -- <cmd...>
   status|doctor [--json]
   context [--scope user|project|all] [--json]
   inkdrop init|inbox|claim|push|pull|lessons ...
@@ -177,6 +180,7 @@ function M.run(rt, argv, input)
 			return update(rt, rest)
 		end
 		local modules = {
+			gate = "gate",
 			pane = "workers",
 			status = "status",
 			doctor = "doctor",

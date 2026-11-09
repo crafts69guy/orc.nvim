@@ -125,7 +125,7 @@ local function save(rt, record, mode)
 					and latest.runId == record.previousRunId
 					and latest.state ~= "closed"
 					and latest.eventRevision == record.eventRevision
-					and latest.hookState == "idle"
+					and latest.hookState == record._authorizedHook
 					and latest.acknowledged,
 				"orc pane: hook authorization changed before paste"
 			)
@@ -180,6 +180,7 @@ local function save(rt, record, mode)
 		record.updatedAt = rt.now()
 		local report_text = record._reportText
 		record._reportText = nil
+		record._authorizedHook = nil
 		rt.write(file, rt.encode(record) .. "\n")
 		if report_text then
 			rt.write(rt.path(record.path, ".orc", "report.md"), report_text)
@@ -318,6 +319,7 @@ local function snapshot(rt, client, record)
 		return false
 	end
 	record.inputReady, record.nativeState, record.nativeOwner = false, nil, nil
+	record.blockedKind = nil
 	local ok, process = pcall(client.block, record.sessionId, record.blockId, "process")
 	if not ok then
 		record.state = "disconnected"
@@ -354,7 +356,12 @@ local function snapshot(rt, client, record)
 						record.inputReady = record.hookState == "idle"
 							and (state == "idle" or state == "done")
 							and input_owner_matches(process, entry.owner, record.kind)
-						record.blockedKind = entry.kind
+						record.blockedKind = state == "blocked"
+								and type(entry.kind) == "string"
+								and entry.kind ~= ""
+								and entry.kind ~= "no-evidence"
+								and entry.kind
+							or nil
 					end
 				end
 			end
@@ -365,10 +372,28 @@ local function snapshot(rt, client, record)
 		record.acknowledged = true
 	end
 	local evidence = report(rt, record)
-	if record.hookState == "blocked" then
+	if
+		record.hookState == "blocked"
+		and record.state ~= "exited"
+		and record.state ~= "error"
+		and not (record.nativeState == "working" and not record.blockedKind)
+	then
 		record.state = "blocked"
 	elseif record.hookState == "working" and (record.state == "idle" or record.state == "done") then
 		record.state = "working"
+	end
+	if
+		not evidence
+		and record.hookState == "idle"
+		and not record.blockedKind
+		and (
+			record.state == "working"
+			or record.state == "idle"
+			or record.state == "done"
+			or record.state == "blocked"
+		)
+	then
+		record.state = "turn-ended-no-report"
 	end
 	save(rt, record, "snapshot")
 	return record.state ~= "closed" and evidence
@@ -409,6 +434,13 @@ local function new_run(rt, record)
 end
 
 local function prompt_text(rt, record, body)
+	local profile = rt.path(record.root, ".orc", "validation.md")
+	if record.role == "implementer" and rt.exists(profile) then
+		body = body
+			.. " Validation profile: read "
+			.. profile
+			.. "; it overrides the brief's Validate section."
+	end
 	local prompt = "[orc-run:"
 		.. record.runId
 		.. "] You are the orc "
@@ -468,6 +500,18 @@ local function start(rt, feature, task, values, file)
 	assert(rt.exists(path), "orc pane: worktree does not exist")
 	local brief = rt.abspath(values.brief)
 	assert(rt.read(brief), "orc pane: cannot read brief")
+	if values.precheck then
+		local checked = rt.exec({ "sh", "-c", values.precheck }, { cwd = path })
+		if checked.code ~= 0 then
+			local lines =
+				vim.split((checked.stdout .. checked.stderr):gsub("\n$", ""), "\n", { plain = true })
+			return result(rt, 0, {
+				status = "precheck-failed",
+				exitCode = checked.code,
+				output = table.concat(vim.list_slice(lines, math.max(1, #lines - 39)), "\n"),
+			})
+		end
+	end
 	local record = {
 		feature = feature,
 		task = task,
@@ -601,7 +645,10 @@ local function follow_up(rt, record, values)
 	)
 	local client = client_for(rt, record)
 	snapshot(rt, client, record)
-	if not record.acknowledged or not record.inputReady then
+	local queue = values.queue
+		and record.nativeState == "working"
+		and (record.hookState == "working" or record.hookState == "idle")
+	if not record.acknowledged or not (record.inputReady or queue) then
 		return result(
 			rt,
 			0,
@@ -622,7 +669,9 @@ local function follow_up(rt, record, values)
 	end
 	local authorization =
 		{ runId = record.runId, eventRevision = record.eventRevision, owner = record.nativeOwner }
+	local authorized_hook = record.hookState
 	new_run(rt, record)
+	record._authorizedHook = authorized_hook
 	save(rt, record, "new")
 	local text = prompt_text(rt, record, "Follow-up: " .. body)
 	local sent, err = pcall(function()
@@ -641,7 +690,10 @@ local function follow_up(rt, record, values)
 			if
 				(entry.id == nil or entry.id == rt.null)
 				and app:find(record.kind, 1, true)
-				and (entry.state == "idle" or entry.state == "done")
+				and (
+					queue and entry.state == "working"
+					or not queue and (entry.state == "idle" or entry.state == "done")
+				)
 			then
 				ready = input_owner_matches(current_process, entry.owner, record.kind)
 					and entry.owner.pid == authorization.owner.pid
@@ -661,14 +713,19 @@ local function follow_up(rt, record, values)
 				and not durable.acknowledged,
 			"orc pane: hook authorization changed after paste; Enter was not sent"
 		)
-		client.block(record.sessionId, record.blockId, "write", { data = "\r" })
+		client.block(
+			record.sessionId,
+			record.blockId,
+			"write",
+			{ data = queue and record.kind == "codex" and "\t" or "\r" }
+		)
 	end)
 	if not sent then
 		record.deliveryError = "terminal write was not confirmed"
 		save(rt, record, "snapshot")
 	end
 	return result(rt, 0, {
-		status = "unconfirmed",
+		status = queue and sent and "queued" or "unconfirmed",
 		task = record.task,
 		state = record.state,
 		runId = record.runId,
@@ -739,7 +796,7 @@ end
 -- Untrusted Codex hooks never acknowledge the prompt; stop waiting after this long.
 local UNACKNOWLEDGED_WAIT_MS = 60000
 
-local function wait_for(rt, record, timeout)
+local function wait_for(rt, record, timeout, until_report)
 	if record.state == "closed" then
 		return result(rt, 0, {
 			task = record.task,
@@ -795,7 +852,9 @@ local function wait_for(rt, record, timeout)
 				local evidence = snapshot(rt, client, record)
 				last_snapshot = rt.clock()
 				if
-					record.state == "blocked"
+					(until_report and evidence)
+					or (record.state == "blocked" and (not until_report or record.blockedKind ~= nil))
+					or (not until_report and record.state == "turn-ended-no-report")
 					or record.state == "closed"
 					or record.state == "error"
 					or record.state == "rate-limited"
@@ -820,7 +879,11 @@ local function wait_for(rt, record, timeout)
 					connect()
 				end
 			end
-			if not record.acknowledged and rt.clock() - started > UNACKNOWLEDGED_WAIT_MS then
+			if
+				not until_report
+				and not record.acknowledged
+				and rt.clock() - started > UNACKNOWLEDGED_WAIT_MS
+			then
 				return {
 					task = record.task,
 					runId = record.runId,
@@ -1026,12 +1089,25 @@ function M.run(rt, argv)
 			transport = "string",
 			role = "string",
 			here = "boolean",
+			["allow-subdir"] = "boolean",
+			precheck = "string",
+			queue = "boolean",
+			["until"] = "string",
 			timeout = "string",
 			text = "string",
 			file = "string",
 			force = "boolean",
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
+		assert(not values.queue or command == "prompt", "orc pane: --queue only applies to prompt")
+		assert(
+			not values["until"] or (command == "wait" and values["until"] == "report"),
+			"orc pane: --until must be report and only applies to wait"
+		)
+		assert(
+			not (values.precheck or values["allow-subdir"]) or command == "start",
+			"orc pane: --precheck and --allow-subdir only apply to start"
+		)
 		assert(
 			not values.transport or command == "start",
 			"orc pane: --transport only applies to start"
@@ -1049,12 +1125,23 @@ function M.run(rt, argv)
 		)
 		local path = rt.abspath(values.path)
 		local root = main_root(rt, path)
+		if command == "start" then
+			local checkout =
+				assert(require("orc.worktrees").checkout(rt, path), "orc pane: not a git checkout")
+			local canonical = vim.uv.fs_realpath(path) or path
+			assert(
+				values["allow-subdir"] or canonical == (vim.uv.fs_realpath(checkout) or checkout),
+				"orc pane: --path must be checkout toplevel "
+					.. checkout
+					.. "; use --allow-subdir to override"
+			)
+		end
 		local file = record_path(rt, root, task, path)
 		if command == "wait" then
 			local record = assert(read_record(rt, file), "orc pane: worker not found")
 			local timeout = tonumber(values.timeout or "1800000")
 			assert(timeout and timeout >= 0, "orc pane: invalid timeout")
-			return wait_for(rt, record, timeout)
+			return wait_for(rt, record, timeout, values["until"] == "report")
 		end
 		return with_task_lock(rt, file, function()
 			if command == "start" then

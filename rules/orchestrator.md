@@ -14,6 +14,9 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   one task worktree per dispatched worker. Never overwrite another session's work.
 - Inspect every diff and run deterministic checks (tests and approved worktrunk
   pre-merge gates) before model review. Follow the active level's review pattern.
+- Use the main checkout's `.orc/validation.md` when present. Workers run only edit
+  and task tiers; run the gate tier once before commit through `orc gate`.
+  Never run two gates at once.
 - Primary reviewer uses the other vendor: Codex implementer → native
   `orc:reviewer` from a Claude orchestrator. For Claude implementation or a second
   opinion, run `codex --no-daemon review --uncommitted` in the task checkout using
@@ -31,10 +34,10 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Pane mode is automatic inside Rex unless `--no-panes` or `ORC_PANES=0`.
   In pane mode, delegate scopers and implementers through `orc pane start ... --role scoper|implementer`
   workers instead of native subagents; apply cross-vendor review above; shipper stays native.
-  Single task: use `--here` in the session checkout; do not edit beside its implementer.
-  Parallel tasks: use dispatch worktrees. Run `orc pane wait` with the harness's
+  Single task: use `--here --path <checkout>`; do not edit beside its implementer.
+  Parallel tasks: use dispatch worktrees. Run `orc pane wait --until report` with the harness's
   background execution. Follow dispatch's Rex reference. Pair mode uses one Codex
-  implementer in the session checkout while the main agent reads/reviews.
+  implementer in the selected checkout while the main agent reads/reviews.
 - Worker reports must identify their current Run and contain Status and Validation.
   A delivery without acknowledgment is unconfirmed: inspect before any retry.
 - Shipping is only through `orc:shipper`, after review and explicit user request.

@@ -314,6 +314,7 @@ local function collect_sources(rt, root, cwd)
 	local lessons_path =
 		rt.path(common.code == 0 and vim.fs.dirname(trim(common.stdout)) or root, ".orc", "lessons.md")
 	local function lessons()
+		memory(rt.path(vim.fs.dirname(lessons_path), "validation.md"), "project", "project")
 		local content = text(lessons_path, "project")
 		if not content then
 			return

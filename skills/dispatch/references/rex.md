@@ -17,13 +17,17 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   Codex and implementer are defaults; use `--role scoper` for read-only scoping
   or `--kind claude` to choose Claude. Transport defaults to `tui`; `exec` is
   Codex-only, records JSONL/usage, and supports start/wait/close without steering.
-- Wait: `orc pane wait <task> --path <worktree> --timeout 1800000`, using the
+- Wait: `orc pane wait <task> --path <worktree> --until report --timeout 1800000`, using the
   harness's background execution (foreground Bash is capped at 10 minutes).
-  If the prompt stays unacknowledged for 60 s (untrusted orc hooks), wait returns
-  `state: "unacknowledged"` with a `hint`; trust the hooks and inspect the pane.
+  Waits for the current run's report with Status and Validation, a native user-action
+  block, process exit/error or timeout. Missing evidence never ends this wait.
+  Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
+  `unacknowledged`; inspect the pane and trust the hooks before retrying.
   Exec `state: "rate-limited"` includes a hint: close it, then restart the same
   brief/worktree with `--kind claude --transport tui`.
 - Follow-up: `orc pane prompt <task> --path <worktree> --file <brief>` or `--text`.
+  Add `--queue` for an acknowledged working TUI: Codex queues with Tab, Claude with
+  Enter. `queued` still awaits UserPromptSubmit; inspect before any resend.
   TUI only; exec follow-ups currently require close/start with a fresh thread.
 - Close: `orc pane close <task> --path <worktree>`. If Rex restarted or pane
   creation failed, close and start refuse the stranded record; after checking the
@@ -39,7 +43,11 @@ Only the report belonging to the current run can be accepted; review its actual
 Status and Validation. `idle`, `done` program status and exit zero are insufficient.
 Close only panes created for your task. Closing Neovim leaves workers running.
 
-For a single task use `start --here --path <session checkout>`; the orchestrator
+For a single task use `start --here --path <checkout>`; the orchestrator
 does not edit beside its implementer. Scopers never claim checkout ownership.
 Pair mode uses one Codex implementer at a time in that checkout. Review the diff
 and rerun validation before closing. Parallel work uses dispatch task worktrees.
+Start requires a checkout toplevel; `--allow-subdir` permits a subdirectory, including
+with `--here`, which also supports another repository. Use `--precheck '<cmd>'` in
+`sh` before creating a pane; failure returns `precheck-failed`, its exit code and
+the last 40 output lines.
