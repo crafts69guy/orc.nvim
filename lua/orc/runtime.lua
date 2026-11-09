@@ -14,6 +14,7 @@ local serial = 0
 ---@field stdin? string Input for a captured command.
 ---@field timeout? integer Timeout in milliseconds for captured commands.
 ---@field on_exit? fun(result:orc.ProcessResult) Completion callback for streaming commands.
+---@field on_stderr? fun(chunk:string) Stream stderr separately from stdout.
 
 ---@class orc.ProcessHandle
 ---@field stop fun() Idempotently terminate only this owned child process.
@@ -160,6 +161,15 @@ function M.new(opts)
 					end)
 				elseif err then
 					process:kill(15)
+				end
+			end
+		end
+		if options.on_stderr then
+			settings.stderr = function(_, chunk)
+				if chunk then
+					vim.schedule(function()
+						options.on_stderr(chunk)
+					end)
 				end
 			end
 		end

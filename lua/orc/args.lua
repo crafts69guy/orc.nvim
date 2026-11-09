@@ -42,4 +42,23 @@ function M.parse(argv, spec)
 	return values, positionals
 end
 
+---Parse options before a required separator, preserving the child command verbatim.
+---@param argv string[]
+---@param spec table<string,'boolean'|'string'>
+---@return table<string,string|boolean> flags
+---@return string[] command
+function M.command(argv, spec)
+	local separator
+	for index, value in ipairs(argv) do
+		if value == "--" then
+			separator = index
+			break
+		end
+	end
+	assert(separator and separator < #argv, "orc gate: supply -- <cmd...>")
+	local flags, positions = M.parse(vim.list_slice(argv, 1, separator - 1), spec)
+	assert(#positions == 0, "orc gate: unexpected positional argument before --")
+	return flags, vim.list_slice(argv, separator + 1)
+end
+
 return M
