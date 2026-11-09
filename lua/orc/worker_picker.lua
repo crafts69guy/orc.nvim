@@ -128,7 +128,8 @@ function M.open(rt, opts)
 				title = "Orc Workers",
 				items = items,
 				format = "text",
-				layout = { preset = "select" },
+				-- A dedicated popup fills its Rex layer so the bare editor never shows behind it.
+				layout = { preset = "select", fullscreen = opts.quit_on_close == true },
 				win = {
 					input = {
 						keys = {

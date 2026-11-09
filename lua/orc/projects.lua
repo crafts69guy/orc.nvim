@@ -123,7 +123,8 @@ function M.open(rt, opts)
 				items = items,
 				format = "text",
 				-- Compact centered list (50% wide, 80-100 cols, 40% tall); repo paths need no preview.
-				layout = { preset = "select" },
+				-- A dedicated popup fills its Rex layer so the bare editor never shows behind it.
+				layout = { preset = "select", fullscreen = opts.quit_on_close == true },
 				-- Pin both modes: Snacks' insert <Esc> only leaves insert mode, and a user's
 				-- plain-string `["<CR>"] = "confirm"` override maps normal mode only.
 				win = {

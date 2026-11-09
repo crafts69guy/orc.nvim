@@ -38,7 +38,8 @@ require("orc").workers({ cwd = project_path, client_id = originating_client, qui
 ```
 
 `quit_on_close` defaults to false. Set it only for a dedicated popup, never an
-existing editor with user buffers. Use an argv array with `nvim -n -i NONE -c`
+existing editor with user buffers. With it, the projects and workers pickers fill
+the whole popup editor, so size the Rex layer to the picker you want to see. Use an argv array with `nvim -n -i NONE -c`
 and a correctly quoted Lua command. Quote strings with Lua `%q`, not shell
 interpolation. The normal Neovim configuration must expose the orc module.
 

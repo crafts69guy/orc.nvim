@@ -114,7 +114,7 @@ Test.test(
 			state.open({ client_id = "client:origin" })
 			Test.eq(state.calls[1].argv, { "ghq", "list", "-p" })
 			Test.eq(state.items, { state.path })
-			Test.eq(state.options.layout, { preset = "select" })
+			Test.eq(state.options.layout, { preset = "select", fullscreen = false })
 			Test.eq(state.options.format, "text")
 			Test.eq(state.options.win.input.keys["<Esc>"], { "close", mode = { "n", "i" } })
 			Test.eq(state.options.win.input.keys["<CR>"], { "confirm", mode = { "n", "i" } })
@@ -525,5 +525,12 @@ Test.test("projects popup diagnostic closes cleanly with :q instead of mappings"
 		end, debug.traceback)
 		vim.cmd, vim.schedule = old_cmd, old_schedule
 		assert(ok, err)
+	end)
+end)
+
+Test.test("dedicated projects popup fills its Rex layer", function()
+	fixture(function(_, state)
+		state.open({ quit_on_close = true })
+		Test.eq(state.options.layout, { preset = "select", fullscreen = true })
 	end)
 end)

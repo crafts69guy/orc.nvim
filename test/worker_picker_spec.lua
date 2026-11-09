@@ -172,7 +172,7 @@ Test.test(
 				}
 			)
 			Test.eq(opts.items[2].value, scoper)
-			Test.eq(opts.layout, { preset = "select" })
+			Test.eq(opts.layout, { preset = "select", fullscreen = false })
 			Test.eq(opts.format, "text")
 			Test.eq(opts.win.input.keys["<Esc>"], { "close", mode = { "n", "i" } })
 			Test.eq(opts.win.input.keys["<CR>"], { "confirm", mode = { "n", "i" } })
@@ -451,5 +451,12 @@ Test.test("worker picker cleans up a diagnostic buffer after its window was clos
 			assert(not vim.api.nvim_buf_is_valid(buffer))
 			Test.eq(quits(), 1)
 		end)
+	end)
+end)
+
+Test.test("dedicated worker popup fills its Rex layer", function()
+	fixture(function(_, state)
+		state.open({ quit_on_close = true })
+		Test.eq(state.options.layout, { preset = "select", fullscreen = true })
 	end)
 end)
