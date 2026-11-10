@@ -10,6 +10,7 @@ ownership. Never run two writers in one checkout. Use the harness's native
 subagents normally; use [Rex workers](references/rex.md) in pane mode.
 
 1. Create worktrees with `orc wt new <base> <task>...`; retain returned paths.
+   Re-running it is safe: live task worktrees are reused (`action: reused`).
 2. Write one brief per task, including plan section, decisions, ownership, docs
    acceptance criteria and validation command. Tell workers others are active.
 3. Start implementers concurrently in their assigned worktrees. Do not allow commits.
@@ -24,6 +25,14 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
    `orc wt merge <base> <task> --message "feat: concrete behavior"`.
    A successful merge removes the task checkout, so `orc pane close` no longer
    resolves it. A conflict retains the checkout; the orchestrator resolves it.
+   A `merged` result with a `warning` already landed: clean up the named leftover,
+   never merge it again.
+   When the user wants to review before any commit on base, use
+   `orc wt apply <base> <task>` instead: it stages the task, including new files,
+   in the current checkout without committing. After a fix round, apply again:
+   only the delta lands while those files still hold the last apply; files edited
+   since then are reported as a conflict. Remove the task with
+   `orc wt remove <base> <task>` after the user accepts it.
 7. Run combined validation after each wave.
 
 For an abandoned task, close its pane and use `orc wt remove <base> <task>`;

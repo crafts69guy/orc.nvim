@@ -110,7 +110,7 @@ function M.collect(rt, cwd)
 				local ok, found = pcall(wt.list, rt, cwd)
 				trees = ok and found or {}
 				if not ok then
-					result.warnings[#result.warnings + 1] = "wt list failed; worktrees unknown: "
+					result.warnings[#result.warnings + 1] = "worktree list failed; worktrees unknown: "
 						.. tostring(found)
 				end
 			end

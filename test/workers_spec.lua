@@ -100,7 +100,9 @@ local function fake()
 	rt.exec = function(argv, opts)
 		opts = opts or {}
 		state.calls[#state.calls + 1] = { argv = argv, opts = opts }
-		if argv[1] == "git" then
+		if argv[1] == "codex" and argv[2] == "mcp" then
+			return { code = 0, stdout = state.mcpList or "[]", stderr = "" }
+		elseif argv[1] == "git" then
 			if argv[3] == "--show-toplevel" then
 				return { code = 0, stdout = state.toplevel or root, stderr = "" }
 			end
@@ -557,6 +559,9 @@ Test.test(
 		local response = state.run("wait", { "--until", "report", "--timeout", "0" })
 		Test.eq(response.result.state, "working")
 		Test.eq(response.result.evidence, true)
+		assert(response.result.next:find("orc pane close task --path '", 1, true))
+		state.report("partial")
+		Test.eq(state.run("wait", { "--until", "report", "--timeout", "0" }).result.next, nil)
 		local rt, missing = fake()
 		missing.start()
 		missing.hook("UserPromptSubmit")
@@ -637,7 +642,7 @@ Test.test("workers default to Codex implementers and normalize legacy roles and 
 	state.hook("UserPromptSubmit")
 	state.hook("Stop")
 	state.native = "idle"
-	Test.eq(state.run("prompt", { "--text", "continue" }).result.queued, true)
+	Test.eq(state.run("prompt", { "--text", "continue" }).result.sent, true)
 	assert(state.writes[1]:find("agents/implementer.md", 1, true))
 	assert(state.writes[1]:find("Write the final report atomically", 1, true))
 	record = state.record()
@@ -960,7 +965,7 @@ Test.test(
 		state.hook("UserPromptSubmit")
 		state.hook("Stop")
 		state.native = "idle"
-		Test.eq(state.run("prompt", { "--text", "scope callers too" }).result.queued, true)
+		Test.eq(state.run("prompt", { "--text", "scope callers too" }).result.sent, true)
 		assert(state.writes[1]:find("You are the orc scoper", 1, true))
 	end
 )
@@ -1142,8 +1147,9 @@ Test.test(
 		rt.env.INKDROP_LOCAL_USERNAME, rt.env.INKDROP_LOCAL_PASSWORD =
 			"synthetic-user", "synthetic-secret"
 		rt.env.CODEX_HOME = "/private/codex-profile"
+		state.mcpList = rt.encode({ { name = "inkdrop", enabled = true } })
 		rt.exec = function(argv, opts)
-			if argv[1] == "codex" then
+			if argv[1] == "codex" and argv[3] == "get" then
 				return {
 					code = 0,
 					stdout = rt.encode({
@@ -1166,7 +1172,8 @@ Test.test(
 			end,
 		}
 		local ok, err = xpcall(function()
-			Test.eq(state.start().code, 0)
+			Test.eq(state.start({ "--mcp", "inkdrop" }).code, 0)
+			Test.eq(state.record().mcp, { "inkdrop" })
 			local argv = state.layout.block.options.command
 			local command = table.concat(argv, " ")
 			Test.eq(argv[1], "env")
@@ -1192,6 +1199,46 @@ Test.test(
 	end
 )
 
+Test.test("workers record a sorted MCP allowlist and drop its config on close", function()
+	local rt, state = fake()
+	state.processName = "claude"
+	for _, extra in ipairs({ { "--mcp", "a;b" }, { "--mcp", "$(x)" } }) do
+		local args =
+			{ "start", "feature", "task", "--path", rt.cwd, "--brief", rt.path(rt.cwd, "brief.md") }
+		vim.list_extend(args, extra)
+		Test.eq(workers.run(rt, args).code, 1)
+	end
+	Test.eq(state.run("close", { "--mcp", "figma" }).code, 1)
+	rt.write(
+		rt.env.HOME .. "/.claude.json",
+		rt.encode({
+			mcpServers = { ["Figma Name"] = { command = "figma" }, chrome = { command = "chrome" } },
+		})
+	)
+	local args = {
+		"start",
+		"feature",
+		"task",
+		"--path",
+		rt.cwd,
+		"--brief",
+		rt.path(rt.cwd, "brief.md"),
+		"--kind",
+		"claude",
+		"--mcp",
+		" Figma Name,chrome,Figma Name ",
+	}
+	Test.eq(workers.run(rt, args).code, 0)
+	Test.eq(state.record().mcp, { "Figma Name", "chrome" })
+	local command = state.layout.block.options.command
+	local config = command[vim.fn.index(command, "--mcp-config") + 2]
+	local names = vim.tbl_keys(rt.decode((assert(rt.read(config)))).mcpServers)
+	table.sort(names)
+	Test.eq(names, { "Figma Name", "chrome" })
+	Test.eq(state.run("close").code, 0)
+	Test.eq(rt.read(config), nil)
+end)
+
 Test.test("workers shared preflight failure leaves no durable run and can be retried", function()
 	local rt, state = fake()
 	local old, healthy = package.loaded["orc.inkdrop_mcp"], false
@@ -1215,6 +1262,8 @@ Test.test("workers shared preflight failure leaves no durable run and can be ret
 			rt.path(rt.cwd, "brief.md"),
 			"--kind",
 			"claude",
+			"--mcp",
+			"inkdrop",
 		}
 		Test.eq(workers.run(rt, args).code, 1)
 		Test.eq(state.created, 0)
@@ -1355,7 +1404,8 @@ Test.test("workers followup is a new unconfirmed run and retains the previous re
 	local old = state.record()
 	local result = state.run("prompt", { "--text", "fix the bug" })
 	Test.eq(result.result.status, "unconfirmed")
-	Test.eq(result.result.queued, true)
+	Test.eq(result.result.sent, true)
+	Test.eq(result.result.queued, false)
 	assert(result.result.runId ~= old.runId)
 	Test.eq(state.record().previousReport, old.report)
 	assert(rt.read(old.report))
@@ -1375,7 +1425,7 @@ Test.test(
 		state.writeFail = true
 		state.hook("Stop")
 		local result = state.run("prompt", { "--file", rt.cwd .. "/brief.md" })
-		Test.eq(result.result.queued, false)
+		Test.eq(result.result.sent, false)
 		Test.eq(result.result.status, "unconfirmed")
 		Test.eq(state.start().result.runId, result.result.runId)
 		Test.eq(#state.writes, 1)
@@ -2325,7 +2375,7 @@ Test.test(
 			end
 			local result = state.run("prompt", { "--text", "payload" })
 			Test.eq(result.result.status, "unconfirmed")
-			Test.eq(result.result.queued, false)
+			Test.eq(result.result.sent, false)
 			Test.eq(#state.writes, 1)
 			Test.eq(state.enter, nil)
 			Test.eq(state.run("prompt", { "--text", "do not retry" }).result.status, "not-sent")
@@ -2460,11 +2510,11 @@ Test.test(
 			end
 			local result = state.run("prompt", { "--text", "verify final readiness" })
 			if change == "stable-done" then
-				Test.eq(result.result.queued, true)
+				Test.eq(result.result.sent, true)
 				Test.eq(state.enter, "\r")
 			else
 				Test.eq(state.enter, nil)
-				assert(result.code ~= 0 or not result.result.queued)
+				assert(result.code ~= 0 or not result.result.sent)
 			end
 			Test.eq(#state.writes, 1)
 		end
@@ -2607,4 +2657,72 @@ Test.test("workers parse_report accepts bullets and bold labels and rejects pros
 	Test.eq(prose.validation, false)
 	Test.eq(workers.parse_report("Status: maybe\nValidation: ok").status, nil)
 	Test.eq(workers.parse_report("Status: Done\nValidation: ok").status, "done")
+end)
+
+Test.test("workers pause interrupts with Esc so prompt can resume the ended turn", function()
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.onSleep = function()
+		if state.enter == "\27" then
+			state.native = "idle"
+		end
+	end
+	local paused = state.run("pause")
+	Test.eq(paused.result.status, "paused")
+	Test.eq(paused.result.state, "turn-ended-no-report")
+	Test.eq(state.enter, "\27")
+	Test.eq(state.record().hookState, "idle")
+	local resumed = state.run("prompt", { "--text", "continue the task" })
+	Test.eq(resumed.result.sent, true)
+	Test.eq(state.enter, "\r")
+	assert(state.writes[1]:find("[orc-run:" .. resumed.result.runId .. "]", 1, true))
+end)
+
+Test.test("workers pause records a manual Esc and refuses dialogs or a busy program", function()
+	local _, manual = fake()
+	manual.start()
+	manual.hook("UserPromptSubmit")
+	manual.native = "idle"
+	Test.eq(manual.run("prompt", { "--text", "resume" }).result.status, "not-sent")
+	Test.eq(manual.run("pause").result.status, "paused")
+	Test.eq(manual.enter, nil)
+	Test.eq(manual.run("prompt", { "--text", "resume" }).result.sent, true)
+	local _, dialog = fake()
+	dialog.start()
+	dialog.hook("UserPromptSubmit")
+	dialog.hook("PermissionRequest")
+	Test.eq(dialog.run("pause").result.status, "not-paused")
+	Test.eq(dialog.enter, nil)
+	Test.eq(dialog.record().hookState, "blocked")
+	local _, busy = fake()
+	busy.start()
+	busy.hook("UserPromptSubmit")
+	Test.eq(busy.run("pause").result.status, "not-paused")
+	Test.eq(busy.enter, "\27")
+	Test.eq(busy.record().hookState, "working")
+	local _, permission = fake()
+	permission.start()
+	permission.hook("UserPromptSubmit")
+	permission.onSleep = function()
+		permission.onSleep = nil
+		permission.hook("PermissionRequest")
+	end
+	Test.eq(permission.run("pause").result.status, "not-paused")
+	Test.eq(permission.record().hookState, "blocked")
+	local _, exec = fake()
+	exec.start({ "--transport", "exec" })
+	assert(exec.run("pause").result.stderr:find("exec workers cannot be paused", 1, true))
+end)
+
+Test.test("workers report wait gives up on an idle turn without a report after grace", function()
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.hook("Stop")
+	state.native = "idle"
+	local response = state.run("wait", { "--until", "report", "--timeout", "900000" })
+	Test.eq(response.result.state, "turn-ended-no-report")
+	assert(response.result.hint:find("orc pane prompt", 1, true))
+	assert(state.clock >= 300000 and state.clock < 900000)
 end)

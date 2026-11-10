@@ -10,6 +10,21 @@ local function result(code, stdout, stderr)
 	return { code = code or 0, stdout = stdout or "", stderr = stderr or "", signal = 0 }
 end
 
+local LIST = "git worktree list --porcelain -z"
+
+-- `git worktree list --porcelain -z` output for {path, branch?} entries.
+local function trees(...)
+	local fields = {}
+	for _, tree in ipairs({ ... }) do
+		fields[#fields + 1] = "worktree "
+			.. tree.path
+			.. "\0HEAD 0\0"
+			.. (tree.branch and "branch refs/heads/" .. tree.branch or "detached")
+			.. "\0\0"
+	end
+	return result(0, table.concat(fields))
+end
+
 local function fake()
 	local rt = runtime.new({ root = "/plugin", cwd = "/repo" })
 	rt.env, rt.files, rt.commands, rt.launched = {}, {}, {}, {}
@@ -53,8 +68,10 @@ local function fake()
 			return result(0, "/repo/.git\n")
 		elseif key == "git rev-parse --show-toplevel" then
 			return result(0, "/repo\n")
-		elseif key == "wt list --format=json" then
-			return result(0, rt.encode({ items = {} }))
+		elseif key == LIST then
+			return trees()
+		elseif key == "git diff -z --name-only --no-renames feat...HEAD" then
+			return result(0, "file\0")
 		elseif key:match("^git check%-ignore") then
 			return result(1)
 		end
@@ -89,9 +106,19 @@ end
 
 Test.test("core CLI help, version, errors and lazy routing", function()
 	local rt = fake()
-	for _, argv in ipairs({ {}, { "help" }, { "-h" }, { "--help" } }) do
-		Test.eq(cli.run(rt, argv).out, cli.usage)
+	for _, argv in ipairs({
+		{},
+		{ "help" },
+		{ "-h" },
+		{ "--help" },
+		{ "wt", "--help" },
+		{ "pane", "start", "-h" },
+		{ "status", "--help" },
+		{ "gate", "--help" },
+	}) do
+		Test.eq(cli.run(rt, argv), { code = 0, out = cli.usage })
 	end
+	Test.eq(cli.run(rt, { "gate", "--label", "x", "--", "ls", "--help" }).out == cli.usage, false)
 	Test.eq(cli.run(rt, { "--version" }).out, "0.1.0\n")
 	Test.eq(cli.run(rt, { "-V" }).code, 0)
 	Test.eq(cli.run(rt, { "unknown" }).code, 1)
@@ -246,7 +273,7 @@ Test.test(
 		end
 		local completion = require("orc.completion").fish()
 		assert(completion:find("-l no-panes", 1, true))
-		assert(completion:find("start wait prompt close prune", 1, true))
+		assert(completion:find("start wait prompt pause close prune", 1, true))
 		assert(completion:find("-l role -x -a 'implementer scoper'", 1, true))
 		assert(completion:find("-l level -x -a 'default high max'", 1, true))
 	end
@@ -462,6 +489,20 @@ Test.test(
 		)
 		Test.eq(rt.decode(denied.out).hookSpecificOutput.permissionDecision, "deny")
 		assert(rt.files["/repo/.orc/signals.jsonl"]:find('"kind":"deny"', 1, true))
+		local background = { command = "npm test", run_in_background = true }
+		for _, agent in ipairs({ "orc:reviewer", "orc:scoper" }) do
+			local reason = rt.decode(
+				hooks.run(rt, "guard", rt.encode({ agent_type = agent, tool_input = background })).out
+			).hookSpecificOutput.permissionDecisionReason
+			assert(reason:find("background", 1, true))
+		end
+		for _, case in ipairs({
+			{ agent_type = "orc:implementer", tool_input = background },
+			{ agent_type = "orc:reviewer", tool_input = { command = "rg x" } },
+			{ tool_input = background },
+		}) do
+			Test.eq(hooks.run(rt, "guard", rt.encode(case)).out, "")
+		end
 		rt.env.ORC_ROLE = "implementer"
 		Test.eq(
 			rt.decode(
@@ -587,15 +628,10 @@ Test.test(
 		rt.files["/repo/.scratch/f/inkdrop.json"] = '{"noteId":"note:test"}'
 		rt.files["/repo/.scratch/no-plan/log.md"] = "ignore"
 		route(rt, {
-			["wt list --format=json"] = result(
-				0,
-				rt.encode({
-					items = {
-						{ branch = "feat/x--T1", worktree = { path = "/repo/task" } },
-						{ branch = "feat/x--orphan", worktree = { path = "/repo/orphan" } },
-						{ branch = "unrelated", worktree = { path = "/other" } },
-					},
-				})
+			[LIST] = trees(
+				{ branch = "feat/x--T1", path = "/repo/task" },
+				{ branch = "feat/x--orphan", path = "/repo/orphan" },
+				{ branch = "unrelated", path = "/other" }
 			),
 		})
 		with_module("orc.workers", {
@@ -637,7 +673,7 @@ Test.test(
 			Test.eq(rt.decode(status.run(rt, { "--json" }).out).schemaVersion, 1)
 			assert(status.run(rt, {}).out:find("f/T2  merged", 1, true))
 		end)
-		route(rt, { ["wt list --format=json"] = result(1, "", "offline") })
+		route(rt, { [LIST] = result(1, "", "offline") })
 		assert(#status.collect(rt).warnings == 1)
 		Test.eq(cli.run(rt, { "status", "--bad" }).code, 1)
 	end
@@ -700,14 +736,25 @@ Test.test(
 		Test.eq(wt.run(rt, { "session", "existing" }).code, 0)
 		Test.eq(wt.run(rt, { "list", "feat/x" }).code, 0)
 		Test.eq(wt.run(rt, { "new", "feat/x", "T1" }).code, 1)
-		route(rt, { ["wt list --format=json"] = result(0, "{}") })
-		Test.raises("no items", function()
-			wt.list(rt)
-		end)
-		route(rt, { ["wt list --format=json"] = result(0, "invalid") })
-		Test.raises("", function()
-			wt.list(rt)
-		end)
+		route(rt, { [LIST] = trees({ branch = "main", path = "/m" }, { path = "/d" }) })
+		Test.eq(wt.list(rt), { { branch = "main", path = "/m" }, { path = "/d" } })
+		-- new validates every id before creating any, then reuses live task worktrees.
+		rt.commands = {}
+		Test.eq(wt.run(rt, { "new", "feat", "T1", "../bad" }).code, 1)
+		for _, command in ipairs(rt.commands) do
+			assert(command.argv[1] ~= "wt", "invalid ids must not create worktrees")
+		end
+		route(rt, {
+			[LIST] = trees({ branch = "feat--T1", path = "/t1" }),
+			['wt --config-set worktree-path=".worktrees/{{ branch | sanitize }}" switch -c feat--T2 --base feat --no-cd --format=json'] = result(
+				0,
+				'{"path":"/t2"}'
+			),
+		})
+		Test.eq(wt.run(rt, { "new", "feat", "T1", "T2" }).result, {
+			{ task = "T1", branch = "feat--T1", path = "/t1", action = "reused" },
+			{ task = "T2", branch = "feat--T2", path = "/t2", action = "created" },
+		})
 	end
 )
 
@@ -716,15 +763,12 @@ Test.test(
 	function()
 		local rt = fake()
 		route(rt, {
-			["wt list --format=json"] = result(
-				0,
-				'{"items":[{"branch":"feat--T1","worktree":{"path":"/task"}}]}'
-			),
+			[LIST] = trees({ branch = "feat--T1", path = "/task" }),
 			["git merge-base feat HEAD"] = result(0, "base\n"),
 			["git rev-list --count base..HEAD"] = result(0, "1\n"),
-			["git merge-tree --write-tree --name-only feat HEAD"] = result(
+			["git merge-tree --write-tree --name-only -z feat HEAD"] = result(
 				1,
-				"tree\nconflict.lua\n\nconflict detail"
+				"tree\0conflict.lua\0\0conflict detail"
 			),
 		})
 		local output = wt.run(rt, { "merge", "feat", "T1", "--message", "feat: work" })
@@ -733,19 +777,57 @@ Test.test(
 		for _, command in ipairs(rt.commands) do
 			assert(not table.concat(command.argv, " "):find("wt remove", 1, true))
 		end
+		-- A clean single commit is redone so the caller's message always lands on base.
+		local message
+		for _, command in ipairs(rt.commands) do
+			if command.argv[2] == "commit" then
+				message = command.argv[4]
+				Test.eq(command.options.cwd, "/task")
+			end
+		end
+		Test.eq(message, "feat: work")
 		Test.eq(wt.run(rt, { "remove", "feat", "missing" }).code, 1)
 	end
 )
+
+Test.test("core worktree merge, apply and remove refuse while the task worker writes", function()
+	local rt = fake()
+	route(rt, { [LIST] = trees({ branch = "feat--T1", path = "/task" }) })
+	local state = "working"
+	with_module("orc.workers", {
+		collect = function()
+			return {
+				{ task = "T1", path = "/task", state = state },
+				{ task = "T2", path = "/other", state = "working" },
+			}
+		end,
+	}, function()
+		for _, argv in ipairs({
+			{ "merge", "feat", "T1", "--message=x" },
+			{ "apply", "feat", "T1" },
+			{ "remove", "feat", "T1" },
+		}) do
+			for _, current in ipairs({ "working", "blocked" }) do
+				state, rt.commands = current, {}
+				local refused = wt.run(rt, argv)
+				Test.eq(refused.code, 1)
+				assert(refused.result.stderr:find("is still " .. current, 1, true))
+				for _, command in ipairs(rt.commands) do
+					assert(command.argv[2] ~= "commit" and command.argv[1] ~= "wt", "must not touch the task")
+				end
+			end
+		end
+		state = "idle"
+		Test.eq(wt.run(rt, { "remove", "feat", "T1" }).code, 0)
+	end)
+end)
 
 Test.test(
 	"core worktree merge commits dirty tasks, cleans accepted work and reports failures",
 	function()
 		local rt = fake()
 		route(rt, {
-			["wt list --format=json"] = result(
-				0,
-				'{"items":[{"branch":"feat--T1","worktree":{"path":"/task"}}]}'
-			),
+			[LIST] = trees({ branch = "feat--T1", path = "/task" }),
 			["git merge-base feat HEAD"] = result(0, "base\n"),
 			["git rev-list --count base..HEAD"] = result(0, "2\n"),
 			["git status --porcelain"] = result(0, " M file\n"),
@@ -759,6 +841,18 @@ Test.test(
 			wt.run(rt, { "merge", "feat", "T1", "--message=x" }).result.stderr
 				:find("write denied", 1, true)
 		)
+		-- A task without changes is never reported merged or removed.
+		route(rt, {
+			["git add -A"] = result(),
+			["git diff -z --name-only --no-renames feat...HEAD"] = result(0, ""),
+		})
+		rt.commands = {}
+		local empty = wt.run(rt, { "merge", "feat", "T1", "--message=x" })
+		Test.eq(empty.code, 1)
+		assert(empty.result.stderr:find("has no changes", 1, true))
+		for _, command in ipairs(rt.commands) do
+			Test.eq(command.argv[1] == "wt", false)
+		end
 	end
 )
 
@@ -1053,6 +1147,51 @@ Test.test("core Git root helpers distinguish linked worktrees from the main chec
 	Test.eq(wt.checkout(outside), nil)
 end)
 
+Test.test("core apply stages non-ASCII paths and fix-round deltas with real Git", function()
+	local dir = assert(vim.uv.fs_realpath(Test.temp()))
+	local task = dir .. "/.worktrees/T1"
+	local rt = runtime.new({ cwd = dir })
+	local function run(cwd, ...)
+		local done = rt.exec({ "git", ... }, { cwd = cwd })
+		assert(done.code == 0, done.stderr)
+		return done.stdout
+	end
+	run(dir, "init", "-b", "main")
+	run(dir, "config", "user.name", "test")
+	run(dir, "config", "user.email", "test@example.invalid")
+	run(dir, "config", "commit.gpgsign", "false")
+	rt.write(dir .. "/é.txt", "base\n")
+	run(dir, "add", "-A")
+	run(dir, "commit", "-m", "fixture")
+	run(dir, "worktree", "add", "-b", "main--T1", task)
+	rt.write(task .. "/é.txt", "round 1\n")
+	rt.write(task .. "/mới tệp.txt", "new\n")
+	local first = wt.run(rt, { "apply", "main", "T1" })
+	Test.eq(first.result, {
+		status = "applied",
+		base = "main",
+		task = "T1",
+		files = { "mới tệp.txt", "é.txt" },
+	})
+	Test.eq(run(dir, "diff", "--cached", "-z", "--name-only"), "mới tệp.txt\0é.txt\0")
+	-- A fix round on an untouched earlier apply stages only its delta.
+	rt.write(task .. "/é.txt", "round 2\n")
+	local delta = wt.run(rt, { "apply", "main", "T1" })
+	Test.eq(delta.code, 0)
+	Test.eq(delta.result.incremental, true)
+	Test.eq(delta.result.files, { "é.txt" })
+	Test.eq(rt.read(dir .. "/é.txt"), "round 2\n")
+	Test.eq(run(dir, "diff", "-z", "--name-only"), "")
+	-- A user edit since the last apply is named as a conflict and left untouched.
+	rt.write(dir .. "/é.txt", "user\n")
+	rt.write(task .. "/é.txt", "round 3\n")
+	local touched = wt.run(rt, { "apply", "main", "T1" })
+	Test.eq(touched.code, 2)
+	Test.eq(touched.result.files, { "é.txt" })
+	Test.eq(rt.read(dir .. "/é.txt"), "user\n")
+	Test.eq(run(dir, "rev-list", "--count", "main"), "1\n")
+end)
+
 Test.test("core CLI entrypoints emit clean machine output and propagate failures", function()
 	local rt = runtime.new()
 	local previous = {
@@ -1132,18 +1271,17 @@ Test.test(
 				0,
 				'{"path":"/task"}'
 			),
-			["wt list --format=json"] = result(
-				0,
-				'{"items":[{"branch":"feat--T1","worktree":{"path":"/task"}},{"branch":"other","worktree":{"path":"/else"}},{"branch":"bare"}]}'
-			),
 			["git merge-base feat HEAD"] = result(0, "base\n"),
 			["git rev-list --count base..HEAD"] = result(0, "0\n"),
 			["git rev-parse feat"] = result(0, "sha\n"),
 		})
 		Test.eq(
 			wt.run(rt, { "new", "feat", "T1" }).result,
-			{ { task = "T1", branch = "feat--T1", path = "/task" } }
+			{ { task = "T1", branch = "feat--T1", path = "/task", action = "created" } }
 		)
+		route(rt, {
+			[LIST] = trees({ branch = "feat--T1", path = "/task" }, { branch = "other", path = "/else" }),
+		})
 		Test.eq(#wt.run(rt, { "list", "feat" }).result, 1)
 		rt.files["/repo/.scratch/feature/plan.md"] = "Base branch: feat\n"
 		local merged = cli.run(rt, { "wt", "merge", "feat", "T1", "--message=x", "--base", "other" })
@@ -1166,15 +1304,12 @@ Test.test(
 Test.test("core merge aborts rebase conflicts and retains nonempty cleanup leftovers", function()
 	local rt = fake()
 	route(rt, {
-		["wt list --format=json"] = result(
-			0,
-			'{"items":[{"branch":"feat--T1","worktree":{"path":"/task"}}]}'
-		),
+		[LIST] = trees({ branch = "feat--T1", path = "/task" }),
 		["git merge-base feat HEAD"] = result(0, "base\n"),
 		["git rev-list --count base..HEAD"] = result(0, "1\n"),
 		["wt -C /task merge feat --no-commit --no-remove"] = result(1, "", "conflict"),
 		["git rev-parse --git-path rebase-merge"] = result(0, ".git/rebase-merge\n"),
-		["git diff --name-only --diff-filter=U"] = result(0, "a.lua\nb.lua\n"),
+		["git diff -z --name-only --diff-filter=U"] = result(0, "a.lua\0b.lua\0"),
 	})
 	rt.files["/task/.git/rebase-merge"] = "present"
 	local conflict = wt.run(rt, { "merge", "feat", "T1", "--message=x" })
@@ -1187,14 +1322,110 @@ Test.test("core merge aborts rebase conflicts and retains nonempty cleanup lefto
 		["git rev-parse feat"] = result(0, "sha\n"),
 	})
 	rt.files["/task"], rt.files["/task/unrelated"] = "directory", "must retain"
-	assert(
-		wt.run(rt, { "merge", "feat", "T1", "--message=x" }).result.stderr
-			:find("worktree remains", 1, true)
-	)
+	rt.files["/repo/.scratch/feature/plan.md"] = "Base branch: feat\n"
+	-- The merge landed, so leftover cleanup is a warning and the receipt is still recorded.
+	local leftover = cli.run(rt, { "wt", "merge", "feat", "T1", "--message=x" })
+	Test.eq(leftover.code, 0)
+	Test.eq(leftover.result.status, "merged")
+	assert(leftover.result.warning:find("worktree remains", 1, true))
+	Test.eq(rt.files["/repo/.scratch/feature/merged"], "T1 sha\n")
 	Test.eq(rt.files["/task/unrelated"], "must retain")
 	rt.files["/task/unrelated"] = nil
 	Test.eq(wt.run(rt, { "merge", "feat", "T1", "--message=x" }).code, 0)
 	Test.eq(rt.files["/task"], nil)
+end)
+
+Test.test("core apply stages a task without committing base or recording a merge", function()
+	local rt = fake()
+	local diff, local_status, branch = "a.lua\0new.lua\0", " M b.lua\0?? notes/\0", "feat\n"
+	local applied = result(1)
+	route(rt, {
+		["git rev-parse --verify --quiet refs/orc/applied/feat--T1^{commit}"] = function()
+			return applied
+		end,
+		["git rev-parse HEAD"] = result(0, "s2\n"),
+		[LIST] = trees({ branch = "feat--T1", path = "/task" }),
+		["git rev-parse --abbrev-ref HEAD"] = function()
+			return result(0, branch)
+		end,
+		["git merge-base feat HEAD"] = result(0, "base\n"),
+		["git rev-list --count base..HEAD"] = result(0, "0\n"),
+		["git status --porcelain"] = result(0, " M a.lua\n"),
+		["git diff -z --name-only --no-renames feat...HEAD"] = function()
+			return result(0, diff)
+		end,
+		["git status --porcelain -z --no-renames"] = function()
+			return result(0, local_status)
+		end,
+	})
+	local function ran(command)
+		for _, call in ipairs(rt.commands) do
+			if table.concat(call.argv, " ") == command then
+				return call
+			end
+		end
+	end
+	rt.files["/repo/.scratch/feature/plan.md"] = "Base branch: feat\n"
+	local first = cli.run(rt, { "wt", "apply", "feat", "T1" })
+	Test.eq(first.code, 0)
+	Test.eq(first.result, {
+		status = "applied",
+		base = "feat",
+		task = "T1",
+		files = { "a.lua", "new.lua" },
+	})
+	Test.eq(ran("git commit -m orc: apply T1").options.cwd, "/task")
+	Test.eq(ran("git merge --squash feat--T1").options.cwd, "/repo")
+	Test.eq(ran("wt -C /task merge feat --no-commit --no-remove"), nil)
+	Test.eq(rt.files["/repo/.scratch/feature/merged"], nil)
+	Test.eq(ran("git update-ref refs/orc/applied/feat--T1 s2").options.cwd, "/repo")
+	-- A fix round on top of an untouched earlier apply lands only its delta.
+	local since, edited = "a.lua\0c.lua\0", ""
+	applied = result(0, "s1\n")
+	route(rt, {
+		["git diff -z --name-only --no-renames s1 s2"] = function()
+			return result(0, since)
+		end,
+		["git diff -z --name-only --no-renames s1 -- a.lua c.lua"] = function()
+			return result(0, edited)
+		end,
+		["git diff -z --name-only --no-renames s1 -- a.lua new.lua"] = function()
+			return result(0, edited)
+		end,
+		["git diff --binary --no-renames s1 s2"] = result(0, "patch\n"),
+	})
+	rt.commands, local_status = {}, "M  a.lua\0A  new.lua\0"
+	local delta = wt.run(rt, { "apply", "feat", "T1" })
+	Test.eq(delta.result.incremental, true)
+	Test.eq(delta.result.files, { "a.lua", "c.lua" })
+	Test.eq(ran("git apply --binary").options.stdin, "patch\n")
+	assert(ran("git add -A -- a.lua c.lua"))
+	Test.eq(ran("git merge --squash feat--T1"), nil)
+	since = ""
+	assert(wt.run(rt, { "apply", "feat", "T1" }).result.stderr:find("already applied", 1, true))
+	-- Edits made after the earlier apply are named instead of the applied files.
+	since, edited, rt.commands = "a.lua\0c.lua\0", "a.lua\0", {}
+	local touched = wt.run(rt, { "apply", "feat", "T1" })
+	Test.eq(touched.code, 2)
+	Test.eq(touched.result.files, { "a.lua" })
+	Test.eq(ran("git apply --binary"), nil)
+	-- A discarded earlier apply falls back to a full squash merge.
+	since, edited, local_status, rt.commands = "", "a.lua\0", "", {}
+	Test.eq(wt.run(rt, { "apply", "feat", "T1" }).result.incremental, nil)
+	assert(ran("git merge --squash feat--T1"))
+	applied, rt.commands, local_status = result(1), {}, "M  new.lua\0"
+	local overlap = wt.run(rt, { "apply", "feat", "T1", "--message", "task" })
+	Test.eq(overlap.code, 2)
+	Test.eq(overlap.result, { status = "conflict", task = "T1", files = { "new.lua" } })
+	Test.eq(ran("git merge --squash feat--T1"), nil)
+	diff = ""
+	assert(wt.run(rt, { "apply", "feat", "T1" }).result.stderr:find("no changes", 1, true))
+	branch = "main\n"
+	assert(wt.run(rt, { "apply", "feat", "T1" }).result.stderr:find("not feat", 1, true))
+	assert(hooks.decide("implementer", "orc wt apply feat T1"))
+	rt.commands = {}
+	Test.eq(wt.run(rt, { "remove", "feat", "T1" }).code, 0)
+	assert(ran("git update-ref -d refs/orc/applied/feat--T1"))
 end)
 
 Test.test(
@@ -1208,6 +1439,8 @@ Test.test(
 			end,
 		}, function()
 			Test.eq(status.run(rt, {}).out, "no features\n")
+			rt.files["/repo/.scratch/.archive/done/plan.md"] = "## Tasks\n```yaml\n- id: T1\n```\n"
+			Test.eq(status.run(rt, {}).out, "no features\n")
 			rt.files["/repo/.scratch/empty/plan.md"] = "# No tasks\n"
 			Test.eq(status.run(rt, {}).out, "no tasks\n")
 			rt.files["/repo/.scratch/empty/inkdrop.json"] = "malformed"
@@ -1215,10 +1448,7 @@ Test.test(
 			rt.files["/repo/.scratch/empty/inkdrop.json"] = "null"
 			Test.eq(status.collect(rt).features[1].note, rt.null)
 			route(rt, {
-				["wt list --format=json"] = result(
-					0,
-					'{"items":[{"branch":"empty--orphan","worktree":{"path":"/orphan"}}]}'
-				),
+				[LIST] = trees({ branch = "empty--orphan", path = "/orphan" }),
 			})
 			Test.eq(status.collect(rt).features[1].tasks[1].branch, "empty--orphan")
 			assert(status.run(rt, {}).out:find("worktree", 1, true))
@@ -1384,7 +1614,7 @@ Test.test(
 			local text = status.run(rt, {}).out
 			assert(text:find("f/T1  pending", 1, true))
 			assert(text:find("f/T2  working", 1, true))
-			route(rt, { ["wt list --format=json"] = result(1, "", "unavailable") })
+			route(rt, { [LIST] = result(1, "", "unavailable") })
 			assert(status.run(rt, {}).err:find("unavailable", 1, true))
 		end)
 		with_module("orc.inkdrop", {
@@ -1484,7 +1714,7 @@ Test.test(
 		end
 		local rt = fake()
 		route(rt, {
-			["wt list --format=json"] = result(0, '{"items":[{"worktree":{"path":"/orphan"}}]}'),
+			[LIST] = trees({ path = "/orphan" }),
 			["wt switch existing --no-cd --format=json"] = result(0, '{"path":"/session"}'),
 		})
 		Test.eq(#wt.run(rt, { "list", "base" }).result, 0)
@@ -1493,7 +1723,7 @@ Test.test(
 		Test.raises("needs a branch", function()
 			wt.session(rt, nil)
 		end)
-		route(rt, { ["wt list --format=json"] = result(1, "quiet error", "") })
+		route(rt, { [LIST] = result(1, "quiet error", "") })
 		Test.raises("quiet error", function()
 			wt.list(rt)
 		end)
@@ -1559,17 +1789,15 @@ Test.test("core merge cleanup preserves files created after worktrunk removal", 
 	local path = real.path(Test.temp(), "task")
 	real.mkdir(path)
 	rt.exists, rt.rmdir = real.exists, real.rmdir
-	rt.list = function()
-		error("cleanup must not use a list-then-delete check")
+	rt.list = function(dir)
+		assert(dir ~= path, "cleanup must not use a list-then-delete check")
+		return {}
 	end
 	rt.remove = function()
 		error("cleanup must never recursively delete")
 	end
 	route(rt, {
-		["wt list --format=json"] = result(
-			0,
-			rt.encode({ items = { { branch = "feat--T1", worktree = { path = path } } } })
-		),
+		[LIST] = trees({ branch = "feat--T1", path = path }),
 		["git merge-base feat HEAD"] = result(0, "base\n"),
 		["git rev-list --count base..HEAD"] = result(0, "1\n"),
 		["git rev-parse feat"] = result(0, "sha\n"),
@@ -1579,8 +1807,8 @@ Test.test("core merge cleanup preserves files created after worktrunk removal", 
 		end,
 	})
 	local merged = wt.run(rt, { "merge", "feat", "T1", "--message=x" })
-	Test.eq(merged.code, 1)
-	assert(merged.result.stderr:find("merged as sha but worktree remains", 1, true))
+	Test.eq(merged.code, 0)
+	assert(merged.result.warning:find("worktree remains", 1, true))
 	Test.eq(real.read(real.path(path, "late-user-work")), "must survive")
 end)
 

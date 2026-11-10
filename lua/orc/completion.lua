@@ -48,8 +48,8 @@ function M.fish()
 			.. "' -l inkdrop-mcp -x -a 'inherit shared'"
 	end
 	for _, pair in ipairs({
-		{ "wt", "new merge remove list session" },
-		{ "pane", "start wait prompt close prune" },
+		{ "wt", "new merge apply remove list session" },
+		{ "pane", "start wait prompt pause close prune" },
 		{ "inkdrop", "init inbox claim push pull lessons" },
 		{
 			"inkdrop-mcp",
@@ -90,6 +90,7 @@ function M.fish()
 		"parent",
 		"scope",
 		"precheck",
+		"mcp",
 	}) do
 		lines[#lines + 1] = "complete -c orc -l " .. flag .. " -r"
 	end

@@ -35,11 +35,17 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Pane mode is automatic inside Rex unless `--no-panes` or `ORC_PANES=0`.
   In pane mode, delegate scopers and implementers through `orc pane start ... --role scoper|implementer`
   workers instead of native subagents; apply cross-vendor review above; shipper stays native.
+  Workers start no MCP servers unless `--mcp <name,...>` allowlists what the brief needs.
+  After accepting a worker's report, close its pane (`orc pane close <task> --path <checkout>`
+  or `orc pane prune --path <checkout>`) before reporting the task done; a `next` field in
+  the wait result names the command. Never leave accepted workers open.
   Single task: use `--here --path <checkout>`; do not edit beside its implementer.
   Parallel tasks: use dispatch worktrees. Run `orc pane wait --until report` with the harness's
   background execution. Follow dispatch's Rex reference. Pair mode uses one Codex
   implementer in the selected checkout while the main agent reads/reviews.
 - Worker reports must identify their current Run and contain Status and Validation.
+  If a native subagent's report arrived but it shows "waiting on its own background
+  work", stop it with TaskStop; the report stands.
   A delivery without acknowledgment is unconfirmed: inspect before any retry.
 - Shipping is only through `orc:shipper`, after review and explicit user request.
   Workflow guards do not replace the harness sandbox or external permissions.

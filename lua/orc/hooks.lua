@@ -1,5 +1,7 @@
 local M = {}
 local restricted = { implementer = true, scoper = true, reviewer = true }
+-- Read-only roles hand back a report; a background task they started keeps the agent alive.
+local foreground = { scoper = true, reviewer = true }
 
 ---Normalize plugin-qualified roles; an empty role identifies the main agent.
 ---@param value? string
@@ -105,7 +107,7 @@ local function command_kind(tokens, depth)
 		end
 	elseif executable == "orc" and tokens[index + 1] == "wt" then
 		local verb = tokens[index + 2]
-		if verb == "merge" or verb == "remove" then
+		if verb == "merge" or verb == "apply" or verb == "remove" then
 			return "commit"
 		end
 	end
@@ -287,6 +289,11 @@ function M.run(rt, event, input)
 	elseif event == "guard" then
 		local tool = payload.tool_input or {}
 		local reason = M.decide(role, tool.command or tool.cmd)
+		if not reason and foreground[role] and tool.run_in_background then
+			reason = "orc: "
+				.. role
+				.. " must not start background commands; run it in the foreground or name it for the orchestrator"
+		end
 		if reason then
 			signal(rt, "deny", role, reason)
 			output = {

@@ -17,10 +17,13 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   Codex and implementer are defaults; use `--role scoper` for read-only scoping
   or `--kind claude` to choose Claude. Transport defaults to `tui`; `exec` is
   Codex-only, records JSONL/usage, and supports start/wait/close without steering.
+  Workers start no MCP servers; add `--mcp <name,...>` only when the brief needs
+  one (for example `--mcp figma` for a design task).
 - Wait: `orc pane wait <task> --path <worktree> --until report --timeout 1800000`, using the
   harness's background execution (foreground Bash is capped at 10 minutes).
   Waits for the current run's report with Status and Validation, a native user-action
   block, process exit/error or timeout. Missing evidence never ends this wait.
+  After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
   Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
   `unacknowledged`; inspect the pane and trust the hooks before retrying.
   Exec `state: "rate-limited"` includes a hint: close it, then restart the same
@@ -29,6 +32,9 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   Add `--queue` for an acknowledged working TUI: Codex queues with Tab, Claude with
   Enter. `queued` still awaits UserPromptSubmit; inspect before any resend.
   TUI only; exec follow-ups currently require close/start with a fresh thread.
+- Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
+  records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
+  never type into a worker pane with `rex send`, which bypasses run IDs and reports.
 - Close: `orc pane close <task> --path <worktree>`. If Rex restarted or pane
   creation failed, close and start refuse the stranded record; after checking the
   pane is gone, add `--force` to mark it closed without touching Rex.

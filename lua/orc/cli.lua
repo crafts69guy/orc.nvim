@@ -3,10 +3,11 @@ M.version = "0.1.0"
 M.usage = [[usage: orc <command> [args]
 
   claude|codex [--yolo] [--level default|high|max] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
-  wt new|merge|remove|list|session ...
-  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--transport tui|exec] [--here] [--allow-subdir] [--precheck <cmd>]
+  wt new|merge|apply|remove|list|session ...
+  pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--transport tui|exec] [--here] [--allow-subdir] [--precheck <cmd>] [--mcp <name,...>]
   pane wait <task> --path <dir> [--until report] [--timeout <ms>]
   pane prompt <task> --path <dir> --text <text>|--file <file> [--queue]
+  pane pause <task> --path <dir>
   pane close <task> --path <dir> [--force]
   pane prune --path <dir>
   gate [--label <name>] [--log <file>] -- <cmd...>
@@ -150,7 +151,16 @@ end
 function M.run(rt, argv, input)
 	local ok, result = pcall(function()
 		local command, rest = argv[1], slice(argv)
-		if not command or command == "help" or command == "--help" or command == "-h" then
+		local wants_help = false
+		if command ~= "claude" and command ~= "codex" then
+			for _, word in ipairs(rest) do
+				if word == "--" then
+					break
+				end
+				wants_help = wants_help or word == "--help" or word == "-h"
+			end
+		end
+		if not command or command == "help" or command == "--help" or command == "-h" or wants_help then
 			return { code = 0, out = M.usage }
 		elseif command == "--version" or command == "-V" then
 			return { code = 0, out = M.version .. "\n" }

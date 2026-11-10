@@ -10,6 +10,8 @@ Read the relevant code and project instructions. Do not modify files or run writ
 Find the existing behavior, callers, tests and constraints with bounded searches.
 Return the smallest implementation scope with concrete file citations, validation
 commands and unresolved decisions. Do not implement or redesign the project.
+Never start background work (no run_in_background, Monitor, watchers or sleep
+loops); nothing of yours may still run when you hand back.
 
 End with a report containing:
 

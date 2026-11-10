@@ -2,6 +2,8 @@ local cli = require("orc.cli")
 local providers = require("orc.providers")
 local runtime = require("orc.runtime")
 
+local INKDROP_OFF = 'mcp_servers.inkdrop={enabled=false,url="http://127.0.0.1:9/"}'
+
 local codex_policy = {
 	"-c",
 	"shell_environment_policy.ignore_default_excludes=false",
@@ -24,9 +26,40 @@ local function fixture(fn)
 	rt.list = function(path)
 		return state.lists and state.lists[path] or {}
 	end
+	rt.write = function(path, text)
+		state.files[path] = text
+	end
+	rt.mkdir = function() end
 	rt.exec = function(argv, opts)
 		state.probes[#state.probes + 1] = { argv = argv, opts = opts }
-		if argv[1] == "codex" then
+		if argv[1] == "codex" and argv[#argv - 2] == "mcp" and argv[#argv - 1] == "list" then
+			local text = state.mcpList
+				or rt.encode({
+					{ name = "inkdrop", enabled = true, transport = { type = "streamable_http" } },
+				})
+			if argv[2] ~= "-c" then
+				return { code = 0, stdout = text, stderr = "" }
+			end
+			-- The re-list applies the overrides like Codex 0.167, which rejects a server table
+			-- without a transport (a plugin server has none in config).
+			local listed, disabled = rt.decode(text), {}
+			for index = 2, #argv - 3, 2 do
+				Test.eq(argv[index], "-c")
+				local name, entry = argv[index + 1]:match("^mcp_servers%.([%w_-]+)=(%b{})$")
+				if not (entry:find('command="', 1, true) or entry:find('url="', 1, true)) then
+					return { code = 1, stdout = "", stderr = "invalid transport in mcp_servers." .. name }
+				end
+				disabled[name] = entry:find("enabled=false", 1, true) ~= nil
+			end
+			for _, server in ipairs(listed) do
+				server.enabled = server.enabled and not disabled[server.name]
+			end
+			return {
+				code = state.verifyFail and 1 or 0,
+				stdout = state.verifyText or rt.encode(listed),
+				stderr = "rejected",
+			}
+		elseif argv[1] == "codex" then
 			return {
 				code = state.probeFail and 1 or 0,
 				stdout = state.probeText or rt.encode(state.entry),
@@ -116,6 +149,7 @@ Test.test("providers Codex bypasses daemon for all roles and Inkdrop modes", fun
 				local spec = providers.plan(rt, {
 					kind = "codex",
 					role = role,
+					mcp = role ~= "main" and { "inkdrop" } or nil,
 					flags = { ["inkdrop-mcp"] = mode },
 					args = { "--model", "native-model" },
 					prompt = "literal; assignment",
@@ -217,11 +251,15 @@ Test.test("providers scopers are read-only with role-specific Claude models", fu
 				Test.eq(spec.env.ORC_ROLE, "scoper")
 				Test.eq(spec.env.ORC_WORKER_FILE, "/worker.json")
 				if kind == "codex" then
-					Test.eq(
-						vim.list_slice(spec.argv, 1, 4),
-						{ "codex", "--no-daemon", "--sandbox", "read-only" }
-					)
-					Test.eq(vim.list_slice(spec.argv, 5, 8), codex_policy)
+					Test.eq(vim.list_slice(spec.argv, 1, 6), {
+						"codex",
+						"--no-daemon",
+						"-c",
+						INKDROP_OFF,
+						"--sandbox",
+						"read-only",
+					})
+					Test.eq(vim.list_slice(spec.argv, 7, 10), codex_policy)
 					Test.eq(spec.argv[#spec.argv], "scope this")
 				else
 					Test.eq(options(spec.argv, "--model"), level == "default" and "haiku" or "sonnet")
@@ -229,10 +267,18 @@ Test.test("providers scopers are read-only with role-specific Claude models", fu
 					-- The variadic tool list must be closed by an option before the prompt.
 					Test.eq(options(spec.argv, "Edit,Write,NotebookEdit"), "--plugin-dir")
 					Test.eq(spec.argv[#spec.argv], "scope this")
+					Test.eq(spec.argv[2], "--strict-mcp-config")
+					Test.eq(options(spec.argv, "--mcp-config"), nil)
 				end
 			end
 		end
-		Test.eq(#state.probes, 0)
+		for index, probe in ipairs(state.probes) do
+			Test.eq(
+				probe.argv,
+				index % 2 == 1 and { "codex", "mcp", "list", "--json" }
+					or { "codex", "-c", INKDROP_OFF, "mcp", "list", "--json" }
+			)
+		end
 		Test.eq(state.checks, 0)
 	end)
 end)
@@ -288,7 +334,7 @@ Test.test(
 			})
 			local plan = providers.plan(rt, {
 				kind = "claude",
-				role = "implementer",
+				role = "main",
 				flags = { ["inkdrop-mcp"] = "shared" },
 			})
 			local overlay = rt.decode(options(plan.argv, "--mcp-config"))
@@ -303,7 +349,9 @@ Test.test("providers preserve literal prompts and reject missing native override
 			local spec = providers.plan(rt, {
 				kind = kind,
 				role = "implementer",
+				mcp = { "inkdrop" },
 				flags = { ["inkdrop-mcp"] = "shared" },
+				workerFile = "/worker.json",
 				args = { "--", "--mcp-config", "literal prompt" },
 			})
 			Test.eq(vim.list_slice(spec.argv, #spec.argv - 2), { "--", "--mcp-config", "literal prompt" })
@@ -313,6 +361,7 @@ Test.test("providers preserve literal prompts and reject missing native override
 				providers.plan(rt, {
 					kind = "codex",
 					role = "implementer",
+					mcp = { "inkdrop" },
 					flags = { ["inkdrop-mcp"] = "shared" },
 					args = args,
 				})
@@ -322,6 +371,7 @@ Test.test("providers preserve literal prompts and reject missing native override
 			providers.plan(rt, {
 				kind = "codex",
 				role = "implementer",
+				mcp = { "inkdrop" },
 				flags = { ["inkdrop-mcp"] = "shared" },
 				args = { "-c", "mcp_servers.'inkdrop'.required=false" },
 			})
@@ -331,6 +381,7 @@ Test.test("providers preserve literal prompts and reject missing native override
 			providers.plan(rt, {
 				kind = "codex",
 				role = "implementer",
+				mcp = { "inkdrop" },
 				flags = { ["inkdrop-mcp"] = "shared" },
 				args = { "-c", "malformed override" },
 			})
@@ -352,6 +403,7 @@ Test.test(
 					providers.plan(rt, {
 						kind = "codex",
 						role = "implementer",
+						mcp = { "inkdrop" },
 						flags = { ["inkdrop-mcp"] = "shared" },
 						args = args,
 					})
@@ -361,6 +413,7 @@ Test.test(
 			providers.plan(rt, {
 				kind = "codex",
 				role = "implementer",
+				mcp = { "inkdrop" },
 				flags = { ["inkdrop-mcp"] = "shared" },
 				args = args,
 			})
@@ -377,6 +430,7 @@ Test.test(
 					providers.plan(rt, {
 						kind = "codex",
 						role = "implementer",
+						mcp = { "inkdrop" },
 						flags = { ["inkdrop-mcp"] = "shared" },
 						args = args2,
 					})
@@ -386,7 +440,7 @@ Test.test(
 				rt,
 				{ kind = "codex", role = "implementer", args = { "-C", "/elsewhere", "-pwork" } }
 			)
-			Test.eq(vim.list_slice(inherited.argv, 9), { "-C", "/elsewhere", "-pwork" })
+			Test.eq(vim.list_slice(inherited.argv, 11), { "-C", "/elsewhere", "-pwork" })
 		end)
 	end
 )
@@ -425,18 +479,24 @@ Test.test(
 				workerFile = "/worker.json",
 				prompt = "literal; assignment\nline two",
 			})
-			Test.eq(
-				vim.list_slice(worker.argv, 1, 4),
-				{ "codex", "--no-daemon", "--sandbox", "workspace-write" }
-			)
-			Test.eq(vim.list_slice(worker.argv, 5, 8), codex_policy)
-			Test.eq(worker.argv[9], "literal; assignment\nline two")
+			Test.eq(vim.list_slice(worker.argv, 1, 6), {
+				"codex",
+				"--no-daemon",
+				"-c",
+				INKDROP_OFF,
+				"--sandbox",
+				"workspace-write",
+			})
+			Test.eq(vim.list_slice(worker.argv, 7, 10), codex_policy)
+			Test.eq(worker.argv[11], "literal; assignment\nline two")
 			Test.eq(worker.cwd, "/worktree")
 			Test.eq(worker.env.ORC_ROLE, "implementer")
 			Test.eq(worker.env.ORC_WORKER_FILE, "/worker.json")
 			Test.eq(worker.env.PATH, "/tools")
 			Test.eq(state.checks, 0)
-			Test.eq(#state.probes, 0)
+			Test.eq(#state.probes, 2)
+			Test.eq(state.probes[1].opts.cwd, "/worktree")
+			Test.eq(state.probes[2].opts, state.probes[1].opts)
 			rt.env.ORC_LEVEL = "high"
 			Test.eq(
 				options(providers.plan(rt, { kind = "claude", role = "implementer" }).argv, "--model"),
@@ -478,15 +538,20 @@ Test.test(
 			local request = {
 				kind = "claude",
 				role = "implementer",
+				mcp = { "inkdrop" },
 				flags = { ["inkdrop-mcp"] = "shared" },
 				prompt = "worker prompt",
 				workerFile = "/record.json",
 			}
 			local plan = providers.plan(rt, request)
-			Test.eq(plan.argv[2], "--mcp-config")
-			Test.eq(plan.argv[4], "--plugin-dir")
+			Test.eq(vim.list_slice(plan.argv, 2, 5), {
+				"--strict-mcp-config",
+				"--mcp-config",
+				"/record.mcp.json",
+				"--plugin-dir",
+			})
 			Test.eq(plan.argv[#plan.argv], "worker prompt")
-			local overlay = rt.decode(plan.argv[3])
+			local overlay = rt.decode(state.files["/record.mcp.json"])
 			Test.eq(overlay, {
 				mcpServers = {
 					inkdrop = {
@@ -526,7 +591,7 @@ Test.test(
 				providers.plan(rt, request)
 			end)
 			state.files["/claude-home/.claude.json"] = rt.encode({ mcpServers = { inkdrop = "bad" } })
-			Test.raises("invalid Claude Inkdrop entry", function()
+			Test.raises("invalid Claude MCP entry", function()
 				providers.plan(rt, request)
 			end)
 			state.files["/claude-home/.claude.json"] =
@@ -585,6 +650,7 @@ Test.test(
 					providers.plan(rt, {
 						kind = "codex",
 						role = "implementer",
+						mcp = { "inkdrop" },
 						flags = { ["inkdrop-mcp"] = "shared" },
 						args = { "-c", value },
 					})
@@ -620,6 +686,7 @@ Test.test(
 				kind = "codex",
 				role = "implementer",
 				cwd = "/task",
+				mcp = { "inkdrop" },
 				flags = { ["inkdrop-mcp"] = "shared" },
 				args = args,
 			})
@@ -661,8 +728,12 @@ Test.test(
 	"providers Codex refuses mixed STDIO or unavailable effective configurations before launch",
 	function()
 		fixture(function(rt, state, endpoint)
-			local request =
-				{ kind = "codex", role = "implementer", flags = { ["inkdrop-mcp"] = "shared" } }
+			local request = {
+				kind = "codex",
+				role = "implementer",
+				mcp = { "inkdrop" },
+				flags = { ["inkdrop-mcp"] = "shared" },
+			}
 			for _, entry in ipairs({
 				{},
 				{ enabled = false },
@@ -729,3 +800,123 @@ Test.test(
 		end)
 	end
 )
+
+Test.test("providers workers start only allowlisted MCP servers", function()
+	fixture(function(rt, state)
+		state.files["/home/.claude.json"] = rt.encode({
+			mcpServers = {
+				figma = { command = "figma", args = { "--figma-api-key=synthetic-secret" } },
+				chrome = { command = "chrome" },
+				off = { command = "off", disabled = true },
+			},
+		})
+		-- A parent .mcp.json (such as ~/.mcp.json) applies; the nearest one wins.
+		state.files["/.mcp.json"] = rt.encode({ mcpServers = { ink = { command = "far" } } })
+		state.files["/repo/.mcp.json"] = rt.encode({ mcpServers = { other = { command = "x" } } })
+		providers.plan(
+			rt,
+			{ kind = "claude", role = "scoper", mcp = { "ink" }, workerFile = "/p.json" }
+		)
+		Test.eq(rt.decode(state.files["/p.mcp.json"]).mcpServers.ink.command, "far")
+		local main = providers.plan(rt, { kind = "claude", role = "main" })
+		assert(not vim.tbl_contains(main.argv, "--strict-mcp-config"))
+		local claude = providers.plan(rt, {
+			kind = "claude",
+			role = "implementer",
+			mcp = { "figma" },
+			workerFile = "/w/abc.json",
+		})
+		Test.eq(
+			vim.list_slice(claude.argv, 2, 4),
+			{ "--strict-mcp-config", "--mcp-config", "/w/abc.mcp.json" }
+		)
+		Test.eq(rt.decode(state.files["/w/abc.mcp.json"]).mcpServers, {
+			figma = { command = "figma", args = { "--figma-api-key=synthetic-secret" } },
+		})
+		assert(not table.concat(claude.argv, " "):find("synthetic-secret", 1, true))
+		for _, name in ipairs({ "missing", "off" }) do
+			Test.raises("not configured: " .. name, function()
+				providers.plan(
+					rt,
+					{ kind = "claude", role = "scoper", mcp = { name }, workerFile = "/w.json" }
+				)
+			end)
+		end
+		Test.raises("needs a worker record", function()
+			providers.plan(rt, { kind = "claude", role = "scoper", mcp = { "figma" } })
+		end)
+		-- `codex mcp list` mixes config servers (figma, inkdrop) with plugin servers (cua_repl,
+		-- browser) and gives no source, so every override must be a valid table on its own.
+		local http, stdio = { type = "streamable_http" }, { type = "stdio" }
+		state.mcpList = rt.encode({
+			{ name = "figma", enabled = true, transport = http },
+			{ name = "inkdrop", enabled = true, transport = http },
+			{ name = "cua_repl", enabled = true, transport = stdio },
+			{ name = "browser", enabled = true, transport = stdio },
+			{ name = "chrome", enabled = false, transport = stdio },
+		})
+		local function codex_plan(allowlist)
+			state.probes = {}
+			local plan = providers.plan(rt, { kind = "codex", role = "implementer", mcp = allowlist })
+			Test.eq(#state.probes, 2)
+			return table.concat(plan.argv, " ")
+		end
+		Test.eq(
+			codex_plan({ "figma", "browser" }),
+			"codex --no-daemon -c "
+				.. INKDROP_OFF
+				.. ' -c mcp_servers.cua_repl={enabled=false,command="false"} --sandbox workspace-write '
+				.. table.concat(codex_policy, " ")
+		)
+		local plugin_only = codex_plan({ "cua_repl" })
+		assert(plugin_only:find(INKDROP_OFF, 1, true))
+		assert(plugin_only:find('mcp_servers.figma={enabled=false,url="http://127.0.0.1:9/"}', 1, true))
+		assert(plugin_only:find('mcp_servers.browser={enabled=false,command="false"}', 1, true))
+		assert(not plugin_only:find("cua_repl", 1, true))
+		assert(not plugin_only:find("chrome", 1, true))
+		state.probes = {}
+		Test.raises("not configured: chrome2", function()
+			providers.plan(rt, { kind = "codex", role = "implementer", mcp = { "chrome2" } })
+		end)
+		Test.eq(#state.probes, 1)
+		-- Nothing to disable needs no re-list.
+		state.mcpList, state.probes =
+			rt.encode({ { name = "figma", enabled = true, transport = http } }), {}
+		providers.plan(rt, { kind = "codex", role = "implementer", mcp = { "figma" } })
+		Test.eq(#state.probes, 1)
+		for _, server in ipairs({
+			{ name = "dotted.name", enabled = true, transport = stdio },
+			{ name = "sse", enabled = true, transport = { type = "sse" } },
+			{ name = "bare", enabled = true },
+		}) do
+			state.mcpList = rt.encode({ server })
+			Test.raises("cannot disable Codex MCP server " .. server.name:gsub("%.", "%%."), function()
+				providers.plan(rt, { kind = "codex", role = "implementer" })
+			end)
+		end
+		state.mcpList = rt.encode({ { name = "cua_repl", enabled = true, transport = stdio } })
+		state.verifyFail = true
+		Test.raises("Codex rejected the worker MCP overrides: rejected", function()
+			providers.plan(rt, { kind = "codex", role = "scoper" })
+		end)
+		state.verifyFail, state.verifyText = false, "not json"
+		Test.raises("Codex rejected the worker MCP overrides", function()
+			providers.plan(rt, { kind = "codex", role = "scoper" })
+		end)
+		-- A Codex that ignored an override must not launch the server silently.
+		state.mcpList = rt.encode({
+			{ name = "cua_repl", enabled = true, transport = stdio },
+			{ name = "figma", enabled = true, transport = http },
+		})
+		state.verifyText =
+			rt.encode({ { name = "cua_repl", enabled = true }, { name = "figma", enabled = true } })
+		Test.raises("would still start: cua_repl", function()
+			providers.plan(rt, { kind = "codex", role = "scoper", mcp = { "figma" } })
+		end)
+		state.verifyText = nil
+		state.mcpList = "not json"
+		Test.raises("cannot list Codex MCP servers", function()
+			providers.plan(rt, { kind = "codex", role = "scoper" })
+		end)
+	end)
+end)

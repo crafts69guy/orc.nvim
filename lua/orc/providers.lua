@@ -41,25 +41,40 @@ local function decoded(rt, path)
 	return value
 end
 
-local function claude_entry(rt, cwd)
-	local home = assert(rt.env.HOME, "orc: shared Inkdrop requires HOME")
+-- Claude's effective entry for one MCP server: local project, then .mcp.json, then user scope.
+local function claude_lookup(rt, cwd, name)
+	local home = assert(rt.env.HOME, "orc: Claude MCP lookup requires HOME")
 	local path = rt.env.CLAUDE_CONFIG_DIR and rt.path(rt.env.CLAUDE_CONFIG_DIR, ".claude.json")
 		or rt.path(home, ".claude.json")
 	local user = decoded(rt, path)
-	local entry = user.mcpServers and user.mcpServers.inkdrop
+	local entry = user.mcpServers and user.mcpServers[name]
 	local git = rt.exec({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd })
 	local root = git.code == 0 and vim.trim(git.stdout) or cwd
 	if root == "" then
 		root = cwd
 	end
-	local project = decoded(rt, rt.path(root, ".mcp.json"))
-	entry = project.mcpServers and project.mcpServers.inkdrop or entry
+	-- Claude also loads .mcp.json from parent directories (for example ~/.mcp.json); nearest wins.
+	local dir = root
+	repeat
+		local project = decoded(rt, rt.path(dir, ".mcp.json"))
+		if project.mcpServers and project.mcpServers[name] then
+			entry = project.mcpServers[name]
+			break
+		end
+		local parent = vim.fs.dirname(dir)
+		local top = parent == dir
+		dir = parent
+	until top
 	local canonical = vim.uv.fs_realpath(cwd) or cwd
 	local local_config = user.projects
 		and (user.projects[canonical] or user.projects[cwd] or user.projects[root])
-	entry = local_config and local_config.mcpServers and local_config.mcpServers.inkdrop or entry
-	assert(entry == nil or type(entry) == "table", "orc: invalid Claude Inkdrop entry")
-	local result = vim.deepcopy(entry or {})
+	entry = local_config and local_config.mcpServers and local_config.mcpServers[name] or entry
+	assert(entry == nil or type(entry) == "table", "orc: invalid Claude MCP entry " .. name)
+	return entry and vim.deepcopy(entry)
+end
+
+local function claude_entry(rt, cwd)
+	local result = claude_lookup(rt, cwd, "inkdrop") or {}
 	assert(result.disabled ~= true, "orc: Inkdrop is disabled in the provider configuration")
 	for _, key in ipairs({ "headers", "headersHelper", "oauth", "auth" }) do
 		local value = result[key]
@@ -151,7 +166,7 @@ local function shared_args(rt, kind, cwd, args, config)
 		end
 		local entry = claude_entry(rt, cwd)
 		entry.type, entry.url = "http", config.url
-		return { "--mcp-config", rt.encode({ mcpServers = { inkdrop = entry } }) }
+		return entry
 	end
 	local inspect = { "codex" }
 	vim.list_extend(inspect, codex_config_args(args))
@@ -176,6 +191,89 @@ local function shared_args(rt, kind, cwd, args, config)
 	return { "-c", "mcp_servers.inkdrop.required=true" }
 end
 
+local codex_placeholder =
+	{ stdio = 'command="false"', streamable_http = 'url="http://127.0.0.1:9/"' }
+
+-- Workers start no MCP server unless the brief allowlists it: every session otherwise
+-- spawns its own copy of each configured or plugin-provided server.
+local function worker_mcp(rt, kind, cwd, allowed, shared, worker_file)
+	if kind == "claude" then
+		local servers = {}
+		if shared then
+			servers.inkdrop = shared
+		end
+		for name in pairs(allowed) do
+			if not servers[name] then
+				local entry = claude_lookup(rt, cwd, name)
+				assert(entry and entry.disabled ~= true, "orc: Claude MCP server not configured: " .. name)
+				servers[name] = entry
+			end
+		end
+		if next(servers) == nil then
+			return { "--strict-mcp-config" }
+		end
+		-- A private file, not argv: entries can carry credentials in env or args.
+		local file = assert(worker_file, "orc: MCP allowlist needs a worker record"):gsub("%.json$", "")
+			.. ".mcp.json"
+		rt.mkdir(vim.fs.dirname(file))
+		rt.write(file, rt.encode({ mcpServers = servers }))
+		return { "--strict-mcp-config", "--mcp-config", file }
+	end
+	local clean_env = {}
+	for _, name in ipairs(credential_names) do
+		clean_env[name] = false
+	end
+	local response = rt.exec(
+		{ "codex", "mcp", "list", "--json" },
+		{ cwd = cwd, timeout = 5000, env = clean_env }
+	)
+	local ok, servers = pcall(rt.decode, response.stdout)
+	assert(
+		response.code == 0 and ok and type(servers) == "table",
+		"orc: cannot list Codex MCP servers: " .. response.stderr
+	)
+	local args, found = {}, {}
+	for _, server in ipairs(servers) do
+		local name = server.name
+		found[name] = true
+		if server.enabled == true and not allowed[name] then
+			assert(name:match("^[%w_-]+$"), "orc: cannot disable Codex MCP server " .. name)
+			-- Plugin servers have no config table, and Codex rejects one without a transport,
+			-- so the disabled entry carries a never-started placeholder of the listed type.
+			local transport =
+				codex_placeholder[type(server.transport) == "table" and server.transport.type]
+			assert(transport, "orc: cannot disable Codex MCP server " .. name .. ": unknown transport")
+			vim.list_extend(
+				args,
+				{ "-c", "mcp_servers." .. name .. "={enabled=false," .. transport .. "}" }
+			)
+		end
+	end
+	for name in pairs(allowed) do
+		assert(found[name], "orc: Codex MCP server not configured: " .. name)
+	end
+	if #args == 0 then
+		return args
+	end
+	-- Re-list with the overrides: the worker must load its config and start only the allowlist.
+	local check = rt.exec(
+		vim.list_extend(vim.list_extend({ "codex" }, args), { "mcp", "list", "--json" }),
+		{ cwd = cwd, timeout = 5000, env = clean_env }
+	)
+	local loaded, after = pcall(rt.decode, check.stdout)
+	assert(
+		check.code == 0 and loaded and type(after) == "table",
+		"orc: Codex rejected the worker MCP overrides: " .. check.stderr
+	)
+	for _, server in ipairs(after) do
+		assert(
+			server.enabled ~= true or allowed[server.name],
+			"orc: Codex MCP server would still start: " .. tostring(server.name)
+		)
+	end
+	return args
+end
+
 ---@class orc.ProviderRequest
 ---@field kind "claude"|"codex" Native provider executable.
 ---@field role "main"|"implementer"|"scoper" Existing workflow role.
@@ -185,6 +283,7 @@ end
 ---@field prompt? string Worker assignment appended as one argument.
 ---@field workerFile? string Durable record passed to worker hooks.
 ---@field transport? 'tui'|'exec' Codex-only headless worker transport; defaults to tui.
+---@field mcp? string[] MCP servers a worker may start; workers start none by default.
 
 ---@class orc.LaunchSpec
 ---@field argv string[] Provider executable and native arguments.
@@ -239,11 +338,22 @@ function M.plan(rt, request)
 			vim.list_extend(command, { "exec", "--json" })
 		end
 	end
-	if config.mode == "shared" then
+	local allowed = {}
+	for _, name in ipairs(request.mcp or {}) do
+		allowed[name] = true
+	end
+	local shared
+	if config.mode == "shared" and (role == "main" or allowed.inkdrop) then
 		local extra = shared_args(rt, kind, cwd, args, config)
 		local health = mcp.check(rt, config)
 		assert(health.ok, "orc: shared Inkdrop MCP is unavailable; start or repair the user service")
-		vim.list_extend(command, extra)
+		if kind == "codex" then
+			vim.list_extend(command, extra)
+		elseif role == "main" then
+			vim.list_extend(command, { "--mcp-config", rt.encode({ mcpServers = { inkdrop = extra } }) })
+		else
+			shared = extra
+		end
 		for _, name in ipairs(credential_names) do
 			env[name] = false
 		end
@@ -251,6 +361,9 @@ function M.plan(rt, request)
 		env.HOME = rt.env.HOME
 		env.CODEX_HOME = rt.env.CODEX_HOME or false
 		env.CLAUDE_CONFIG_DIR = rt.env.CLAUDE_CONFIG_DIR or false
+	end
+	if role ~= "main" then
+		vim.list_extend(command, worker_mcp(rt, kind, cwd, allowed, shared, request.workerFile))
 	end
 	local run_rt = vim.tbl_extend("force", {}, rt, {
 		cwd = cwd,

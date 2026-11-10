@@ -20,9 +20,12 @@ and follow-up prompts; exec currently supports start/wait/close only. See the
 For TUI follow-ups, `pane prompt --queue` queues on acknowledged working programs
 using Codex Tab or Claude Enter, with the same ownership and hook checks. `queued`
 awaits UserPromptSubmit; without the flag, a busy worker returns `not-sent`.
+`pane pause` interrupts a working TUI worker with Esc, or records a manual Esc, so a
+later `pane prompt` can resume it; Esc emits no Stop hook.
 Use `pane wait --until report` to continue until a matching report with Status and
 Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
-`turn-ended-no-report` from `blocked`; missing evidence does not end a report wait.
+`turn-ended-no-report` from `blocked`; a report wait returns it with a hint only after
+five idle minutes without the run's report.
 If a report wait times out before acknowledgment, its hint explains how to trust the hooks.
 
 ## Setup

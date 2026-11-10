@@ -102,12 +102,14 @@ workers can be acknowledged.
 | `orc claude --pair` | One Codex worker beside the orchestrator in Rex |
 | `orc claude --panes`, `orc codex --panes` | Force pane delegation (automatic inside Rex) |
 | `orc claude --no-panes`, `orc codex --no-panes` | Disable automatic pane mode |
-| `orc wt new\|merge\|remove\|list\|session` | Manage isolated worktrees and serial merges |
+| `orc wt new\|merge\|apply\|remove\|list\|session` | Manage isolated worktrees and serial merges; `apply` stages a task in the current checkout without committing on base; re-running it after a fix round stages only the delta; `new` reuses live task worktrees; a merge whose cleanup fails still reports `merged` with a `warning` |
 | `orc pane start\|wait\|prompt\|close [--force]` | Manage a worker and its report; `close --force` marks an unreachable record closed without calling Rex |
 | `orc pane prune --path <dir>` | Close successful exits or idle/done workers with a matching done report and evidence; print closed/skipped JSON |
 | `orc pane start ... [--allow-subdir] [--precheck '<cmd>']` | Require a checkout toplevel by default; check prerequisites before pane creation |
+| `orc pane start ... [--mcp <name,...>]` | Workers start no MCP servers, configured or Codex-plugin, unless allowlisted; a Codex worker refuses to launch if Codex rejects the overrides or would still start one; the orchestrator keeps its own |
 | `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
-| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error or timeout |
+| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; a done report adds `next` with the close command |
+| `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
 | `orc doctor --json` | Prerequisite and integration checks |
@@ -172,6 +174,8 @@ version bump or export assigned to the worker.
 Run `orc pane wait --until report` with the harness's background execution. It
 continues through missing-evidence stops until the current run has a report with
 Status and Validation, a native user-action block, process exit/error or timeout.
+A worker that stays idle without that report for five minutes returns
+`turn-ended-no-report` with a hint, because pane workers never resume on their own.
 Plain wait reports `turn-ended-no-report` for a turn without evidence. If the prompt
 is still unacknowledged after 60 s (for example untrusted hooks in Codex), plain wait
 returns `unacknowledged` with a hint instead of running to timeout. `--until report`
@@ -180,7 +184,14 @@ Prune uses the same ownership/process checks as non-force close and a lock per t
 across the repository.
 `pane prompt --queue` uses Codex Tab or Claude Enter on acknowledged working TUI
 workers; `queued` awaits the same UserPromptSubmit acknowledgment as other delivery.
-Without `--queue`, busy workers still return `not-sent`.
+Without `--queue`, busy workers still return `not-sent`. `sent: true` means the
+terminal write completed; `status` stays `unconfirmed` until the hook acknowledges it.
+
+To pause, run `orc pane pause <task> --path <dir>`: it sends Esc to a working TUI
+worker it owns, waits for the native idle state and records the ended turn, because
+an interrupted turn emits no Stop hook. After a manual Esc it only records the idle
+turn. It refuses permission or user-action dialogs. Resume with `orc pane prompt`,
+which starts a new run with its own report path; never type into the pane by hand.
 
 ### Validation profile
 
@@ -224,6 +235,8 @@ for session selection. See [Rex integration](docs/rex-integration.md).
 ## State and integrations
 
 - Plans and capture logs live in the main checkout's `.scratch/<feature>/`.
+  `status` lists only `.scratch/<feature>/plan.md`; move finished features to
+  `.scratch/.archive/<feature>` to drop them from the snapshot.
   Approved lessons and worker records live in `.orc/`, excluded from Git.
 - Every assignment has a `runId`; reports must identify it. An unconfirmed
   delivery is never resent automatically, and a failed follow-up never erases the
@@ -275,15 +288,26 @@ nvim --clean -l scripts/gen-agents.lua --check &&
 stylua --check lua test scripts bin/orc plugin evals'
 """
 
-[post-start]
+[pre-start]
 copy = "wt step copy-ignored"
 ```
 
 With project hooks approved, `orc wt merge` refuses a failing `pre-merge` check.
 Approve them before relying on the gate: declining approval skips project hooks.
-`post-start` runs in the background when a worktree is created; `copy-ignored`
-copies ignored build caches and dependencies from the primary worktree. Limit
+`pre-start` blocks worktree creation until it finishes, so dependencies exist before
+`orc pane start`; `post-start` runs in the background and can race a worker or
+`--precheck`. `copy-ignored` copies ignored build caches and dependencies such as
+`node_modules` from the primary worktree; a package install (for example
+`bun install`) also works. Limit
 copies to intended caches with `.worktreeinclude`.
+
+Task worktrees live in `.worktrees/` inside the main checkout, so they inherit the
+project's Codex trust and stay within the orchestrator's project directory. Git and
+rg skip them through `.git/info/exclude`; tools that walk the tree themselves do not.
+Exclude `.worktrees/` from watchers, type checkers and test runners (for example
+tsconfig `exclude`, Jest `modulePathIgnorePatterns`, Metro `resolver.blockList`,
+ESLint ignores), or the main checkout indexes and runs in-flight tasks, and Metro
+reports duplicate modules once `copy-ignored` copies `node_modules`.
 
 Verified with Worktrunk v0.81.0 (`wt --help`, `wt hook --help`,
 `wt step copy-ignored --help`) and the official

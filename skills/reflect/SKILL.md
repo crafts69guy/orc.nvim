@@ -23,7 +23,8 @@ Rows have this format:
 Use scope `orc` for workflow lessons. Preserve IDs and file order; use and advance
 the `<!-- next: L002 -->` marker. A lesson retires when negative votes reach positive
 votes. Keep memory small: only the best forty active lessons enter future context.
-After applying approved changes, clear consumed signals. If Inkdrop is configured,
+After applying approved changes, clear consumed signals. Move a finished feature's
+directory to `.scratch/.archive/<feature>` so `orc status` stops listing it. If Inkdrop is configured,
 mirror with `orc inkdrop lessons`; a sync failure is a warning, not lost local work.
 
 Promote workflow lessons into rules only after a new behavior eval fails before

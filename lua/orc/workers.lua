@@ -445,6 +445,7 @@ local function prompt_text(rt, record, body)
 		.. record.path
 		.. ". Do not commit or push. "
 		.. body
+		.. " If you need a user decision, end the turn with a Status: blocked report that states the question; never wait at an interactive prompt."
 	if record.role == "scoper" then
 		return prompt
 			.. " Do not modify files. End your final message with the report. Include Run: "
@@ -515,6 +516,7 @@ local function start(rt, feature, task, values, file)
 		transport = transport,
 		role = role,
 		level = rt.env.ORC_LEVEL or "default",
+		mcp = values.mcp or {},
 		sessionId = rt.env.REX_SESSION,
 		hostId = identity.host_id,
 		instanceId = identity.instance_id,
@@ -536,6 +538,7 @@ local function start(rt, feature, task, values, file)
 		kind = kind,
 		role = role,
 		transport = transport,
+		mcp = record.mcp,
 		cwd = path,
 		workerFile = file,
 		prompt = prompt_text(rt, record, "Your brief: " .. brief .. "."),
@@ -723,9 +726,59 @@ local function follow_up(rt, record, values)
 		task = record.task,
 		state = record.state,
 		runId = record.runId,
-		queued = sent,
+		sent = sent,
+		queued = (queue and sent) == true,
 		message = sent and "Awaiting UserPromptSubmit acknowledgment" or tostring(err),
 	})
+end
+
+local PAUSE_WAIT_MS = 10000
+
+-- Esc interrupts a TUI turn without a Stop hook, so record the ended turn explicitly;
+-- a later `pane prompt` then resumes it as a normal follow-up run.
+local function pause(rt, record)
+	assert(record.transport ~= "exec", "orc pane: exec workers cannot be paused; close them instead")
+	assert(record.state ~= "closed", "orc pane: worker is closed")
+	local client = client_for(rt, record)
+	snapshot(rt, client, record)
+	local function answer(status)
+		return result(
+			rt,
+			0,
+			{ status = status, task = record.task, state = record.state, runId = record.runId }
+		)
+	end
+	local function idle()
+		return record.nativeState == "idle" or record.nativeState == "done"
+	end
+	-- Never dismiss a permission or user-action dialog on the user's behalf.
+	local function blocked()
+		return record.hookState == "blocked" or record.blockedKind ~= nil
+	end
+	if blocked() or not (idle() or record.nativeState == "working") then
+		return answer("not-paused")
+	end
+	local process = client.block(record.sessionId, record.blockId, "process")
+	assert(
+		process_matches(process, record)
+			and input_owner_matches(process, record.nativeOwner, record.kind),
+		"orc pane: worker process changed; refusing terminal input"
+	)
+	if not idle() then
+		client.block(record.sessionId, record.blockId, "write", { data = "\27" })
+		local deadline = rt.clock() + PAUSE_WAIT_MS
+		repeat
+			rt.sleep(250)
+			snapshot(rt, client, record)
+		until idle() or blocked() or rt.clock() >= deadline
+		if blocked() or not idle() then
+			return answer("not-paused")
+		end
+	end
+	record.hookState = "idle"
+	save(rt, record, "event")
+	snapshot(rt, client, record)
+	return answer(record.hookState == "idle" and "paused" or "not-paused")
 end
 
 ---Run the owned Codex exec child from its Rex block; used by the hidden worker-run command.
@@ -763,6 +816,7 @@ function M.worker_run(rt, file)
 		role = record.role,
 		cwd = record.path,
 		transport = "exec",
+		mcp = record.mcp,
 		workerFile = file,
 		prompt = prompt_text(rt, record, "Your brief: " .. record.brief .. "."),
 	})
@@ -791,6 +845,10 @@ end
 local UNACKNOWLEDGED_WAIT_MS = 60000
 local UNACKNOWLEDGED_HINT =
 	"worker prompt was not acknowledged; trust orc hooks in Codex (/hooks) or Claude, then inspect the pane"
+-- Pane workers never resume on their own after a turn ends without a report.
+local NO_REPORT_GRACE_MS = 300000
+local NO_REPORT_HINT =
+	"the worker stayed idle without a report for this run; inspect the pane, then send orc pane prompt"
 
 local function wait_for(rt, record, timeout, until_report)
 	if record.state == "closed" then
@@ -827,6 +885,7 @@ local function wait_for(rt, record, timeout, until_report)
 	local started = rt.clock()
 	local deadline = started + timeout
 	local last_snapshot = started
+	local ended_since
 	local ok, answer = xpcall(function()
 		connect()
 		repeat
@@ -847,10 +906,15 @@ local function wait_for(rt, record, timeout, until_report)
 				client_for(rt, record)
 				local evidence = snapshot(rt, client, record)
 				last_snapshot = rt.clock()
+				if record.state == "turn-ended-no-report" then
+					ended_since = ended_since or last_snapshot
+				else
+					ended_since = nil
+				end
 				if
 					(until_report and evidence)
 					or (record.state == "blocked" and (not until_report or record.blockedKind ~= nil))
-					or (not until_report and record.state == "turn-ended-no-report")
+					or (record.state == "turn-ended-no-report" and (not until_report or last_snapshot - ended_since >= NO_REPORT_GRACE_MS))
 					or record.state == "closed"
 					or record.state == "error"
 					or record.state == "rate-limited"
@@ -865,9 +929,18 @@ local function wait_for(rt, record, timeout, until_report)
 						evidence = evidence,
 						status = record.reportStatus or rt.null,
 					}
+					-- The worker may still be ending its turn; the result carries the cleanup step.
+					if evidence and record.reportStatus == "done" then
+						answer.next = "after accepting the report: orc pane close "
+							.. record.task
+							.. " --path "
+							.. vim.fn.shellescape(record.path)
+					end
 					if record.state == "rate-limited" then
 						answer.hint =
 							"close this worker and restart the same brief and worktree with --kind claude --transport tui"
+					elseif until_report and record.state == "turn-ended-no-report" then
+						answer.hint = NO_REPORT_HINT
 					end
 					return answer
 				end
@@ -938,6 +1011,9 @@ local function close(rt, record, force)
 	end
 	record.state = "closed"
 	save(rt, record)
+	-- Best effort: the allowlisted MCP config can carry credentials.
+	local file = record_path(rt, record.root, record.task, record.path)
+	pcall(rt.remove, (file:gsub("%.json$", "")) .. ".mcp.json")
 	return result(rt, 0, { status = "closed", task = record.task, pane = record.blockId or rt.null })
 end
 
@@ -1079,7 +1155,7 @@ local function prune(rt, path)
 	return result(rt, 0, { status = "pruned", closed = closed, skipped = skipped })
 end
 
----Run start/wait/prompt/close/prune with a per-task lock and machine-readable output.
+---Run start/wait/prompt/pause/close/prune with a per-task lock and machine-readable output.
 ---@param rt orc.Runtime
 ---@param argv string[]
 ---@return table result Exit code, JSON stdout and diagnostics.
@@ -1095,6 +1171,7 @@ function M.run(rt, argv)
 			here = "boolean",
 			["allow-subdir"] = "boolean",
 			precheck = "string",
+			mcp = "string",
 			queue = "boolean",
 			["until"] = "string",
 			timeout = "string",
@@ -1116,6 +1193,18 @@ function M.run(rt, argv)
 			not values.transport or command == "start",
 			"orc pane: --transport only applies to start"
 		)
+		assert(not values.mcp or command == "start", "orc pane: --mcp only applies to start")
+		if values.mcp then
+			local names = {}
+			for _, name in ipairs(vim.split(values.mcp, ",", { trimempty = true })) do
+				name = vim.trim(name)
+				-- Claude allows display names such as "Framelink MCP for Figma".
+				assert(name:match("^[%w_.:-][%w_.: -]*$"), "orc pane: invalid MCP server name " .. name)
+				names[name] = true
+			end
+			values.mcp = vim.tbl_keys(names)
+			table.sort(values.mcp)
+		end
 		assert(values.path and values.path ~= "", "orc pane: --path is required")
 		local path = rt.abspath(values.path)
 		path = vim.uv.fs_realpath(path) or path
@@ -1160,6 +1249,8 @@ function M.run(rt, argv)
 			if command == "prompt" then
 				assert((values.text ~= nil) ~= (values.file ~= nil), "orc pane: supply --text or --file")
 				return follow_up(rt, record, values)
+			elseif command == "pause" then
+				return pause(rt, record)
 			elseif command == "close" then
 				return close(rt, record, values.force)
 			end
