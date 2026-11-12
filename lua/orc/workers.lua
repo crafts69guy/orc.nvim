@@ -223,21 +223,23 @@ end
 ---@param text string
 ---@return {run:string?,status:'done'|'partial'|'blocked'|nil,validation:boolean}
 function M.parse_report(text)
-	local run, status, validation, collecting
+	local run, status, validation, depth
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 		local plain = line:gsub("[*_]", ""):gsub("^%s*[#>%-]*%s*", "")
 		run = plain:match("^Run:%s*([%w%-]+)%s*$") or run
 		local found = (plain:match("^Status:%s*(%a+)%s*$") or ""):lower()
 		status = statuses[found] and found or status
 		local tail = plain:match("^Validation%s*:?(.*)$")
+		local level = #line:match("^%s*(#*)")
 		if tail then
-			collecting = true
+			-- A headed Validation keeps its deeper sub-headings; label forms end at any heading.
+			depth = level > 0 and level or math.huge
 			if tail:match("%S") then
 				validation = true
 			end
-		elseif collecting then
-			if line:match("^%s*#") or plain:match("^%u%w*:%s*") then
-				collecting = false
+		elseif depth and level <= depth then
+			if level > 0 or plain:match("^%u%w*:%s*") then
+				depth = nil
 			elseif plain:match("%S") then
 				validation = true
 			end

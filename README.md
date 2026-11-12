@@ -257,7 +257,8 @@ for session selection. See [Rex integration](docs/rex-integration.md).
   (merged, agent, report status, `worktree` or `pending`); plain-text `orc status`
   prints it. Task report status comes from the matching worker's run-specific report,
   never a shared checkout report. A worker report counts only with `Status:` (`done|partial|blocked`)
-  and a nonempty `Validation`; markdown bold labels are accepted.
+  and a nonempty `Validation`; markdown bold labels are accepted, and a headed
+  `Validation` may hold deeper sub-headings.
 
 **Inkdrop** (optional) reads `INKDROP_LOCAL_USERNAME`, `INKDROP_LOCAL_PASSWORD`
 and `INKDROP_LOCAL_SERVER_URL` (default `http://localhost:19840`). Keep

@@ -2667,6 +2667,36 @@ Test.test("workers parse_report accepts bullets and bold labels and rejects pros
 	Test.eq(workers.parse_report("Status: Done\nValidation: ok").status, "done")
 end)
 
+Test.test(
+	"workers parse_report keeps Validation sub-headings and stops at its own level",
+	function()
+		local function validation(body)
+			return workers.parse_report("Run: abc\nStatus: done\n\n## Changes\n- x\n\n" .. body).validation
+		end
+		-- Shapes from real worker reports: sub-headed sections were rejected as turn-ended-no-report.
+		Test.eq(
+			validation(
+				"## Validation\n\n### E1: fresh source and pre-commit preparation\n\nUsed a fresh copy.\n\n## Notes\nn"
+			),
+			true
+		)
+		Test.eq(
+			validation(
+				"## Validation\n\n### Install and packaged notes\n\n- `bun install --ignore-scripts`: passed\n\n## Docs\nnone"
+			),
+			true
+		)
+		Test.eq(
+			validation("## Validation\n\n- `bun run test:file a.ts` — passed, exit 0.\n\n## Notes\nn"),
+			true
+		)
+		Test.eq(validation("## Validation\n\n## Notes\nunvalidated"), false)
+		Test.eq(validation("## Validation\n\n### Unit\n\n#### Fast\n\n## Notes\nunvalidated"), false)
+		Test.eq(validation("## Validation\n\n### Unit\n\nNotes: unvalidated"), false)
+		Test.eq(validation("Validation: nvim --clean -l test/run.lua passed\nNotes: n"), true)
+	end
+)
+
 Test.test("workers pause interrupts with Esc so prompt can resume the ended turn", function()
 	local _, state = fake()
 	state.start()
