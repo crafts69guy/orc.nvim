@@ -25,6 +25,11 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex reference
   for the Claude review command (flags verified with codex-cli 0.167.0 `codex review --help` and
   `claude --help`). Give reviewers the fresh diff, brief and acceptance criteria.
+- A worker's self-review is `orc pane review <task> --path <checkout>` on the worker
+  that owns the diff: ponytail-review of its uncommitted diff, else `<base>...HEAD`;
+  `--skill ponytail-audit` only when a whole-repo audit is asked. It supplements and
+  never replaces the cross-vendor review. `readOnly: false` in its wait result is a
+  violation: inspect the diff before accepting anything.
 - Require docs for changed exports and touched behavior. Missing evidence is not
   success. Partial, blocked, idle and process exit are not accepted completion.
 - Merge review findings into one follow-up for the same implementer; at high,

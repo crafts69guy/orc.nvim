@@ -2726,3 +2726,165 @@ Test.test("workers report wait gives up on an idle turn without a report after g
 	assert(response.result.hint:find("orc pane prompt", 1, true))
 	assert(state.clock >= 300000 and state.clock < 900000)
 end)
+
+-- A ready TUI worker in a real temporary repository, so review fingerprints run real Git.
+local function review_fixture(kind)
+	local rt, state = fake()
+	local git_rt, exec = runtime.new({ cwd = rt.cwd }), rt.exec
+	local function git(...)
+		local done = git_rt.exec({ "git", ... })
+		assert(done.code == 0, done.stderr)
+		return done.stdout
+	end
+	git("init", "-q", "-b", "main")
+	git("config", "user.name", "test")
+	git("config", "user.email", "test@example.invalid")
+	git("config", "commit.gpgsign", "false")
+	rt.write(rt.cwd .. "/tracked.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "fixture")
+	rt.exec = function(argv, opts)
+		if argv[1] == "git" then
+			if argv[2] == state.failGit then
+				return { code = 1, signal = 0, stdout = "", stderr = "broken " .. argv[2] }
+			end
+			return git_rt.exec(argv, opts)
+		end
+		return exec(argv, opts)
+	end
+	state.processName = kind or "codex"
+	Test.eq(
+		workers.run(rt, {
+			"start",
+			"feature",
+			"task",
+			"--path",
+			rt.cwd,
+			"--brief",
+			"brief.md",
+			"--kind",
+			state.processName,
+		}).code,
+		0
+	)
+	state.hook("UserPromptSubmit")
+	state.hook("Stop")
+	state.native = "idle"
+	return rt, state, git
+end
+
+Test.test("workers review frames a read-only reviewer turn per worker kind", function()
+	for _, kind in ipairs({ "codex", "claude" }) do
+		local rt, state = review_fixture(kind)
+		rt.write(rt.path(rt.cwd, ".orc", "validation.md"), "Validate: everything")
+		rt.write(rt.cwd .. "/tracked.txt", "changed\n")
+		local response = state.run("review").result
+		Test.eq(response.sent, true)
+		Test.eq(
+			{ response.mode, response.skill, response.target },
+			{ "review", "ponytail-review", "the uncommitted changes (staged, unstaged and untracked)" }
+		)
+		local call = kind == "codex" and "Run $ponytail-review"
+			or "Use the Skill tool to run ponytail:ponytail-review"
+		for _, part in ipairs({
+			"[orc-run:" .. response.runId .. "] You are the orc reviewer.",
+			"agents/reviewer.md",
+			"replaces your implementer role and brief",
+			"Do not edit, create, delete or stage files",
+			"run no tests",
+			call .. " on the uncommitted changes",
+			"End your final message with the report; do not write a report file",
+			"Findings numbered with file citations",
+		}) do
+			assert(state.writes[1]:find(part, 1, true), part)
+		end
+		for _, absent in ipairs({
+			"Validation profile",
+			"Write the final report",
+			"Follow-up:",
+			"agents/implementer.md",
+		}) do
+			assert(not state.writes[1]:find(absent, 1, true), absent)
+		end
+		Test.eq(state.record().review.skill, "ponytail-review")
+		Test.eq(#state.record().review.baseline, 64)
+	end
+end)
+
+Test.test("workers review defaults its target and refuses empty or invalid reviews", function()
+	local rt, state, git = review_fixture()
+	local clean = state.run("review")
+	Test.eq(clean.code, 1)
+	assert(clean.result.stderr:find("no uncommitted changes or task commits; pass --target", 1, true))
+	for _, args in ipairs({
+		{ "--skill", "ponytail-debt" },
+		{ "--target", " " },
+		{ "--text", "extra" },
+		{ "--queue" },
+	}) do
+		Test.eq(state.run("review", args).code, 1)
+	end
+	Test.eq(state.run("prompt", { "--text", "x", "--skill", "ponytail-audit" }).code, 1)
+	git("checkout", "-q", "-b", "main--task")
+	Test.eq(state.run("review").code, 1)
+	Test.eq(#state.writes, 0)
+	local function ready()
+		state.hook("UserPromptSubmit")
+		state.hook("Stop")
+	end
+	local audit = state.run("review", { "--skill", "ponytail-audit" }).result
+	Test.eq({ audit.skill, audit.target }, { "ponytail-audit", "the whole repository" })
+	assert(state.writes[1]:find("Run $ponytail-audit on the whole repository.", 1, true))
+	ready()
+	rt.write(rt.cwd .. "/tracked.txt", "task\n")
+	git("commit", "-q", "-am", "task work")
+	Test.eq(state.run("review").result.target, "the branch diff `git diff main...HEAD`")
+	ready()
+	Test.eq(state.run("review", { "--target", "src/a.lua" }).result.target, "src/a.lua")
+	state.native = "working"
+	ready()
+	state.hook("UserPromptSubmit")
+	Test.eq(state.run("review", { "--target", "x" }).result.status, "not-sent")
+	Test.eq(#state.writes, 3)
+end)
+
+Test.test("workers review wait reports whether the checkout stayed byte-identical", function()
+	local rt, state = review_fixture()
+	rt.write(rt.cwd .. "/tracked.txt", "changed\n")
+	rt.write(rt.cwd .. "/new file.txt", "draft\n")
+	local sent = state.run("review").result
+	state.hook("UserPromptSubmit")
+	state.hook("Stop", {
+		last_assistant_message = "Run: "
+			.. sent.runId
+			.. "\nStatus: done\nTarget: uncommitted\nFindings: none\nValidation: git diff; no tests ran\nVerdict: Ship.\n",
+	})
+	local function wait()
+		return state.run("wait", { "--timeout", "0" }).result
+	end
+	local clean = wait()
+	Test.eq(
+		{ clean.mode, clean.readOnly, clean.evidence, clean.status, clean.next, clean.violation },
+		{ "review", true, true, "done", nil, nil }
+	)
+	rt.write(rt.cwd .. "/new file.txt", "edited\n")
+	local edited = wait()
+	Test.eq(edited.readOnly, false)
+	assert(edited.violation:find("checkout changed during review run " .. sent.runId, 1, true))
+	rt.write(rt.cwd .. "/new file.txt", "draft\n")
+	Test.eq(wait().readOnly, true)
+	state.failGit = "diff"
+	local broken = wait()
+	Test.eq(broken.readOnly, false)
+	assert(broken.violation:find("git diff failed: broken diff", 1, true))
+	state.failGit = nil
+	Test.eq(state.run("prompt", { "--text", "fix finding 1" }).result.sent, true)
+	Test.eq(state.record().review, nil)
+	assert(state.writes[2]:find("You are the orc implementer.", 1, true))
+	state.hook("UserPromptSubmit")
+	state.report()
+	state.hook("Stop")
+	local normal = wait()
+	Test.eq(normal.mode, nil)
+	assert(normal.next:find("orc pane close task", 1, true))
+end)

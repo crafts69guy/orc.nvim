@@ -32,6 +32,13 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   Add `--queue` for an acknowledged working TUI: Codex queues with Tab, Claude with
   Enter. `queued` still awaits UserPromptSubmit; inspect before any resend.
   TUI only; exec follow-ups currently require close/start with a fresh thread.
+- Review: `orc pane review <task> --path <worktree> [--skill ponytail-review|ponytail-audit] [--target <range|paths>]`
+  sends an idle worker a read-only review turn: the reviewer role, the skill per kind
+  (`$ponytail-review` for Codex, the Skill tool for Claude) and a final-message report
+  with Findings. Default target: the uncommitted diff, else `<base>...HEAD` of the
+  `<base>--<task>` branch; a clean checkout needs `--target` or the audit skill.
+  Its wait result adds `mode: "review"` and `readOnly`; `false` carries a `violation`
+  because the checkout changed. It never replaces the cross-vendor review.
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
   never type into a worker pane with `rex send`, which bypasses run IDs and reports.

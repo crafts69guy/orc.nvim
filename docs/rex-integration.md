@@ -22,6 +22,12 @@ using Codex Tab or Claude Enter, with the same ownership and hook checks. `queue
 awaits UserPromptSubmit; without the flag, a busy worker returns `not-sent`.
 `pane pause` interrupts a working TUI worker with Esc, or records a manual Esc, so a
 later `pane prompt` can resume it; Esc emits no Stop hook.
+`pane review` is a follow-up framed as a read-only review run under the reviewer role.
+Before the paste it records a fingerprint of the checkout (HEAD, porcelain status,
+binary diff and untracked file hashes; ignored paths excluded); `pane wait` compares it
+again and returns `readOnly`, with a `violation` when they differ. It detects edits but
+cannot prevent them: the worker keeps its sandbox and tools. `--queue` is refused,
+because a baseline taken mid-turn would be meaningless.
 Use `pane wait --until report` to continue until a matching report with Status and
 Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
 `turn-ended-no-report` from `blocked`; a report wait returns it with a hint only after

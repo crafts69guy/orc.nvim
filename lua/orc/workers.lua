@@ -41,6 +41,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field exitCode? integer Last terminal child exit code.
 ---@field deliveryError? string Diagnostic for an unconfirmed terminal write.
 ---@field observationError? string Diagnostic for a failed live status observation.
+---@field review? {skill:string,target:string,baseline:string} Read-only review run and its checkout fingerprint.
 
 local function main_root(rt, cwd)
 	return assert(require("orc.worktrees").root(rt, cwd), "orc pane: not a git checkout")
@@ -422,14 +423,16 @@ local function new_run(rt, record)
 		:sub(1, 24)
 	record.report = rt.path(record.path, ".orc", "reports", record.runId .. ".md")
 	record.state, record.acknowledged, record.reportStatus = "unconfirmed", false, nil
-	record.hookState = "pending"
+	record.hookState, record.review = "pending", nil
 	record.inputReady, record.nativeState, record.nativeOwner = false, nil, nil
 	record.createdAt = rt.now()
 end
 
 local function prompt_text(rt, record, body)
+	-- A review run reads the reviewer role whatever role the worker was started with.
+	local role = record.review and "reviewer" or record.role
 	local profile = rt.path(record.root, ".orc", "validation.md")
-	if record.role == "implementer" and rt.exists(profile) then
+	if role == "implementer" and rt.exists(profile) then
 		body = body
 			.. " Validation profile: read "
 			.. profile
@@ -438,19 +441,24 @@ local function prompt_text(rt, record, body)
 	local prompt = "[orc-run:"
 		.. record.runId
 		.. "] You are the orc "
-		.. record.role
+		.. role
 		.. ". Read "
-		.. rt.path(rt.root, "agents", record.role .. ".md")
+		.. rt.path(rt.root, "agents", role .. ".md")
 		.. ". Work only in "
 		.. record.path
 		.. ". Do not commit or push. "
 		.. body
 		.. " If you need a user decision, end the turn with a Status: blocked report that states the question; never wait at an interactive prompt."
-	if record.role == "scoper" then
+	if role == "scoper" then
 		return prompt
 			.. " Do not modify files. End your final message with the report. Include Run: "
 			.. record.runId
 			.. ", Status: done|partial|blocked, Scope with file citations, Validation with commands and results, Decisions."
+	elseif role == "reviewer" then
+		return prompt
+			.. " End your final message with the report; do not write a report file. Include Run: "
+			.. record.runId
+			.. ", Status: done|partial|blocked, Target, Findings numbered with file citations (say none when clean), Validation with the read-only commands you ran and a statement that no tests ran, Verdict."
 	end
 	return prompt
 		.. " Write the final report atomically to "
@@ -458,6 +466,70 @@ local function prompt_text(rt, record, body)
 		.. ". Include Run: "
 		.. record.runId
 		.. ", Status: done|partial|blocked, Changes, Validation with commands and results, Notes and Docs."
+end
+
+local review_skills = { ["ponytail-review"] = true, ["ponytail-audit"] = true }
+
+local function git(rt, path, ...)
+	local done = rt.exec({ "git", ... }, { cwd = path })
+	assert(done.code == 0, "orc pane review: git " .. (...) .. " failed: " .. vim.trim(done.stderr))
+	return done.stdout
+end
+
+-- shortcut: ignored paths (.orc, .scratch, build output) are not compared; hash them if reviewers write there.
+local function fingerprint(rt, path)
+	local status =
+		git(rt, path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+	local parts = {
+		git(rt, path, "rev-parse", "HEAD"),
+		status,
+		git(rt, path, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
+	}
+	local untracked = { "hash-object", "--" }
+	for _, entry in ipairs(vim.split(status, "\0", { trimempty = true })) do
+		if entry:sub(1, 3) == "?? " then
+			untracked[#untracked + 1] = entry:sub(4)
+		end
+	end
+	if #untracked > 2 then
+		parts[#parts + 1] = git(rt, path, unpack(untracked))
+	end
+	return vim.fn.sha256(table.concat(parts, "\0"))
+end
+
+-- Default target: the checkout's uncommitted diff, else its task branch against the base.
+local function review_target(rt, record, values)
+	if values.target then
+		return values.target
+	elseif values.skill == "ponytail-audit" then
+		return "the whole repository"
+	elseif git(rt, record.path, "status", "--porcelain", "--untracked-files=all") ~= "" then
+		return "the uncommitted changes (staged, unstaged and untracked)"
+	end
+	local branch = vim.trim(git(rt, record.path, "branch", "--show-current"))
+	-- Task worktrees use the `<base>--<task>` branch from `orc wt new`.
+	local base = branch:match("^(.+)%-%-" .. vim.pesc(record.task) .. "$")
+	if base and vim.trim(git(rt, record.path, "rev-list", "--count", base .. "..HEAD")) ~= "0" then
+		return "the branch diff `git diff " .. base .. "...HEAD`"
+	end
+	error(
+		"orc pane review: "
+			.. record.path
+			.. " has no uncommitted changes or task commits; pass --target <range|paths> or --skill ponytail-audit",
+		0
+	)
+end
+
+local function review_body(record, review)
+	local call = record.kind == "claude" and "Use the Skill tool to run ponytail:" or "Run $"
+	return "Review-only turn: for this run agents/reviewer.md replaces your "
+		.. record.role
+		.. " role and brief. Do not edit, create, delete or stage files; run no tests, builds, typechecks, linters or orc gate; use read-only commands only. orc compares the checkout before and after this run. "
+		.. call
+		.. review.skill
+		.. " on "
+		.. review.target
+		.. ". If the skill is unavailable, end with Status: blocked."
 end
 
 local function start(rt, feature, task, values, file)
@@ -634,7 +706,8 @@ local function start(rt, feature, task, values, file)
 	})
 end
 
-local function follow_up(rt, record, values)
+---@param review? {skill:string,target:string} Frames the run as a read-only review instead.
+local function follow_up(rt, record, values, review)
 	-- shortcut: exec resume needs a new owned block; add it when follow-ups are required.
 	assert(
 		record.transport ~= "exec",
@@ -658,19 +731,24 @@ local function follow_up(rt, record, values)
 			and input_owner_matches(process, record.nativeOwner, record.kind),
 		"orc pane: worker process changed; refusing terminal input"
 	)
-	local body = values.text
-	if values.file then
+	local body = "Follow-up: " .. tostring(values.text)
+	if review then
+		body = review_body(record, review)
+		-- Baseline after readiness so it is the state the reviewer starts from.
+		review.baseline = fingerprint(rt, record.path)
+	elseif values.file then
 		local file = rt.abspath(values.file)
 		assert(rt.read(file), "orc pane: cannot read follow-up file")
-		body = "Read and act on " .. file .. "."
+		body = "Follow-up: Read and act on " .. file .. "."
 	end
 	local authorization =
 		{ runId = record.runId, eventRevision = record.eventRevision, owner = record.nativeOwner }
 	local authorized_hook = record.hookState
 	new_run(rt, record)
+	record.review = review
 	record._authorizedHook = authorized_hook
 	save(rt, record, "new")
-	local text = prompt_text(rt, record, "Follow-up: " .. body)
+	local text = prompt_text(rt, record, body)
 	local sent, err = pcall(function()
 		client.call(
 			"block.event",
@@ -721,7 +799,7 @@ local function follow_up(rt, record, values)
 		record.deliveryError = "terminal write was not confirmed"
 		save(rt, record, "snapshot")
 	end
-	return result(rt, 0, {
+	local answer = {
 		status = queue and sent and "queued" or "unconfirmed",
 		task = record.task,
 		state = record.state,
@@ -729,7 +807,30 @@ local function follow_up(rt, record, values)
 		sent = sent,
 		queued = (queue and sent) == true,
 		message = sent and "Awaiting UserPromptSubmit acknowledgment" or tostring(err),
-	})
+	}
+	if review then
+		answer.mode, answer.skill, answer.target = "review", review.skill, review.target
+	end
+	return result(rt, 0, answer)
+end
+
+local function review_run(rt, record, values)
+	assert(
+		not (values.text or values.file),
+		"orc pane review: the prompt is generated; --text and --file do not apply"
+	)
+	assert(not values.target or vim.trim(values.target) ~= "", "orc pane review: --target is empty")
+	values.skill = values.skill or "ponytail-review"
+	assert(
+		review_skills[values.skill],
+		"orc pane review: --skill must be ponytail-review or ponytail-audit"
+	)
+	return follow_up(
+		rt,
+		record,
+		values,
+		{ skill = values.skill, target = review_target(rt, record, values) }
+	)
 end
 
 local PAUSE_WAIT_MS = 10000
@@ -929,8 +1030,20 @@ local function wait_for(rt, record, timeout, until_report)
 						evidence = evidence,
 						status = record.reportStatus or rt.null,
 					}
+					if record.review then
+						-- Detection, not prevention: the worker keeps its write tools during a review.
+						local fingerprinted, now = pcall(fingerprint, rt, record.path)
+						answer.mode = "review"
+						answer.readOnly = fingerprinted and now == record.review.baseline
+						if not answer.readOnly then
+							answer.violation = "checkout changed during review run "
+								.. record.runId
+								.. "; inspect git status and git diff in "
+								.. record.path
+								.. (fingerprinted and "" or ": " .. tostring(now))
+						end
 					-- The worker may still be ending its turn; the result carries the cleanup step.
-					if evidence and record.reportStatus == "done" then
+					elseif evidence and record.reportStatus == "done" then
 						answer.next = "after accepting the report: orc pane close "
 							.. record.task
 							.. " --path "
@@ -1155,7 +1268,7 @@ local function prune(rt, path)
 	return result(rt, 0, { status = "pruned", closed = closed, skipped = skipped })
 end
 
----Run start/wait/prompt/pause/close/prune with a per-task lock and machine-readable output.
+---Run start/wait/prompt/review/pause/close/prune with a per-task lock and machine-readable output.
 ---@param rt orc.Runtime
 ---@param argv string[]
 ---@return table result Exit code, JSON stdout and diagnostics.
@@ -1178,9 +1291,15 @@ function M.run(rt, argv)
 			text = "string",
 			file = "string",
 			force = "boolean",
+			skill = "string",
+			target = "string",
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
 		assert(not values.queue or command == "prompt", "orc pane: --queue only applies to prompt")
+		assert(
+			not (values.skill or values.target) or command == "review",
+			"orc pane: --skill and --target only apply to review"
+		)
 		assert(
 			not values["until"] or (command == "wait" and values["until"] == "report"),
 			"orc pane: --until must be report and only applies to wait"
@@ -1249,6 +1368,8 @@ function M.run(rt, argv)
 			if command == "prompt" then
 				assert((values.text ~= nil) ~= (values.file ~= nil), "orc pane: supply --text or --file")
 				return follow_up(rt, record, values)
+			elseif command == "review" then
+				return review_run(rt, record, values)
 			elseif command == "pause" then
 				return pause(rt, record)
 			elseif command == "close" then

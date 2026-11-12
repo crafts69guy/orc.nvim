@@ -125,6 +125,13 @@ Test.test("core CLI help, version, errors and lazy routing", function()
 	Test.eq(cli.run(rt, { "completion", "zsh" }).code, 1)
 	assert(cli.run(rt, { "completion", "fish" }).out:find("complete -c orc", 1, true))
 	assert(cli.usage:find("--transport tui|exec", 1, true))
+	assert(
+		cli.usage:find(
+			"pane review <task> --path <dir> [--skill ponytail-review|ponytail-audit]",
+			1,
+			true
+		)
+	)
 	assert(cli.run(rt, { "completion", "fish" }).out:find("-l transport -x -a 'tui exec'", 1, true))
 	assert(not cli.run(rt, { "completion", "fish" }).out:find("worker-run", 1, true))
 	Test.eq(cli.run(rt, { "worker-run" }).code, 1)
@@ -273,7 +280,9 @@ Test.test(
 		end
 		local completion = require("orc.completion").fish()
 		assert(completion:find("-l no-panes", 1, true))
-		assert(completion:find("start wait prompt pause close prune", 1, true))
+		assert(completion:find("start wait prompt review pause close prune", 1, true))
+		assert(completion:find("-l skill -x -a 'ponytail-review ponytail-audit'", 1, true))
+		assert(completion:find("-l target -r", 1, true))
 		assert(completion:find("-l role -x -a 'implementer scoper'", 1, true))
 		assert(completion:find("-l level -x -a 'default high max'", 1, true))
 	end

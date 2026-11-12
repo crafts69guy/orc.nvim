@@ -7,6 +7,7 @@ M.usage = [[usage: orc <command> [args]
   pane start <feature> <task> --path <dir> --brief <file> [--role implementer|scoper] [--kind codex|claude] [--transport tui|exec] [--here] [--allow-subdir] [--precheck <cmd>] [--mcp <name,...>]
   pane wait <task> --path <dir> [--until report] [--timeout <ms>]
   pane prompt <task> --path <dir> --text <text>|--file <file> [--queue]
+  pane review <task> --path <dir> [--skill ponytail-review|ponytail-audit] [--target <range|paths>]
   pane pause <task> --path <dir>
   pane close <task> --path <dir> [--force]
   pane prune --path <dir>
