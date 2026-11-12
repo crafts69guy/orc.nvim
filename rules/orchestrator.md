@@ -46,8 +46,10 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   the wait result names the command. Never leave accepted workers open.
   Single task: use `--here --path <checkout>`; do not edit beside its implementer.
   Parallel tasks: use dispatch worktrees. Run `orc pane wait --until report` with the harness's
-  background execution. Follow dispatch's Rex reference. Pair mode uses one Codex
-  implementer in the selected checkout while the main agent reads/reviews.
+  background execution. A running wait follows `pane prompt [--queue]` and `pane review` to the
+  newest run and lists replaced runs' reports in `previousRuns`; do not start a second wait while
+  one is running. On `state: "wait-failed"`, follow its hint. Follow dispatch's Rex reference.
+  Pair mode uses one Codex implementer in the selected checkout while the main agent reads/reviews.
 - Worker reports must identify their current Run and contain Status and Validation.
   If a native subagent's report arrived but it shows "waiting on its own background
   work", stop it with TaskStop; the report stands.

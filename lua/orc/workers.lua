@@ -32,6 +32,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field hookState 'pending'|'working'|'blocked'|'idle' Independent harness lifecycle, never inferred from Rex status.
 ---@field previousRunId? string Previous accepted attempt used for compare-and-swap.
 ---@field previousReport? string Preserved historical report while delivery is pending.
+---@field queued? boolean Follow-up queued behind a working turn; it is acknowledged only when that turn ends.
 ---@field reportStatus? 'done'|'partial'|'blocked' Status in the matching report.
 ---@field process? {pid:integer,name:string,path?:string,script?:string} Captured terminal child identity.
 ---@field inputReady boolean Last observed readiness; always recomputed before input.
@@ -132,7 +133,11 @@ local function save(rt, record, mode)
 			)
 		end
 		if latest then
-			if latest.state == "closed" and mode ~= "new" then
+			-- Closed wins; a lock-free observer's snapshot of a run a follow-up replaced is dropped.
+			if
+				(latest.state == "closed" and mode ~= "new")
+				or (mode == "snapshot" and latest.runId ~= record.runId)
+			then
 				for name in pairs(record) do
 					record[name] = nil
 				end
@@ -746,6 +751,7 @@ local function follow_up(rt, record, values, review)
 	local authorized_hook = record.hookState
 	new_run(rt, record)
 	record.review = review
+	record.queued = queue or nil
 	record._authorizedHook = authorized_hook
 	save(rt, record, "new")
 	local text = prompt_text(rt, record, body)
@@ -950,6 +956,8 @@ local UNACKNOWLEDGED_HINT =
 local NO_REPORT_GRACE_MS = 300000
 local NO_REPORT_HINT =
 	"the worker stayed idle without a report for this run; inspect the pane, then send orc pane prompt"
+local WAIT_FAILED_HINT =
+	"read stderr and fix its cause, then rerun the same orc pane wait; if Rex restarted or the worker pane is gone, run orc pane close <task> --path <worktree> --force"
 
 local function wait_for(rt, record, timeout, until_report)
 	if record.state == "closed" then
@@ -987,11 +995,20 @@ local function wait_for(rt, record, timeout, until_report)
 	local deadline = started + timeout
 	local last_snapshot = started
 	local ended_since
-	local ok, answer = xpcall(function()
+	local file = record_path(rt, record.root, record.task, record.path)
+	-- A follow-up (queued or not) replaces the run on this record; keep waiting for the newest.
+	-- acknowledged: a replaced run's report is identified by its Run line, not by the hook.
+	local run, followed = { runId = record.runId, report = record.report, acknowledged = true }, {}
+	local ok, answer = pcall(function()
 		connect()
 		repeat
-			local disk = read_record(rt, record_path(rt, record.root, record.task, record.path))
-			assert(disk and disk.runId == record.runId, "orc pane: current run changed while waiting")
+			local disk =
+				assert(read_record(rt, file), "orc pane: worker record disappeared while waiting")
+			if disk.runId ~= run.runId then
+				followed[#followed + 1] = run
+				run = { runId = disk.runId, report = disk.report, acknowledged = true }
+				started, ended_since, changed = rt.clock(), nil, true
+			end
 			record = disk
 			if record.state == "closed" then
 				return {
@@ -1012,7 +1029,9 @@ local function wait_for(rt, record, timeout, until_report)
 				else
 					ended_since = nil
 				end
-				if
+				if record.runId ~= run.runId then
+					changed = true -- replaced during this snapshot; the next pass follows it
+				elseif
 					(until_report and evidence)
 					or (record.state == "blocked" and (not until_report or record.blockedKind ~= nil))
 					or (record.state == "turn-ended-no-report" and (not until_report or last_snapshot - ended_since >= NO_REPORT_GRACE_MS))
@@ -1061,6 +1080,9 @@ local function wait_for(rt, record, timeout, until_report)
 					connect()
 				end
 			end
+			if record.queued and record.nativeState == "working" then
+				started = rt.clock() -- a queued prompt starts only after the running turn ends
+			end
 			if
 				not until_report
 				and not record.acknowledged
@@ -1091,12 +1113,25 @@ local function wait_for(rt, record, timeout, until_report)
 					and UNACKNOWLEDGED_HINT
 				or nil,
 		}
-	end, debug.traceback)
+	end)
 	if stream then
 		generation = generation + 1
 		stream.stop()
 	end
-	assert(ok, answer)
+	if not ok then
+		error(answer, 0)
+	end
+	if #followed > 0 then
+		answer.previousRuns = {}
+		for _, entry in ipairs(followed) do
+			local found = report(rt, entry)
+			answer.previousRuns[#answer.previousRuns + 1] = {
+				runId = entry.runId,
+				report = found and entry.report or rt.null,
+				status = entry.reportStatus or rt.null,
+			}
+		end
+	end
 	return result(rt, 0, answer)
 end
 
@@ -1208,16 +1243,25 @@ function M.event(rt, input)
 		record.state, record.hookState = "blocked", "blocked"
 	elseif event == "PostToolUse" and record.hookState == "blocked" then
 		record.state, record.hookState = "working", "working"
-	elseif event == "Stop" and record.acknowledged then
-		record.state, record.hookState = "idle", "idle"
+	elseif event == "Stop" then
+		-- Until a queued run is acknowledged, Stop ends the previous run's turn: keep only its report.
+		local run, file = record.runId, record.report
+		if not record.acknowledged then
+			run, file = record.previousRunId, record.previousReport
+		end
 		local message = input.last_assistant_message
 		if
-			not rt.exists(record.report)
+			file
+			and not rt.exists(file)
 			and type(message) == "string"
-			and M.parse_report(message).run == record.runId
+			and M.parse_report(message).run == run
 		then
-			rt.write(record.report, message)
+			rt.write(file, message)
 		end
+		if not record.acknowledged then
+			return { code = 0, out = "", err = "" }
+		end
+		record.state, record.hookState = "idle", "idle"
 		report(rt, record)
 	else
 		return { code = 0, out = "", err = "" }
@@ -1381,7 +1425,11 @@ function M.run(rt, argv)
 		return tostring(err)
 	end)
 	if not ok then
-		return result(rt, 1, { status = "error", stderr = response })
+		local answer = { status = "error", stderr = response }
+		if argv[1] == "wait" then
+			answer.state, answer.hint = "wait-failed", WAIT_FAILED_HINT
+		end
+		return result(rt, 1, answer)
 	end
 	return response
 end

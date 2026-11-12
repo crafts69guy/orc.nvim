@@ -20,6 +20,11 @@ and follow-up prompts; exec currently supports start/wait/close only. See the
 For TUI follow-ups, `pane prompt --queue` queues on acknowledged working programs
 using Codex Tab or Claude Enter, with the same ownership and hook checks. `queued`
 awaits UserPromptSubmit; without the flag, a busy worker returns `not-sent`.
+Every follow-up makes its run current at once; a running `pane wait` follows it to
+the newest run and adds `previousRuns` (`runId`, `report` or null, `status`). A
+snapshot of a replaced run is dropped, not saved. Before the queued prompt is
+acknowledged, the first turn's Stop keeps only that turn's final-message report.
+Wait failures are `state: "wait-failed"` with `stderr` and a `hint`.
 `pane pause` interrupts a working TUI worker with Esc, or records a manual Esc, so a
 later `pane prompt` can resume it; Esc emits no Stop hook.
 `pane review` is a follow-up framed as a read-only review run under the reviewer role.

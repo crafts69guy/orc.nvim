@@ -26,11 +26,18 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
   Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
   `unacknowledged`; inspect the pane and trust the hooks before retrying.
+  A running wait follows follow-ups (`prompt`, with or without `--queue`, and `review`)
+  to the newest run; `previousRuns` lists each replaced run's `runId`, `report` (or
+  null) and `status`. Do not start a second wait while one is running; after a wait
+  returns, start a new one for the next follow-up.
+  Failures return `state: "wait-failed"` with `stderr` and a `hint`; follow the hint.
   Exec `state: "rate-limited"` includes a hint: close it, then restart the same
   brief/worktree with `--kind claude --transport tui`.
 - Follow-up: `orc pane prompt <task> --path <worktree> --file <brief>` or `--text`.
   Add `--queue` for an acknowledged working TUI: Codex queues with Tab, Claude with
   Enter. `queued` still awaits UserPromptSubmit; inspect before any resend.
+  The queued run is current at once: a running wait keeps going and returns the
+  queued run's report, with the first turn's report in `previousRuns`.
   TUI only; exec follow-ups currently require close/start with a fresh thread.
 - Review: `orc pane review <task> --path <worktree> [--skill ponytail-review|ponytail-audit] [--target <range|paths>]`
   sends an idle worker a read-only review turn: the reviewer role, the skill per kind

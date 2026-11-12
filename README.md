@@ -109,7 +109,7 @@ workers can be acknowledged.
 | `orc pane start ... [--mcp <name,...>]` | Workers start no MCP servers, configured or Codex-plugin, unless allowlisted; a Codex worker refuses to launch if Codex rejects the overrides or would still start one; the orchestrator keeps its own |
 | `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
 | `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only ponytail review of its uncommitted diff (else `<base>...HEAD`); `pane wait` adds `readOnly` and a `violation` when the checkout changed |
-| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; a done report adds `next` with the close command |
+| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; a done report adds `next` with the close command; follows follow-up runs and lists replaced ones in `previousRuns`; failures return `state: "wait-failed"` with a `hint` |
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
@@ -183,8 +183,15 @@ returns `unacknowledged` with a hint instead of running to timeout. `--until rep
 keeps waiting and includes the same hint if it times out without acknowledgment.
 Prune uses the same ownership/process checks as non-force close and a lock per task
 across the repository.
+A follow-up (`pane prompt`, with or without `--queue`, or `pane review`) makes its
+run current at once. A running wait follows it to the newest run instead of failing
+and adds `previousRuns`: each replaced run's `runId`, its `report` (or null) and
+`status`; do not start a second wait while one is running. Wait failures return `status: "error"`,
+`state: "wait-failed"`, `stderr` and a `hint`, never a stack trace.
 `pane prompt --queue` uses Codex Tab or Claude Enter on acknowledged working TUI
 workers; `queued` awaits the same UserPromptSubmit acknowledgment as other delivery.
+Until then the first turn's Stop keeps only that turn's final-message report, and
+plain wait counts its 60 s `unacknowledged` limit only after the running turn ends.
 Without `--queue`, busy workers still return `not-sent`. `sent: true` means the
 terminal write completed; `status` stays `unconfirmed` until the hook acknowledges it.
 

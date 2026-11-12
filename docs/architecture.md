@@ -83,6 +83,8 @@ including `--here` starts in another repository. `--precheck` runs via `sh -c`
 before pane or record creation; failure includes its exit code and last 40 output lines.
 Queued TUI prompts retain process/owner and hook revision checks, submit using
 Codex Tab or Claude Enter, and await the next run's UserPromptSubmit acknowledgment.
+Runs on one worker record form a single compare-and-swap chain, so `pane wait`
+follows a follow-up to the newest run and reports replaced runs in `previousRuns`.
 `wait --until report` ignores missing-evidence stops; plain wait exposes them as
 `turn-ended-no-report`. Native user-action blocks remain distinct from turn endings.
 An unacknowledged report wait keeps waiting until timeout, then includes the hook-trust hint.

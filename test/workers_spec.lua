@@ -1538,6 +1538,7 @@ Test.test(
 		Test.eq(state.run("wait", { "--timeout", "0" }).result.state, "timeout")
 		Test.eq(state.record().state, "disconnected")
 		state.processFail = false
+		local original = state.record()
 		state.onSleep = function()
 			local record = state.record()
 			record.runId = "changed"
@@ -1549,7 +1550,13 @@ Test.test(
 			)
 			rt.write(file, rt.encode(record))
 		end
-		assert(state.run("wait", { "--timeout", "500" }).result.stderr:find("run changed", 1, true))
+		local followed = state.run("wait", { "--timeout", "500" })
+		Test.eq(followed.result.state, "timeout")
+		Test.eq(followed.result.runId, "changed")
+		Test.eq(
+			followed.result.previousRuns,
+			{ { runId = original.runId, report = rt.null, status = rt.null } }
+		)
 	end
 )
 
@@ -1612,7 +1619,8 @@ Test.test(
 				rt.encode(record)
 			)
 		end
-		Test.eq(workers.collect(rt)[1].state, "disconnected")
+		-- The stale snapshot is dropped and the newer run's durable state is shown.
+		Test.eq(workers.collect(rt)[1].state, "unconfirmed")
 		Test.eq(state.record().runId, "replacement")
 		Test.eq(state.record().acknowledged, false)
 		state.instance = "other-instance"
@@ -2725,6 +2733,167 @@ Test.test("workers report wait gives up on an idle turn without a report after g
 	Test.eq(response.result.state, "turn-ended-no-report")
 	assert(response.result.hint:find("orc pane prompt", 1, true))
 	assert(state.clock >= 300000 and state.clock < 900000)
+end)
+
+Test.test("workers report wait follows a queued run and returns every run's report", function()
+	for _, first_report in ipairs({ true, false }) do
+		local rt, state = fake()
+		state.start()
+		state.hook("UserPromptSubmit")
+		local first = state.record()
+		rt.write(rt.cwd .. "/addendum.md", "Also cover the edge case")
+		local queued, step = nil, 0
+		state.onSleep = function()
+			step = step + 1
+			if step == 1 then
+				queued = state.run("prompt", { "--queue", "--file", rt.cwd .. "/addendum.md" }).result
+				Test.eq(queued.status, "queued")
+				Test.eq(state.enter, "\t")
+			elseif step == 2 then
+				if first_report then
+					rt.write(
+						first.report,
+						"Run: " .. first.runId .. "\nStatus: done\nValidation:\n- nvim test: pass\n"
+					)
+				end
+				-- The first turn ends, then Codex submits the queued prompt.
+				state.hook("Stop")
+				Test.eq(state.record().hookState, "pending")
+				state.hook("UserPromptSubmit")
+			elseif step == 3 then
+				state.report()
+				state.hook("Stop")
+				state.native = "idle"
+			end
+			state.onEvent('{"type":"block_event"}\n')
+		end
+		local response = state.run("wait", { "--until", "report", "--timeout", "10000" })
+		Test.eq(response.code, 0)
+		Test.eq(response.result.runId, queued.runId)
+		Test.eq(response.result.state, "idle")
+		Test.eq(response.result.evidence, true)
+		Test.eq(response.result.status, "done")
+		Test.eq(response.result.previousRuns, {
+			{
+				runId = first.runId,
+				report = first_report and first.report or rt.null,
+				status = first_report and "done" or rt.null,
+			},
+		})
+	end
+end)
+
+Test.test("workers report wait follows a plain prompt and restarts the no-report grace", function()
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.hook("Stop")
+	state.native = "idle"
+	local first = state.record().runId
+	local prompted, reported = nil, false
+	state.onSleep = function()
+		if not prompted and state.clock >= 290000 then
+			prompted = state.run("prompt", { "--text", "write the report" }).result
+			Test.eq(prompted.status, "unconfirmed")
+			Test.eq(state.record().queued, nil)
+			-- The new turn also ends without a report; its grace starts now, not at the first turn.
+			state.hook("UserPromptSubmit")
+			state.hook("Stop")
+		elseif prompted and not reported and state.clock >= 400000 then
+			reported = true
+			state.report()
+			state.onEvent('{"type":"block_event"}\n')
+		end
+	end
+	local response = state.run("wait", { "--until", "report", "--timeout", "900000" })
+	Test.eq(response.result.runId, prompted.runId)
+	Test.eq(response.result.evidence, true)
+	Test.eq(response.result.previousRuns[1].runId, first)
+	assert(state.clock >= 400000 and state.clock < 590000)
+end)
+
+Test.test("workers wait follows a run replaced during its own snapshot", function()
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	local first = state.record().runId
+	state.onSleep = function()
+		state.onSleep = nil
+		-- The queued prompt lands while the waiter holds a stale snapshot of the first run.
+		state.onLock = function()
+			Test.eq(state.run("prompt", { "--queue", "--text", "later" }).result.status, "queued")
+		end
+		state.onEvent('{"type":"block_event"}\n')
+	end
+	local response = state.run("wait", { "--until", "report", "--timeout", "1000" })
+	Test.eq(response.code, 0)
+	Test.eq(response.result.state, "timeout")
+	Test.eq(response.result.runId, state.record().runId)
+	Test.eq(response.result.previousRuns[1].runId, first)
+end)
+
+Test.test("workers plain wait does not call a queued prompt unacknowledged", function()
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	Test.eq(state.run("prompt", { "--queue", "--text", "later" }).result.status, "queued")
+	Test.eq(state.record().queued, true)
+	Test.eq(state.run("wait", { "--timeout", "120000" }).result.state, "timeout")
+	-- The first turn ends but the queued prompt never starts (removed from the queue).
+	state.native = "idle"
+	local started = state.clock
+	local dropped = state.run("wait", { "--timeout", "120000" }).result
+	Test.eq(dropped.state, "unacknowledged")
+	assert(state.clock - started > 60000 and state.clock - started < 120000)
+	state.hook("UserPromptSubmit")
+	Test.eq(state.record().acknowledged, true)
+end)
+
+Test.test("workers keep the previous run's final-message report during a queued run", function()
+	local rt, state = fake()
+	state.start({ "--role", "scoper" })
+	state.hook("UserPromptSubmit")
+	local first = state.record()
+	Test.eq(state.run("prompt", { "--queue", "--text", "also check b.lua" }).result.status, "queued")
+	local stale = "Run: " .. state.record().runId .. "\nStatus: done\nValidation:\n- rg: ok\n"
+	state.hook("Stop", { last_assistant_message = stale })
+	Test.eq(rt.read(first.report), nil)
+	local message = "Run: "
+		.. first.runId
+		.. "\nStatus: done\nScope: a.lua:1\nValidation:\n- rg: ok\n"
+	state.hook("Stop", { last_assistant_message = message })
+	Test.eq(rt.read(first.report), message)
+	Test.eq(state.record().hookState, "pending")
+	Test.eq(rt.read(state.record().report), nil)
+end)
+
+Test.test("workers wait failures are JSON with a state and hint, never a traceback", function()
+	local rt, state = fake()
+	state.start()
+	local function failed(response)
+		Test.eq(response.code, 1)
+		Test.eq(response.result.status, "error")
+		Test.eq(response.result.state, "wait-failed")
+		assert(response.result.hint:find("orc pane close", 1, true))
+		Test.eq(response.result.stderr:find("stack traceback", 1, true), nil)
+		return response.result.stderr
+	end
+	state.onSleep = function()
+		state.onSleep = nil
+		state.instance = "restarted"
+		state.onEvent('{"type":"block_event"}\n')
+	end
+	local restarted = failed(state.run("wait", { "--until", "report", "--timeout", "1000" }))
+	assert(restarted:find("Rex server identity changed", 1, true))
+	state.instance = "instance"
+	local file = state.file()
+	state.onSleep = function()
+		state.onSleep = nil
+		rt.remove(file)
+	end
+	assert(failed(state.run("wait", { "--timeout", "1000" })):find("record disappeared", 1, true))
+	assert(failed(state.run("wait")):find("worker not found", 1, true))
+	Test.eq(state.run("close").result.state, nil)
 end)
 
 -- A ready TUI worker in a real temporary repository, so review fingerprints run real Git.
