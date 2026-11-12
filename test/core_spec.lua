@@ -119,7 +119,7 @@ Test.test("core CLI help, version, errors and lazy routing", function()
 		Test.eq(cli.run(rt, argv), { code = 0, out = cli.usage })
 	end
 	Test.eq(cli.run(rt, { "gate", "--label", "x", "--", "ls", "--help" }).out == cli.usage, false)
-	Test.eq(cli.run(rt, { "--version" }).out, "0.1.0\n")
+	Test.eq(cli.run(rt, { "--version" }).out, "0.1.1\n")
 	Test.eq(cli.run(rt, { "-V" }).code, 0)
 	Test.eq(cli.run(rt, { "unknown" }).code, 1)
 	Test.eq(cli.run(rt, { "completion", "zsh" }).code, 1)
@@ -1235,7 +1235,7 @@ Test.test("core CLI entrypoints emit clean machine output and propagate failures
 	local ok, failure = xpcall(function()
 		arg = { [0] = rt.path(rt.root, "bin", "orc"), "--version" }
 		dofile(arg[0])
-		Test.eq(out, "0.1.0\n")
+		Test.eq(out, "0.1.1\n")
 		Test.eq(err, "")
 		Test.eq(exit, 0)
 		arg = { [0] = rt.path(rt.root, "bin", "orc"), "unknown" }

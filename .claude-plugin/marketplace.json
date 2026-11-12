@@ -1,5 +1,5 @@
 {
   "name": "orc-nvim",
   "owner": { "name": "crafts69guy" },
-  "plugins": [{ "name": "orc", "source": "./", "version": "0.1.0" }]
+  "plugins": [{ "name": "orc", "source": "./", "version": "0.1.1" }]
 }

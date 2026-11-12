@@ -1,5 +1,5 @@
 local M = {}
-M.version = "0.1.0"
+M.version = "0.1.1"
 M.usage = [[usage: orc <command> [args]
 
   claude|codex [--yolo] [--level default|high|max] [--panes|--no-panes|--pair] [--wt <branch>] [--base <ref>] [--inkdrop-mcp inherit|shared] [harness args]
