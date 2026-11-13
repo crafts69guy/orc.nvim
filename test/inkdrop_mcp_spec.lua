@@ -384,7 +384,7 @@ Test.test(
 		Test.eq(#calls, 4)
 		for _, call in ipairs(calls) do
 			Test.eq(call.argv, { "curl", "--disable", "--config", "-" })
-			assert(call.opts.timeout <= 2500)
+			assert(call.opts.timeout <= 10000)
 			assert(call.opts.stdin:find('noproxy = "*"', 1, true))
 			assert(call.opts.stdin:find("max-redirs = 0", 1, true))
 			assert(not call.opts.stdin:find("fixture-secret", 1, true))
@@ -524,7 +524,7 @@ Test.test(
 		end
 		result, calls = probe(rt, {
 			function()
-				now = 2400
+				now = 9900
 				return http(200, initialized(rt), "Mcp-Session-Id: safe\r\n")
 			end,
 			http(204),
@@ -532,6 +532,16 @@ Test.test(
 		Test.eq(result.ok, false)
 		Test.eq(#calls, 2)
 		Test.eq(calls[2].opts.timeout, 100)
+		-- A slow endpoint is reported as a timeout, a refused connection as unavailable.
+		for code, message in pairs({
+			[28] = "endpoint health check timed out",
+			[124] = "endpoint health check timed out",
+			[7] = "shared endpoint is unavailable",
+		}) do
+			now = 0
+			result = probe(rt, { { code = code, stdout = "", stderr = "" } })()
+			Test.eq(result, { ok = false, error = message })
+		end
 		rt.exec = function()
 			error("fixture-secret")
 		end

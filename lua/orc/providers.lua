@@ -346,7 +346,12 @@ function M.plan(rt, request)
 	if config.mode == "shared" and (role == "main" or allowed.inkdrop) then
 		local extra = shared_args(rt, kind, cwd, args, config)
 		local health = mcp.check(rt, config)
-		assert(health.ok, "orc: shared Inkdrop MCP is unavailable; start or repair the user service")
+		assert(
+			health.ok,
+			"orc: shared Inkdrop MCP is unavailable: "
+				.. tostring(health.error)
+				.. "; check orc inkdrop-mcp status, then start, repair or retry"
+		)
 		if kind == "codex" then
 			vim.list_extend(command, extra)
 		elseif role == "main" then

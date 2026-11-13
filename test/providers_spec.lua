@@ -86,7 +86,10 @@ local function fixture(fn)
 		end,
 		check = function()
 			state.checks = state.checks + 1
-			return { ok = not state.unhealthy }
+			return {
+				ok = not state.unhealthy,
+				error = state.unhealthy and "endpoint health check timed out" or nil,
+			}
 		end,
 	}
 	local ok, err = xpcall(function()
@@ -764,9 +767,12 @@ Test.test(
 				providers.plan(rt, request)
 			end)
 			state.probeText, state.unhealthy = nil, true
-			Test.raises("unavailable", function()
-				providers.plan(rt, request)
-			end)
+			Test.raises(
+				"unavailable: endpoint health check timed out; check orc inkdrop%-mcp status",
+				function()
+					providers.plan(rt, request)
+				end
+			)
 			Test.eq(#state.launched, 0)
 		end)
 	end

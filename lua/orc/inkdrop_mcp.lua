@@ -222,7 +222,8 @@ end
 ---@param config orc.InkdropMcpConfig
 ---@return {ok:boolean,error?:string,serverName?:string,version?:string}
 function M.check(rt, config)
-	local deadline, session, protocol = rt.clock() + 2500, nil, nil
+	-- A loaded machine stretches single requests past 2 s; a stopped endpoint still fails at connect.
+	local deadline, session, protocol = rt.clock() + 10000, nil, nil
 	local function request(method, body, cleanup)
 		local remaining = math.floor(deadline - rt.clock() - (cleanup and 0 or 300))
 		if remaining < 1 then
@@ -256,7 +257,10 @@ function M.check(rt, config)
 			stdin = table.concat(lines, "\n") .. "\n",
 			timeout = remaining,
 		})
-		if result.code ~= 0 then
+		-- 28 is curl's --max-time and 124 the runtime timeout: slow, not stopped.
+		if result.code == 28 or result.code == 124 then
+			fail("endpoint health check timed out")
+		elseif result.code ~= 0 then
 			fail("shared endpoint is unavailable")
 		end
 		if #result.stdout > 1048576 then
