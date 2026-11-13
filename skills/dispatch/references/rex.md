@@ -10,7 +10,7 @@ review with the harness's background execution and save stdout/stderr under
 `.scratch/<feature>/`:
 
 ```sh
-claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-prompt 'Review only; do not edit files.' 'Review the uncommitted diff against the task brief; report concrete findings.'
+claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-system-prompt 'Review only; do not edit files or run tests.' 'Use the ponytail:ponytail-review skill when it is available. Review the uncommitted diff against the task brief; report concrete findings.'
 ```
 
 - Start: `orc pane start <feature> <task> --path <worktree> --brief <file> --role implementer [--transport tui|exec]`.
@@ -23,6 +23,8 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   harness's background execution (foreground Bash is capped at 10 minutes).
   Waits for the current run's report with Status and Validation, a native user-action
   block, process exit/error or timeout. Missing evidence never ends this wait.
+  A done report adds `next`: `orc pane review` for a TUI implementer's work run, then
+  `orc pane close` after its review run (directly for scopers and exec workers).
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
   Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
   `unacknowledged`; inspect the pane and trust the hooks before retrying.
@@ -46,15 +48,21 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash --append-system-pro
   `<base>--<task>` branch; a clean checkout needs `--target` or the audit skill.
   Its wait result adds `mode: "review"` and `readOnly`; `false` carries a `violation`
   because the checkout changed. It never replaces the cross-vendor review.
+  Run it after the report and deterministic checks, before the cross-vendor review,
+  and again after each fix round.
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
   never type into a worker pane with `rex send`, which bypasses run IDs and reports.
-- Close: `orc pane close <task> --path <worktree>`. If Rex restarted or pane
-  creation failed, close and start refuse the stranded record; after checking the
-  pane is gone, add `--force` to mark it closed without touching Rex.
+- Close: `orc pane close <task> --path <worktree>`. A live TUI implementer closes only
+  after a done self-review of the checkout as it is now; otherwise close returns
+  `status: "not-reviewed"` naming the review command. `--no-review` closes anyway:
+  use it only for an abandoned task or an unavailable review skill. If Rex restarted
+  or pane creation failed, close and start refuse the stranded record; after checking
+  the pane is gone, add `--force` to mark it closed without touching Rex.
 - Prune: `orc pane prune --path <checkout>` closes successful exits and idle/done
   workers with a matching done report and validation evidence across that repository.
-  It uses non-force close checks and per-task locks; JSON lists closed and skipped workers.
+  It uses non-force close checks, including the self-review check, and per-task locks;
+  JSON lists closed and skipped workers with each skip's reason.
 
 Keep returned session/block/run IDs. `not-sent`, blocked or unconfirmed delivery
 is not success: surface the pane to the user and inspect current state before

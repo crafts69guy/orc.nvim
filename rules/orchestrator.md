@@ -25,11 +25,16 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex reference
   for the Claude review command (flags verified with codex-cli 0.167.0 `codex review --help` and
   `claude --help`). Give reviewers the fresh diff, brief and acceptance criteria.
-- A worker's self-review is `orc pane review <task> --path <checkout>` on the worker
-  that owns the diff: ponytail-review of its uncommitted diff, else `<base>...HEAD`;
-  `--skill ponytail-audit` only when a whole-repo audit is asked. It supplements and
-  never replaces the cross-vendor review. `readOnly: false` in its wait result is a
-  violation: inspect the diff before accepting anything.
+- Pane implementer order: report → deterministic checks → self-review
+  (`orc pane review <task> --path <checkout>`) → cross-vendor review when the level
+  requires it → close. Self-review is the owning worker's ponytail-review of its
+  uncommitted diff, else `<base>...HEAD`; `--skill ponytail-audit` only when a
+  whole-repo audit is asked. It never replaces the cross-vendor review. `readOnly: false`
+  in its wait result is a violation: inspect the diff before accepting anything.
+  `pane close` and `pane prune` refuse a live TUI implementer without a done
+  self-review of the current checkout, so review again after a fix round. Use
+  `close --no-review` only for an abandoned task or an unavailable review skill, and
+  record why in the task log.
 - Require docs for changed exports and touched behavior. Missing evidence is not
   success. Partial, blocked, idle and process exit are not accepted completion.
 - Merge review findings into one follow-up for the same implementer; at high,
@@ -43,7 +48,7 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   Workers start no MCP servers unless `--mcp <name,...>` allowlists what the brief needs.
   After accepting a worker's report, close its pane (`orc pane close <task> --path <checkout>`
   or `orc pane prune --path <checkout>`) before reporting the task done; a `next` field in
-  the wait result names the command. Never leave accepted workers open.
+  the wait result names the next command (review, then close). Never leave accepted workers open.
   Single task: use `--here --path <checkout>`; do not edit beside its implementer.
   Parallel tasks: use dispatch worktrees. Run `orc pane wait --until report` with the harness's
   background execution. A running wait follows `pane prompt [--queue]` and `pane review` to the

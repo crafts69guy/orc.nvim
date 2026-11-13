@@ -103,13 +103,13 @@ workers can be acknowledged.
 | `orc claude --panes`, `orc codex --panes` | Force pane delegation (automatic inside Rex) |
 | `orc claude --no-panes`, `orc codex --no-panes` | Disable automatic pane mode |
 | `orc wt new\|merge\|apply\|remove\|list\|session` | Manage isolated worktrees and serial merges; `apply` stages a task in the current checkout without committing on base; re-running it after a fix round stages only the delta; `new` reuses live task worktrees; a merge whose cleanup fails still reports `merged` with a `warning` |
-| `orc pane start\|wait\|prompt\|close [--force]` | Manage a worker and its report; `close --force` marks an unreachable record closed without calling Rex |
-| `orc pane prune --path <dir>` | Close successful exits or idle/done workers with a matching done report and evidence; print closed/skipped JSON |
+| `orc pane start\|wait\|prompt\|close [--force] [--no-review]` | Manage a worker and its report; `close` refuses a live TUI implementer without a done self-review of the current checkout (`status: "not-reviewed"`) unless `--no-review`; `close --force` marks an unreachable record closed without calling Rex |
+| `orc pane prune --path <dir>` | Close successful exits or idle/done workers with a matching done report and evidence, skipping unreviewed live TUI implementers; print closed/skipped JSON with reasons |
 | `orc pane start ... [--allow-subdir] [--precheck '<cmd>']` | Require a checkout toplevel by default; check prerequisites before pane creation |
 | `orc pane start ... [--mcp <name,...>]` | Workers start no MCP servers, configured or Codex-plugin, unless allowlisted; a Codex worker refuses to launch if Codex rejects the overrides or would still start one; the orchestrator keeps its own |
 | `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
-| `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only ponytail review of its uncommitted diff (else `<base>...HEAD`); `pane wait` adds `readOnly` and a `violation` when the checkout changed |
-| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; a done report adds `next` with the close command; follows follow-up runs and lists replaced ones in `previousRuns`; failures return `state: "wait-failed"` with a `hint` |
+| `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only ponytail review of its uncommitted diff (else `<base>...HEAD`); `pane wait` adds `readOnly` and a `violation` when the checkout changed; required before closing a TUI implementer, again after each fix round |
+| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; a done report adds `next`: `pane review` after a TUI implementer's work run, else the close command; follows follow-up runs and lists replaced ones in `previousRuns`; failures return `state: "wait-failed"` with a `hint` |
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |

@@ -132,7 +132,9 @@ Test.test("core CLI help, version, errors and lazy routing", function()
 			true
 		)
 	)
+	assert(cli.usage:find("pane close <task> --path <dir> [--force] [--no-review]", 1, true))
 	assert(cli.run(rt, { "completion", "fish" }).out:find("-l transport -x -a 'tui exec'", 1, true))
+	assert(cli.run(rt, { "completion", "fish" }).out:find("complete -c orc -l no-review\n", 1, true))
 	assert(not cli.run(rt, { "completion", "fish" }).out:find("worker-run", 1, true))
 	Test.eq(cli.run(rt, { "worker-run" }).code, 1)
 	with_module("orc.workers", {
@@ -205,6 +207,7 @@ Test.test("core Claude high mode and Rex mode are explicit per-run options", fun
 			.. name
 			.. "\ndescription: role\ntools: "
 			.. tools
+			.. (name == "reviewer" and "\nskills: ponytail:ponytail-review" or "")
 			.. "\n---\nBody"
 	end
 	Test.eq(cli.run(rt, { "claude", "--level", "high", "--pair", "prompt" }).code, 0)
@@ -220,6 +223,8 @@ Test.test("core Claude high mode and Rex mode are explicit per-run options", fun
 	Test.eq(agents.reviewer.model, "opus")
 	Test.eq(agents.scoper.tools, { "Read", "Grep", "Glob", "Bash" })
 	Test.eq(agents.implementer.tools, { "Read", "Write", "Edit", "Bash" })
+	Test.eq(agents.reviewer.skills, { "ponytail:ponytail-review" })
+	Test.eq(agents.scoper.skills, nil)
 	Test.eq(cli.run(rt, { "claude", "--panes", "--level=default" }).code, 0)
 	Test.eq(rt.launched[2].options.env.ORC_PANES, "1")
 	Test.eq(cli.run(rt, { "claude", "--level", "max", "--pair", "prompt" }).code, 0)

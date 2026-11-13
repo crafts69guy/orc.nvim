@@ -9,7 +9,7 @@ M.usage = [[usage: orc <command> [args]
   pane prompt <task> --path <dir> --text <text>|--file <file> [--queue]
   pane review <task> --path <dir> [--skill ponytail-review|ponytail-audit] [--target <range|paths>]
   pane pause <task> --path <dir>
-  pane close <task> --path <dir> [--force]
+  pane close <task> --path <dir> [--force] [--no-review]
   pane prune --path <dir>
   gate [--label <name>] [--log <file>] -- <cmd...>
   status|doctor [--json]

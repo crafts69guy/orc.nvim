@@ -43,6 +43,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field deliveryError? string Diagnostic for an unconfirmed terminal write.
 ---@field observationError? string Diagnostic for a failed live status observation.
 ---@field review? {skill:string,target:string,baseline:string} Read-only review run and its checkout fingerprint.
+---@field reviewed? {runId:string,baseline:string} Last done review run, kept across runs; close requires its fingerprint.
 
 local function main_root(rt, cwd)
 	return assert(require("orc.worktrees").root(rt, cwd), "orc pane: not a git checkout")
@@ -407,10 +408,10 @@ end
 
 -- Rex-side failures can strand a record; tell the user how to release it locally.
 local function hinted(record, fn, ...)
-	local ok, err = pcall(fn, ...)
+	local ok, value = pcall(fn, ...)
 	if not ok then
 		error(
-			tostring(err)
+			tostring(value)
 				.. "; run orc pane close "
 				.. record.task
 				.. " --path "
@@ -419,9 +420,14 @@ local function hinted(record, fn, ...)
 			0
 		)
 	end
+	return value
 end
 
 local function new_run(rt, record)
+	-- A follow-up replaces the review run; keep a done review so close can still match it.
+	if record.review and record.reportStatus == "done" then
+		record.reviewed = { runId = record.runId, baseline = record.review.baseline }
+	end
 	record.previousRunId = record.runId
 	record.previousReport = record.report or record.previousReport
 	serial = serial + 1
@@ -477,9 +483,14 @@ end
 
 local review_skills = { ["ponytail-review"] = true, ["ponytail-audit"] = true }
 
+-- Only a TUI implementer can take `pane review`; scopers and exec runs close without one.
+local function reviewable(record)
+	return record.role == "implementer" and record.transport == "tui"
+end
+
 local function git(rt, path, ...)
 	local done = rt.exec({ "git", ... }, { cwd = path })
-	assert(done.code == 0, "orc pane review: git " .. (...) .. " failed: " .. vim.trim(done.stderr))
+	assert(done.code == 0, "orc pane: git " .. (...) .. " failed: " .. vim.trim(done.stderr))
 	return done.stdout
 end
 
@@ -1051,6 +1062,9 @@ local function wait_for(rt, record, timeout, until_report)
 						evidence = evidence,
 						status = record.reportStatus or rt.null,
 					}
+					-- The worker may still be ending its turn; the result carries the next step.
+					local done = evidence and record.reportStatus == "done"
+					local target = record.task .. " --path " .. vim.fn.shellescape(record.path)
 					if record.review then
 						-- Detection, not prevention: the worker keeps its write tools during a review.
 						local fingerprinted, now = pcall(fingerprint, rt, record.path)
@@ -1062,13 +1076,22 @@ local function wait_for(rt, record, timeout, until_report)
 								.. "; inspect git status and git diff in "
 								.. record.path
 								.. (fingerprinted and "" or ": " .. tostring(now))
+						elseif done then
+							answer.next = "after any cross-vendor review accepts the diff: orc pane close "
+								.. target
+								.. "; send findings as one orc pane prompt follow-up instead"
 						end
-					-- The worker may still be ending its turn; the result carries the cleanup step.
-					elseif evidence and record.reportStatus == "done" then
-						answer.next = "after accepting the report: orc pane close "
-							.. record.task
-							.. " --path "
-							.. vim.fn.shellescape(record.path)
+					elseif
+						done
+						and reviewable(record)
+						and record.state ~= "exited"
+						and record.state ~= "error"
+					then
+						answer.next = "after reading the report, inspecting the diff and running checks: orc pane review "
+							.. target
+							.. "; close only after that review"
+					elseif done then
+						answer.next = "after accepting the report: orc pane close " .. target
 					end
 					if record.state == "rate-limited" then
 						answer.hint =
@@ -1137,18 +1160,51 @@ local function wait_for(rt, record, timeout, until_report)
 	return result(rt, 0, answer)
 end
 
-local function close_owned(rt, record)
+-- The accepted diff is reviewed when a done review run started from the checkout as it is now.
+local function unreviewed(rt, record)
+	local last = record.reviewed
+	if record.review and report(rt, record) and record.reportStatus == "done" then
+		last = { runId = record.runId, baseline = record.review.baseline }
+	end
+	if last and fingerprint(rt, record.path) == last.baseline then
+		return nil
+	end
+	return "orc pane close: "
+		.. (last and "the checkout changed after self-review run " .. last.runId or "no done self-review for this implementer")
+		.. "; run orc pane review "
+		.. record.task
+		.. " --path "
+		.. vim.fn.shellescape(record.path)
+		.. " and wait for it, then close; pass --no-review only for an abandoned task or an unavailable review skill"
+end
+
+---@return string? refusal Why a live implementer still needs its self-review.
+local function close_owned(rt, record, no_review)
 	local client = client_for(rt, record)
 	assert(record.blockId, "orc pane: run has no confirmed owned block")
 	local process = client.block(record.sessionId, record.blockId, "process")
+	local exited = type(process.last_exit) == "table"
 	assert(
-		type(process.last_exit) == "table" or process_matches(process, record),
+		exited or process_matches(process, record),
 		"orc pane: process changed; refusing to close block"
 	)
+	if not (no_review or exited) and reviewable(record) then
+		-- A git error must not reach hinted's --force advice, which leaves a live pane untracked.
+		local checked, refusal = pcall(unreviewed, rt, record)
+		if not checked then
+			return "orc pane close: cannot compare the checkout with its review: "
+				.. tostring(refusal)
+				.. "; inspect git status in "
+				.. record.path
+				.. ", or pass --no-review"
+		elseif refusal then
+			return refusal
+		end
+	end
 	client.call("block.close", { block_id = record.blockId }, record.sessionId)
 end
 
-local function close(rt, record, force)
+local function close(rt, record, force, no_review)
 	if record.state == "closed" then
 		return result(
 			rt,
@@ -1157,7 +1213,14 @@ local function close(rt, record, force)
 		)
 	end
 	if not force then
-		hinted(record, close_owned, rt, record)
+		local refusal = hinted(record, close_owned, rt, record, no_review)
+		if refusal then
+			return result(
+				rt,
+				1,
+				{ status = "not-reviewed", task = record.task, runId = record.runId, stderr = refusal }
+			)
+		end
 	end
 	record.state = "closed"
 	save(rt, record)
@@ -1301,7 +1364,10 @@ local function prune(rt, path)
 				if worker.state ~= "exited" and not completed then
 					return "worker has no completed report or successful exit"
 				end
-				close(rt, worker, false)
+				local closed = close(rt, worker, false)
+				if closed.code ~= 0 then
+					return closed.result.stderr
+				end
 			end)
 			if ok and not reason then
 				closed[#closed + 1] = { task = worker.task, pane = worker.blockId or rt.null }
@@ -1337,10 +1403,15 @@ function M.run(rt, argv)
 			text = "string",
 			file = "string",
 			force = "boolean",
+			["no-review"] = "boolean",
 			skill = "string",
 			target = "string",
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
+		assert(
+			not values["no-review"] or command == "close",
+			"orc pane: --no-review only applies to close"
+		)
 		assert(not values.queue or command == "prompt", "orc pane: --queue only applies to prompt")
 		assert(
 			not (values.skill or values.target) or command == "review",
@@ -1419,7 +1490,7 @@ function M.run(rt, argv)
 			elseif command == "pause" then
 				return pause(rt, record)
 			elseif command == "close" then
-				return close(rt, record, values.force)
+				return close(rt, record, values.force, values["no-review"])
 			end
 			error("orc pane: unknown command", 0)
 		end)

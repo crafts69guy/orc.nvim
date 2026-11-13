@@ -33,6 +33,10 @@ binary diff and untracked file hashes; ignored paths excluded); `pane wait` comp
 again and returns `readOnly`, with a `violation` when they differ. It detects edits but
 cannot prevent them: the worker keeps its sandbox and tools. `--queue` is refused,
 because a baseline taken mid-turn would be meaningless.
+A done review run is kept on the record as `reviewed` (`runId`, `baseline`) across
+later runs. `pane close` and `pane prune` refuse a live TUI implementer unless that
+baseline equals the checkout's fingerprint at close; `close --no-review` overrides.
+Scopers, exec workers and exited processes are exempt.
 Use `pane wait --until report` to continue until a matching report with Status and
 Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
 `turn-ended-no-report` from `blocked`; a report wait returns it with a hint only after

@@ -261,6 +261,15 @@ local function fake()
 				.. "\n"
 		)
 	end
+	-- A done self-review run on an acknowledged idle worker, so close's review check passes.
+	function state.review()
+		state.native = "idle"
+		local sent = state.run("review").result
+		state.hook("UserPromptSubmit")
+		state.report()
+		state.hook("Stop")
+		return sent
+	end
 	return rt, state
 end
 
@@ -303,7 +312,7 @@ Test.test("workers symlink paths share one canonical record for start wait and c
 	Test.eq(pair.code, 1)
 	assert(pair.result.stderr:find("close the existing pair worker first", 1, true))
 	Test.eq(state.run("wait", { "--timeout", "0" }).code, 0)
-	Test.eq(state.run("close").result.status, "closed")
+	Test.eq(state.run("close", { "--no-review" }).result.status, "closed")
 	Test.eq(#state.closed, 1)
 end)
 
@@ -559,7 +568,7 @@ Test.test(
 		local response = state.run("wait", { "--until", "report", "--timeout", "0" })
 		Test.eq(response.result.state, "working")
 		Test.eq(response.result.evidence, true)
-		assert(response.result.next:find("orc pane close task --path '", 1, true))
+		assert(response.result.next:find("checks: orc pane review task --path '", 1, true))
 		state.report("partial")
 		Test.eq(state.run("wait", { "--until", "report", "--timeout", "0" }).result.next, nil)
 		local rt, missing = fake()
@@ -584,6 +593,7 @@ Test.test(
 			{ "--queue" },
 			{ "--allow-subdir" },
 			{ "--precheck", "true" },
+			{ "--no-review" },
 		}) do
 			Test.eq(missing.run("wait", flags).code, 1)
 		end
@@ -1044,48 +1054,58 @@ Test.test("workers here ownership counts only active implementers", function()
 	)
 end)
 
-Test.test("workers prune closes only successful exits or evidenced done workers", function()
-	for _, case in ipairs({
-		{ native = "working", exit = 0, close = true },
-		{ native = "idle", report = "done", ack = true, close = true },
-		{ native = "done", report = "done", ack = true, close = true },
-		{ native = "done", report = "partial", ack = true },
-		{ native = "idle", report = "blocked", ack = true },
-		{ native = "idle", report = "done" },
-		{ native = "done", ack = true },
-		{ native = "working", report = "done", ack = true },
-		{ native = "blocked", report = "done", ack = true },
-		{ native = "working", exit = 1 },
-		{ native = "idle", report = "done", ack = true, stale = true },
-		{ native = "idle", report = "done", ack = true, validation = "" },
-	}) do
-		local rt, state = fake()
-		state.start()
-		if case.ack then
-			state.hook("UserPromptSubmit")
-			state.hook("Stop")
+Test.test(
+	"workers prune closes only successful exits or evidenced reviewed done workers",
+	function()
+		for _, case in ipairs({
+			{ native = "working", exit = 0, close = true },
+			{ native = "idle", report = "done", ack = true, close = true },
+			{ native = "done", report = "done", ack = true, close = true },
+			{ native = "idle", report = "done", ack = true, unreviewed = true },
+			{ native = "done", report = "partial", ack = true },
+			{ native = "idle", report = "blocked", ack = true },
+			{ native = "idle", report = "done" },
+			{ native = "done", ack = true },
+			{ native = "working", report = "done", ack = true },
+			{ native = "blocked", report = "done", ack = true },
+			{ native = "working", exit = 1 },
+			{ native = "idle", report = "done", ack = true, stale = true },
+			{ native = "idle", report = "done", ack = true, validation = "" },
+		}) do
+			local rt, state = fake()
+			state.start()
+			if case.ack then
+				state.hook("UserPromptSubmit")
+				state.hook("Stop")
+			end
+			if case.report then
+				state.report(case.report, case.stale and "old-run" or nil, case.validation)
+			end
+			if case.close and case.report then
+				state.review()
+			end
+			state.native, state.exitCode = case.native, case.exit
+			local response = workers.run(rt, { "prune", "--path", rt.cwd })
+			Test.eq(response.code, 0)
+			Test.eq(response.result.status, "pruned")
+			if case.close then
+				Test.eq(response.result.closed, { { task = "task", pane = "block:worker" } })
+				Test.eq(response.result.skipped, {})
+				Test.eq(state.record().state, "closed")
+				Test.eq(workers.run(rt, { "prune", "--path", rt.cwd }).result.closed, {})
+			else
+				Test.eq(response.result.closed, {})
+				Test.eq(response.result.skipped[1].task, "task")
+				local reason = case.unreviewed
+						and "no done self-review for this implementer; run orc pane review task"
+					or "no completed report"
+				assert(response.result.skipped[1].reason:find(reason, 1, true), reason)
+				Test.eq(#state.closed, 0)
+			end
+			assert(not rt.exists(state.file() .. ".lock"))
 		end
-		if case.report then
-			state.report(case.report, case.stale and "old-run" or nil, case.validation)
-		end
-		state.native, state.exitCode = case.native, case.exit
-		local response = workers.run(rt, { "prune", "--path", rt.cwd })
-		Test.eq(response.code, 0)
-		Test.eq(response.result.status, "pruned")
-		if case.close then
-			Test.eq(response.result.closed, { { task = "task", pane = "block:worker" } })
-			Test.eq(response.result.skipped, {})
-			Test.eq(state.record().state, "closed")
-			Test.eq(workers.run(rt, { "prune", "--path", rt.cwd }).result.closed, {})
-		else
-			Test.eq(response.result.closed, {})
-			Test.eq(response.result.skipped[1].task, "task")
-			assert(response.result.skipped[1].reason:find("no completed report", 1, true))
-			Test.eq(#state.closed, 0)
-		end
-		assert(not rt.exists(state.file() .. ".lock"))
 	end
-end)
+)
 
 Test.test(
 	"workers prune preserves locks and refuses stale servers changed processes and close failures",
@@ -1096,7 +1116,7 @@ Test.test(
 			state.hook("UserPromptSubmit")
 			state.hook("Stop")
 			state.report()
-			state.native = "idle"
+			state.review()
 			if failure == "lock" then
 				rt.mkdir(state.file() .. ".lock")
 			elseif failure == "identity" then
@@ -1188,7 +1208,7 @@ Test.test(
 			assert(not command:find("synthetic-secret", 1, true))
 			assert(command:find("--sandbox workspace-write", 1, true))
 			Test.eq(checks, 1)
-			Test.eq(state.run("close").code, 0)
+			Test.eq(state.run("close", { "--no-review" }).code, 0)
 			Test.eq(checks, 1)
 			for _, call in ipairs(state.calls) do
 				assert(call.argv[1] ~= "launchctl")
@@ -1235,7 +1255,7 @@ Test.test("workers record a sorted MCP allowlist and drop its config on close", 
 	local names = vim.tbl_keys(rt.decode((assert(rt.read(config)))).mcpServers)
 	table.sort(names)
 	Test.eq(names, { "Figma Name", "chrome" })
-	Test.eq(state.run("close").code, 0)
+	Test.eq(state.run("close", { "--no-review" }).code, 0)
 	Test.eq(rt.read(config), nil)
 end)
 
@@ -1282,6 +1302,7 @@ Test.test("workers prune spans repository worktrees and continues after a failed
 	state.hook("UserPromptSubmit")
 	state.report()
 	state.hook("Stop")
+	state.review()
 	state.native = "done"
 	local template = state.record()
 	for _, task in ipairs({ "other", "working", "closed" }) do
@@ -1569,7 +1590,19 @@ Test.test("workers close verifies process server and recorded block rather than 
 	state.instance, state.pid = "instance", 99
 	Test.eq(state.run("close").code, 1)
 	state.pid = 42
-	Test.eq(state.run("close").result.status, "closed")
+	local refused = state.run("close")
+	Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
+	assert(
+		refused.result.stderr:find(
+			"no done self-review for this implementer; run orc pane review task --path '",
+			1,
+			true
+		)
+	)
+	assert(refused.result.stderr:find("pass --no-review only", 1, true))
+	Test.eq(#state.closed, 0)
+	Test.eq(state.record().state ~= "closed", true)
+	Test.eq(state.run("close", { "--no-review" }).result.status, "closed")
 	Test.eq(state.closed, { "block:worker" })
 	Test.eq(state.run("close").result.status, "closed")
 	Test.eq(#state.closed, 1)
@@ -1590,7 +1623,7 @@ Test.test(
 		Test.eq(observed.acknowledged, true)
 		Test.eq(state.record().acknowledged, true)
 		state.onLock = function()
-			Test.eq(state.run("close").code, 0)
+			Test.eq(state.run("close", { "--no-review" }).code, 0)
 		end
 		state.hook("UserPromptSubmit")
 		Test.eq(state.record().state, "closed")
@@ -2000,7 +2033,7 @@ Test.test("workers hook boot ordering validates block identity and ignores stale
 	Test.eq(state.record().acknowledged, true)
 	state.report()
 	state.hook("Stop")
-	state.run("close")
+	state.run("close", { "--no-review" })
 	Test.eq(workers.event(hook_rt, {}).code, 0)
 	hook_rt.env.ORC_WORKER_FILE = file .. ".missing"
 	Test.raises("missing record", function()
@@ -2093,7 +2126,7 @@ Test.test(
 		workers.collect(rt)
 		state.noRecords = false
 		state.native = "idle"
-		state.run("close")
+		state.run("close", { "--no-review" })
 		Test.eq(state.run("prompt", { "--text", "closed" }).result.status, "not-sent")
 	end
 )
@@ -2643,7 +2676,7 @@ Test.test(
 				end
 				return mkdir_lock(path)
 			end
-			local response = state.run("close")
+			local response = state.run("close", { "--no-review" })
 			Test.eq(response.code, 1)
 			assert(response.result.stderr:find("EACCES: denied", 1, true))
 			Test.eq(state.clock, 0)
@@ -3063,12 +3096,15 @@ Test.test("workers review wait reports whether the checkout stayed byte-identica
 	end
 	local clean = wait()
 	Test.eq(
-		{ clean.mode, clean.readOnly, clean.evidence, clean.status, clean.next, clean.violation },
-		{ "review", true, true, "done", nil, nil }
+		{ clean.mode, clean.readOnly, clean.evidence, clean.status, clean.violation },
+		{ "review", true, true, "done", nil }
+	)
+	assert(
+		clean.next:find("cross-vendor review accepts the diff: orc pane close task --path '", 1, true)
 	)
 	rt.write(rt.cwd .. "/new file.txt", "edited\n")
 	local edited = wait()
-	Test.eq(edited.readOnly, false)
+	Test.eq({ edited.readOnly, edited.next }, { false, nil })
 	assert(edited.violation:find("checkout changed during review run " .. sent.runId, 1, true))
 	rt.write(rt.cwd .. "/new file.txt", "draft\n")
 	Test.eq(wait().readOnly, true)
@@ -3085,5 +3121,60 @@ Test.test("workers review wait reports whether the checkout stayed byte-identica
 	state.hook("Stop")
 	local normal = wait()
 	Test.eq(normal.mode, nil)
-	assert(normal.next:find("orc pane close task", 1, true))
+	assert(normal.next:find("orc pane review task", 1, true))
+	-- The done review survives the follow-up run and still matches an unchanged checkout.
+	Test.eq(state.record().reviewed.runId, sent.runId)
+	-- A git failure refuses without the --force advice that would strand the live pane.
+	state.failGit = "status"
+	local unchecked = state.run("close")
+	Test.eq({ unchecked.code, unchecked.result.status }, { 1, "not-reviewed" })
+	for _, part in ipairs({
+		"orc pane close: cannot compare the checkout with its review: ",
+		"orc pane: git status failed: broken status; inspect git status in ",
+	}) do
+		assert(unchecked.result.stderr:find(part, 1, true), part)
+	end
+	assert(not unchecked.result.stderr:find("--force", 1, true))
+	Test.eq(state.record().state ~= "closed", true)
+	state.failGit = nil
+	rt.write(rt.cwd .. "/tracked.txt", "fixed\n")
+	local changed = state.run("close")
+	Test.eq({ changed.code, changed.result.status }, { 1, "not-reviewed" })
+	assert(
+		changed.result.stderr:find("checkout changed after self-review run " .. sent.runId, 1, true)
+	)
+	Test.eq(state.record().state ~= "closed", true)
+	rt.write(rt.cwd .. "/tracked.txt", "changed\n")
+	Test.eq(state.run("close").result.status, "closed")
+end)
+
+Test.test("workers review gate skips scopers exec workers and blocked reviews", function()
+	for _, field in ipairs({ "role", "transport" }) do
+		local _, state = fake()
+		state.start()
+		state.hook("UserPromptSubmit")
+		state.report()
+		state.hook("Stop")
+		state.native = "idle"
+		local record = state.record()
+		record[field] = field == "role" and "scoper" or "exec"
+		state.store(record)
+		local waited = state.run("wait", { "--until", "report", "--timeout", "0" }).result
+		assert(waited.next:find("after accepting the report: orc pane close task", 1, true), field)
+		Test.eq(state.run("close").result.status, "closed")
+	end
+	local _, state = fake()
+	state.start()
+	state.hook("UserPromptSubmit")
+	state.report()
+	state.hook("Stop")
+	state.native = "idle"
+	state.run("review")
+	state.hook("UserPromptSubmit")
+	state.report("blocked")
+	state.hook("Stop")
+	Test.eq(state.run("wait", { "--timeout", "0" }).result.next, nil)
+	Test.eq(state.run("close").result.status, "not-reviewed")
+	Test.eq(state.run("prompt", { "--text", "retry" }).result.sent, true)
+	Test.eq(state.record().reviewed, nil)
 end)

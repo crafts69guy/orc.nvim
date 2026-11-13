@@ -109,6 +109,7 @@ function M.fish()
 		"bench",
 		"queue",
 		"allow-subdir",
+		"no-review",
 	}) do
 		lines[#lines + 1] = "complete -c orc -l " .. flag
 	end

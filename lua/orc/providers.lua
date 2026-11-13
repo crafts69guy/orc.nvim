@@ -402,6 +402,9 @@ function M.plan(rt, request)
 		end
 		if role == "main" and elevated then
 			local definitions = {}
+			local function list(value)
+				return vim.tbl_map(vim.trim, vim.split(value or "", ",", { trimempty = true }))
+			end
 			for _, file in ipairs(rt.list(rt.path(rt.root, "agents"))) do
 				if file:match("%.md$") then
 					local data, body =
@@ -409,7 +412,9 @@ function M.plan(rt, request)
 					definitions[data.name] = {
 						description = data.description,
 						prompt = body,
-						tools = vim.tbl_map(vim.trim, vim.split(data.tools or "", ",", { trimempty = true })),
+						tools = list(data.tools),
+						-- A missing preloaded skill is skipped with a debug-log warning.
+						skills = data.skills and list(data.skills) or nil,
 						model = (data.name == "implementer" or data.name == "reviewer") and "opus" or "sonnet",
 					}
 				end
