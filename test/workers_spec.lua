@@ -1717,6 +1717,7 @@ Test.test("workers close verifies process server and recorded block rather than 
 		)
 	)
 	assert(refused.result.stderr:find("pass --no-review only", 1, true))
+	assert(refused.result.stderr:find("--review <saved report>", 1, true))
 	Test.eq(#state.closed, 0)
 	Test.eq(state.record().state ~= "closed", true)
 	Test.eq(state.run("close", { "--no-review" }).result.status, "closed")
@@ -3121,6 +3122,86 @@ local function review_fixture(kind)
 	state.native = "idle"
 	return rt, state, git
 end
+
+Test.test("workers close accepts a saved cross-vendor report for the current checkout", function()
+	local rt, state = review_fixture()
+	rt.write(rt.cwd .. "/.gitignore", ".orc/\n")
+	rt.write(rt.cwd .. "/review.md", "Cross-vendor review: accepted\n")
+	state.report()
+	local next_step = state.run("wait", { "--until", "report", "--timeout", "0" }).result.next
+	assert(next_step:find("orc pane review task", 1, true))
+	assert(next_step:find("--review <saved report>", 1, true))
+	Test.eq(state.record().reviewed, nil)
+	Test.eq(state.run("close", { "--review", "review.md" }).result.status, "closed")
+	Test.eq(state.closed, { "block:worker" })
+	local record = state.record()
+	Test.eq(record.reviewed.report, rt.cwd .. "/review.md")
+	Test.eq(record.reviewed.runId, nil)
+	Test.eq(#record.reviewed.baseline, 64)
+	-- Reopening only the fake record checks that the saved baseline matches and detects edits.
+	record.state = "idle"
+	state.store(record)
+	rt.write(rt.cwd .. "/tracked.txt", "changed after review\n")
+	local refused = state.run("close")
+	Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
+	assert(
+		refused.result.stderr:find(
+			"checkout changed after saved review " .. record.reviewed.report,
+			1,
+			true
+		)
+	)
+	rt.write(rt.cwd .. "/tracked.txt", "base\n")
+	Test.eq(state.run("close").result.status, "closed")
+end)
+
+Test.test("workers close refuses missing empty and unreadable saved reviews", function()
+	local rt, state = review_fixture()
+	rt.write(rt.cwd .. "/empty.md", "")
+	local read = rt.read
+	rt.read = function(file)
+		if file == rt.cwd .. "/unreadable.md" then
+			return nil, "permission denied"
+		end
+		return read(file)
+	end
+	for _, case in ipairs({
+		{ "missing.md", "cannot read review report" },
+		{ "empty.md", "review report is empty" },
+		{ "unreadable.md", "permission denied" },
+	}) do
+		for _, force in ipairs({ {}, { "--force" } }) do
+			local args = { "--review", case[1] }
+			vim.list_extend(args, force)
+			local refused = state.run("close", args)
+			Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
+			assert(refused.result.stderr:find(case[2], 1, true))
+			Test.eq(state.record().reviewed, nil)
+			Test.eq(state.record().state ~= "closed", true)
+			Test.eq(#state.closed, 0)
+		end
+	end
+	rt.write(rt.cwd .. "/review.md", "Accepted\n")
+	state.failGit = "status"
+	local failed = state.run("close", { "--review", "review.md" })
+	Test.eq({ failed.code, failed.result.status }, { 1, "not-reviewed" })
+	assert(failed.result.stderr:find("git status failed", 1, true))
+	Test.eq(#state.closed, 0)
+end)
+
+Test.test("workers saved review flag is exclusive and only applies to close", function()
+	local _, state = fake()
+	state.start()
+	local conflict = state.run("close", { "--review", "review.md", "--no-review" })
+	Test.eq(conflict.code, 1)
+	assert(conflict.result.stderr:find("--review and --no-review are mutually exclusive", 1, true))
+	for _, command in ipairs({ "start", "wait", "prompt", "review", "pause", "prune" }) do
+		local refused = state.run(command, { "--review", "review.md" })
+		Test.eq(refused.code, 1)
+		assert(refused.result.stderr:find("--review only applies to close", 1, true))
+	end
+	Test.eq(#state.closed, 0)
+end)
 
 Test.test("workers review frames a read-only reviewer turn per worker kind", function()
 	for _, kind in ipairs({ "codex", "claude" }) do

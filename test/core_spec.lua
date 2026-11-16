@@ -132,7 +132,20 @@ Test.test("core CLI help, version, errors and lazy routing", function()
 			true
 		)
 	)
-	assert(cli.usage:find("pane close <task> --path <dir> [--force] [--no-review]", 1, true))
+	assert(
+		cli.usage:find(
+			"pane close <task> --path <dir> [--force] [--no-review | --review <file>]",
+			1,
+			true
+		)
+	)
+	assert(
+		cli.run(rt, { "completion", "fish" }).out:find(
+			"__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from close' -l review -r",
+			1,
+			true
+		)
+	)
 	assert(cli.run(rt, { "completion", "fish" }).out:find("-l transport -x -a 'tui exec'", 1, true))
 	assert(cli.run(rt, { "completion", "fish" }).out:find("complete -c orc -l no-review\n", 1, true))
 	assert(not cli.run(rt, { "completion", "fish" }).out:find("worker-run", 1, true))

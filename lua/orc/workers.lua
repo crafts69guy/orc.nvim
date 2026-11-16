@@ -44,7 +44,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field deliveryError? string Diagnostic for an unconfirmed terminal write.
 ---@field observationError? string Diagnostic for a failed live status observation.
 ---@field review? {skill:string,target:string,baseline:string} Read-only review run and its checkout fingerprint.
----@field reviewed? {runId:string,baseline:string} Last done review run, kept across runs; close requires its fingerprint.
+---@field reviewed? {runId?:string,report?:string,baseline:string} Last done review run or absolute saved report, kept across runs; close requires its fingerprint.
 
 local function main_root(rt, cwd)
 	return assert(require("orc.worktrees").root(rt, cwd), "orc pane: not a git checkout")
@@ -1097,7 +1097,9 @@ local function wait_for(rt, record, timeout, until_report)
 					then
 						answer.next = "after reading the report, inspecting the diff and running checks: orc pane review "
 							.. target
-							.. "; close only after that review"
+							.. "; or when a cross-vendor review covers this diff: orc pane close "
+							.. target
+							.. " --review <saved report>"
 					elseif done then
 						answer.next = "after accepting the report: orc pane close " .. target
 					end
@@ -1185,25 +1187,30 @@ local function wait_for(rt, record, timeout, until_report)
 	return result(rt, 0, answer)
 end
 
--- The accepted diff is reviewed when a done review run started from the checkout as it is now.
+-- A done review run or attested saved report must match the checkout as it is now.
 local function unreviewed(rt, record)
 	local last = record.reviewed
-	if record.review and report(rt, record) and record.reportStatus == "done" then
+	if
+		not (last and last.report)
+		and record.review
+		and report(rt, record)
+		and record.reportStatus == "done"
+	then
 		last = { runId = record.runId, baseline = record.review.baseline }
 	end
 	if last and fingerprint(rt, record.path) == last.baseline then
 		return nil
 	end
 	return "orc pane close: "
-		.. (last and "the checkout changed after self-review run " .. last.runId or "no done self-review for this implementer")
+		.. (last and "the checkout changed after " .. (last.report and "saved review " .. last.report or "self-review run " .. last.runId) or "no done self-review for this implementer")
 		.. "; run orc pane review "
 		.. record.task
 		.. " --path "
 		.. vim.fn.shellescape(record.path)
-		.. " and wait for it, then close; pass --no-review only for an abandoned task or an unavailable review skill"
+		.. " and wait for it, then close; or when a cross-vendor review covers this diff, close with --review <saved report>; pass --no-review only for an abandoned, stalled or failed task"
 end
 
----@return string? refusal Why a live implementer still needs its self-review.
+---@return string? refusal Why a live implementer still needs a review.
 local function close_owned(rt, record, no_review)
 	local client = client_for(rt, record)
 	assert(record.blockId, "orc pane: run has no confirmed owned block")
@@ -1229,7 +1236,26 @@ local function close_owned(rt, record, no_review)
 	client.call("block.close", { block_id = record.blockId }, record.sessionId)
 end
 
-local function close(rt, record, force, no_review)
+local function close(rt, record, force, no_review, review)
+	if review then
+		local checked, accepted = pcall(function()
+			local file = rt.abspath(review)
+			local text, err = rt.read(file)
+			assert(text, "orc pane close: cannot read review report " .. file .. ": " .. tostring(err))
+			assert(#text > 0, "orc pane close: review report is empty: " .. file)
+			-- shortcut: orc cannot prove the report covers this fingerprint and trusts the orchestrator, upgrade when reviews carry verifiable provenance.
+			return { report = file, baseline = fingerprint(rt, record.path) }
+		end)
+		if not checked then
+			return result(rt, 1, {
+				status = "not-reviewed",
+				task = record.task,
+				runId = record.runId,
+				stderr = tostring(accepted),
+			})
+		end
+		record.reviewed = accepted
+	end
 	if record.state == "closed" then
 		return result(
 			rt,
@@ -1432,10 +1458,16 @@ function M.run(rt, argv)
 			file = "string",
 			force = "boolean",
 			["no-review"] = "boolean",
+			review = "string",
 			skill = "string",
 			target = "string",
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
+		assert(not values.review or command == "close", "orc pane: --review only applies to close")
+		assert(
+			not (values.review and values["no-review"]),
+			"orc pane: --review and --no-review are mutually exclusive"
+		)
 		assert(
 			not values["no-review"] or command == "close",
 			"orc pane: --no-review only applies to close"
@@ -1518,7 +1550,7 @@ function M.run(rt, argv)
 			elseif command == "pause" then
 				return pause(rt, record)
 			elseif command == "close" then
-				return close(rt, record, values.force, values["no-review"])
+				return close(rt, record, values.force, values["no-review"], values.review)
 			end
 			error("orc pane: unknown command", 0)
 		end)
