@@ -5,7 +5,8 @@ delegate substantial implementation to the role-specific agents. This instructio
 explicitly authorizes subagent delegation and isolated parallel implementation.
 
 - Read first. Inline only single-file changes without new tests; use one
-  `orc:implementer` for one substantial task, with objective, ownership and checks.
+  `orc:implementer` for one substantial task, with objective, ownership and
+  done-evidence (command and expected output).
 - Scope unfamiliar code with `orc:scoper` when more than three new files are needed.
 - Search source with `rg`/`rg --files`; do not initialize a semantic index.
 - Use `plan` for separable tasks; dispatch only 2–3 independent substantial tasks
@@ -15,7 +16,8 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Inspect every diff and run deterministic checks (tests and approved worktrunk
   pre-merge gates) before model review. Follow the active level's review pattern.
 - Use the main checkout's `.orc/validation.md` when present. Workers run only edit
-  and task tiers; reviewers run nothing. Run cross-workspace suites once per merged
+  and task tiers; reviewers run at most targeted task-tier repros that write nothing
+  in the checkout, never gates or suites. Run cross-workspace suites once per merged
   batch and the gate tier once before commit, both through `orc gate`, whose one
   lock queues heavy runs across checkouts. Never run two gates at once.
 - Primary reviewer uses the other vendor: Codex implementer → native
@@ -25,6 +27,7 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex reference
   for the Claude review command (flags verified with codex-cli 0.167.0 `codex review --help` and
   `claude --help`). Give reviewers the fresh diff, brief and acceptance criteria.
+  Rerun safe, reviewer-bounded `proven` commands; otherwise treat as `unproven`. Drop non-repros.
 - Pane implementer order: report → deterministic checks → self-review
   (`orc pane review <task> --path <checkout>`) → cross-vendor review when the level
   requires it → close. Self-review is the owning worker's ponytail-review of its
@@ -33,7 +36,7 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   in its wait result is a violation: inspect the diff before accepting anything.
   `pane close` and `pane prune` refuse a live TUI implementer without a done
   self-review of the current checkout, so review again after a fix round. Use
-  `close --no-review` only for an abandoned task or an unavailable review skill, and
+  `close --no-review` only for an abandoned, stalled or failed task or an unavailable review skill;
   record why in the task log.
 - Require docs for changed exports and touched behavior. Missing evidence is not
   success. Partial, blocked, idle and process exit are not accepted completion.

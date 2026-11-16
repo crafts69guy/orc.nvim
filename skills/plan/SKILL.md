@@ -7,6 +7,7 @@ description: "orc workflow: record implementation decisions and task ownership b
 
 Write `.scratch/<feature>/plan.md` in the main checkout's scratch directory.
 Resolve interfaces and significant tradeoffs before handing work to implementers.
+Read the main checkout's `.orc/backlog.md` and offer items touching planned files as tasks.
 
 ## Prerequisites
 
@@ -37,11 +38,13 @@ Base branch: feat/example
   files: [lua/example.lua, test/example_spec.lua]
   depends_on: []
   size: substantial
-  validate: nvim --clean -l test/run.lua
+  validate: "nvim --clean -l test/run.lua  # expect: exit 0, 0 failures"
 ```
 ````
 
 The parser accepts flat task fields and inline dependency lists. Keep that format.
+Each task's `validate` names done-evidence: the command and expected observable
+output that prove its goal. If you cannot name that evidence, scope the task first.
 Ownership must be disjoint for tasks with no dependency path. A substantial task
 is its own module or feature needing multiple edit/test cycles. Batch small tasks.
 Show the task ordering; dispatch substantial independent tasks in worktree waves.

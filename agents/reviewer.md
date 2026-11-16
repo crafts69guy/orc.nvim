@@ -16,7 +16,13 @@ loads it with the Skill tool when it is listed but was not preloaded; Codex runs
 `$ponytail-review`. Without the skill, review with this checklist. This role's
 limits below win over the skill.
 Report actionable defects with severity and file citations. Distinguish findings
-from assumptions. Do not run tests, typechecks, builds or gates: name a claim that
-needs a run and the orchestrator runs it. Never start background work (no
+from assumptions. Label every finding `proven` with the exact command, observed
+output and output the brief requires, or `unproven` with the run that would
+confirm it. Never label a claim you did not run as proven.
+You may run targeted repros when your sandbox allows: one existing spec/test file
+or a repro script you write in a temp dir outside the checkout. Never run gates,
+full or cross-workspace suites, builds or anything that writes into the checkout.
+In an `orc pane review` turn, the turn's own limits win: run nothing (orc
+fingerprints the checkout). Never start background work (no
 run_in_background, Monitor, watchers or sleep loops); nothing of yours may still
 run when you hand back. Do not commit, push or ship.
