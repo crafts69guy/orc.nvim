@@ -1454,6 +1454,123 @@ Test.test(
 	end
 )
 
+Test.test("workers wait reports stalled TUI transcripts without changing worker state", function()
+	for _, transport in ipairs({ "tui", false }) do
+		for _, until_report in ipairs({ false, true }) do
+			local rt, state = fake()
+			state.start()
+			local transcript = rt.path(rt.cwd, "transcript.jsonl")
+			rt.write(transcript, "working\n")
+			local old = os.time() - 1800
+			assert(vim.uv.fs_utime(transcript, old, old))
+			state.hook("UserPromptSubmit", { transcript_path = transcript })
+			local record = state.record()
+			record.transport = transport or nil
+			state.store(record)
+			local flags = { "--timeout", "0" }
+			if until_report then
+				vim.list_extend(flags, { "--until", "report" })
+			end
+			local response = state.run("wait", flags)
+			Test.eq(response.code, 0)
+			Test.eq(response.result.state, "stalled")
+			Test.eq(response.result.report, rt.null)
+			Test.eq(response.result.evidence, false)
+			Test.eq(response.result.transcript, transcript)
+			assert(response.result.hint:find("running child process", 1, true))
+			assert(response.result.hint:find("orc pane close task --path", 1, true))
+			assert(response.result.hint:find("--no-review", 1, true))
+			Test.eq(state.record().state, "working")
+			Test.eq(state.record().hookState, "working")
+			Test.eq(#state.closed, 0)
+			Test.eq(state.stopped, state.streams)
+		end
+	end
+end)
+
+Test.test("workers report wait prefers matching evidence over a stalled transcript", function()
+	local rt, state = fake()
+	state.start()
+	local transcript = rt.path(rt.cwd, "transcript.jsonl")
+	rt.write(transcript, "working\n")
+	local old = os.time() - 3600
+	assert(vim.uv.fs_utime(transcript, old, old))
+	state.hook("UserPromptSubmit", { transcript_path = transcript })
+	state.report("done")
+	local response = state.run("wait", { "--until", "report", "--timeout", "0" })
+	Test.eq(response.code, 0)
+	Test.eq(response.result.state, "working")
+	Test.eq(response.result.evidence, true)
+	Test.eq(response.result.report, state.record().report)
+	Test.eq(response.result.status, "done")
+	Test.eq(state.record().hookState, "working")
+end)
+
+Test.test(
+	"workers wait ignores fresh missing unreadable idle blocked and exec transcripts",
+	function()
+		for _, case in ipairs({ "fresh", "missing", "absent", "unreadable", "idle", "blocked", "exec" }) do
+			local rt, state = fake()
+			state.start(case == "exec" and { "--transport", "exec" } or nil)
+			local transcript = rt.path(rt.cwd, "transcript.jsonl")
+			rt.write(transcript, "working\n")
+			local stamp = os.time() - (case == "fresh" and 1790 or 3600)
+			assert(vim.uv.fs_utime(transcript, stamp, stamp))
+			state.hook("UserPromptSubmit", {
+				transcript_path = case == "absent" and "" or transcript,
+			})
+			if case == "missing" then
+				rt.remove(transcript)
+			elseif case == "unreadable" then
+				assert(vim.uv.fs_chmod(transcript, 0))
+			elseif case == "idle" then
+				state.hook("Stop")
+				state.native = "idle"
+			elseif case == "blocked" then
+				state.hook("PermissionRequest")
+				state.native = "blocked"
+			end
+			local response = state.run("wait", { "--until", "report", "--timeout", "1000" })
+			if case == "unreadable" then
+				assert(vim.uv.fs_chmod(transcript, 384))
+			end
+			Test.eq(response.code, 0)
+			Test.eq(response.result.state, case == "blocked" and "blocked" or "timeout")
+			Test.eq(state.clock, case == "blocked" and 0 or 1000)
+		end
+	end
+)
+
+Test.test("workers transcript survives snapshots stale events and follow-up runs", function()
+	local rt, state = fake()
+	state.start()
+	local transcript = rt.path(rt.cwd, "transcript.jsonl")
+	rt.write(transcript, "working\n")
+	state.onLock = function()
+		state.hook("UserPromptSubmit", { transcript_path = transcript })
+	end
+	workers.collect(rt)
+	Test.eq(state.record().transcript, transcript)
+	state.onLock = function()
+		state.hook("UserPromptSubmit", { transcript_path = transcript .. ".new" })
+	end
+	state.hook("UserPromptSubmit", { transcript_path = transcript .. ".stale" })
+	transcript = transcript .. ".new"
+	Test.eq(state.record().transcript, transcript)
+	state.hook("Stop")
+	state.native = "idle"
+	local previous = state.record().runId
+	Test.eq(state.run("prompt", { "--text", "continue" }).code, 0)
+	assert(state.record().runId ~= previous)
+	Test.eq(state.record().transcript, transcript)
+	for _, value in ipairs({ "", false, 42 }) do
+		state.hook("UserPromptSubmit", { transcript_path = value })
+		Test.eq(state.record().transcript, transcript)
+	end
+	state.hook("UserPromptSubmit")
+	Test.eq(state.record().transcript, transcript)
+end)
+
 Test.test("workers wait reconnects resnapshots and cleans streams", function()
 	local _, state = fake()
 	state.ack = true

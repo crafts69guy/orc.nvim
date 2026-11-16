@@ -22,7 +22,7 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
 - Wait: `orc pane wait <task> --path <worktree> --until report --timeout 1800000`, using the
   harness's background execution (foreground Bash is capped at 10 minutes).
   Waits for the current run's report with Status and Validation, a native user-action
-  block, process exit/error or timeout. Missing evidence never ends this wait.
+  block, process exit/error or timeout; a working TUI transcript unchanged for 30+ minutes returns `stalled` with a recovery hint. Missing evidence never ends this wait.
   A done report adds `next`: `orc pane review` for a TUI implementer's work run, then
   `orc pane close` after its review run (directly for scopers and exec workers).
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.

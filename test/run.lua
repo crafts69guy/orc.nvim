@@ -20,6 +20,10 @@ for name in pairs(vim.fn.environ()) do
 end
 vim.env.CLAUDE_CONFIG_DIR = nil
 vim.env.CODEX_HOME = nil
+-- Neovim may already have set nvim.log as its fallback; children must log outside scaffolds.
+if not vim.env.NVIM_LOG_FILE or vim.env.NVIM_LOG_FILE == "nvim.log" then
+	vim.env.NVIM_LOG_FILE = vim.fn.tempname() .. "-nvim.log"
+end
 
 local tests, temporary = {}, {}
 local filter, coverage, coverage_session

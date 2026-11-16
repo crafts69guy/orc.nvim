@@ -22,6 +22,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field state string Observed worker lifecycle state.
 ---@field acknowledged boolean Whether UserPromptSubmit accepted this run marker.
 ---@field report string Run-specific report path.
+---@field transcript? string Harness transcript path, retained across follow-up runs.
 ---@field brief string Original handoff file.
 ---@field hostId string Rex host identity.
 ---@field instanceId string Rex server instance identity.
@@ -169,6 +170,7 @@ local function save(rt, record, mode)
 				end
 				if mode ~= "event" or stale_event then
 					record.hookState = latest.hookState
+					record.transcript = latest.transcript
 				end
 				record.eventRevision = latest.eventRevision
 			end
@@ -967,6 +969,7 @@ local UNACKNOWLEDGED_HINT =
 	"worker prompt was not acknowledged; trust orc hooks in Codex (/hooks) or Claude, then inspect the pane"
 -- Pane workers never resume on their own after a turn ends without a report.
 local NO_REPORT_GRACE_MS = 300000
+local STALLED_TRANSCRIPT_SECONDS = 30 * 60
 local NO_REPORT_HINT =
 	"the worker stayed idle without a report for this run; inspect the pane, then send orc pane prompt"
 local WAIT_FAILED_HINT =
@@ -1042,6 +1045,11 @@ local function wait_for(rt, record, timeout, until_report)
 				else
 					ended_since = nil
 				end
+				local transcript_stat = (record.transport == nil or record.transport == "tui")
+					and record.hookState == "working"
+					and record.transcript
+					and vim.fn.filereadable(record.transcript) == 1
+					and vim.uv.fs_stat(record.transcript)
 				if record.runId ~= run.runId then
 					changed = true -- replaced during this snapshot; the next pass follows it
 				elseif
@@ -1100,6 +1108,23 @@ local function wait_for(rt, record, timeout, until_report)
 						answer.hint = NO_REPORT_HINT
 					end
 					return answer
+				elseif
+					transcript_stat
+					and os.time() - transcript_stat.mtime.sec >= STALLED_TRANSCRIPT_SECONDS
+				then
+					return {
+						task = record.task,
+						runId = record.runId,
+						state = "stalled",
+						report = rt.null,
+						evidence = false,
+						transcript = record.transcript,
+						hint = "worker transcript unchanged for 30+ minutes while working; check the pane for a running child process (a long test); if none, close with orc pane close "
+							.. record.task
+							.. " --path "
+							.. vim.fn.shellescape(record.path)
+							.. " --no-review, record why in the task log, then review and validate the diff yourself or restart the same brief",
+					}
 				end
 				if not connected then
 					connect()
@@ -1299,6 +1324,9 @@ function M.event(rt, input)
 	local event = input.hook_event_name
 	record.inputReady = false
 	if event == "UserPromptSubmit" then
+		if type(input.transcript_path) == "string" and input.transcript_path ~= "" then
+			record.transcript = input.transcript_path
+		end
 		local marker = type(input.prompt) == "string" and input.prompt:match("^%[orc%-run:([%w%-]+)%]")
 		if marker == record.runId then
 			record.acknowledged = true
