@@ -1207,7 +1207,7 @@ local function unreviewed(rt, record)
 		.. record.task
 		.. " --path "
 		.. vim.fn.shellescape(record.path)
-		.. " and wait for it, then close; or when a cross-vendor review covers this diff, close with --review <saved report>; pass --no-review only for an abandoned, stalled or failed task"
+		.. " and wait for it, then close; or when a cross-vendor review covers this diff, close with --review <saved report>; pass --no-review only for an abandoned, stalled or failed task or an unavailable review skill"
 end
 
 ---@return string? refusal Why a live implementer still needs a review.
