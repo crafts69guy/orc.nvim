@@ -25,6 +25,8 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
   block, process exit/error or timeout; a working TUI transcript unchanged for 30+ minutes returns `stalled` with a recovery hint. Missing evidence never ends this wait.
   A done report adds `next`: `orc pane review` for a TUI implementer's work run, then
   `orc pane close` after its review run (directly for scopers and exec workers).
+  When the active level requires a cross-vendor review of this diff, use the saved
+  report with `close --review <file>` instead of the suggested self-review.
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
   Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
   `unacknowledged`; inspect the pane and trust the hooks before retrying.
@@ -42,21 +44,33 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
   queued run's report, with the first turn's report in `previousRuns`.
   TUI only; exec follow-ups currently require close/start with a fresh thread.
 - Review: `orc pane review <task> --path <worktree> [--skill ponytail-review|ponytail-audit] [--target <range|paths>]`
-  sends an idle worker a read-only review turn: the reviewer role, the skill per kind
+  sends the owning idle worker a read-only self-review turn: the reviewer role, the skill per kind
   (`$ponytail-review` for Codex, the Skill tool for Claude) and a final-message report
   with Findings. Default target: the uncommitted diff, else `<base>...HEAD` of the
   `<base>--<task>` branch; a clean checkout needs `--target` or the audit skill.
+  Use `--skill ponytail-audit` only when a whole-repo audit is asked.
   Its wait result adds `mode: "review"` and `readOnly`; `false` carries a `violation`
-  because the checkout changed. It never replaces the cross-vendor review.
-  Run it after the report and deterministic checks, before the cross-vendor review,
-  and again after each fix round.
+  because the checkout changed: inspect the diff before accepting anything.
+  Self-review never replaces the cross-vendor review. When the active level requires
+  a cross-vendor review of this diff, skip self-review, save the reviewer's report
+  under `.scratch/<feature>/` and close with `--review <file>` after accepting it.
+  Otherwise, self-review stays required after the report and deterministic checks.
+  After a fix round, self-review only the paths changed in that round, taken from
+  the follow-up report and `git status`:
+  `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
+  The close gate still compares the whole checkout.
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
   never type into a worker pane with `rex send`, which bypasses run IDs and reports.
-- Close: `orc pane close <task> --path <worktree>`. A live TUI implementer closes only
-  after a done self-review of the checkout as it is now; otherwise close returns
-  `status: "not-reviewed"` naming the review command. `--no-review` closes anyway:
-  use it only for an abandoned task or an unavailable review skill. If Rex restarted
+- Close: `orc pane close <task> --path <worktree> [--review <file>]`. A live TUI
+  implementer closes only after a done self-review of the checkout as it is now or
+  an accepted saved cross-vendor review report passed with `--review <file>`.
+  The orchestrator attests that the saved report covers the checkout as it is now.
+  Without either, close returns `status: "not-reviewed"` naming the review command;
+  a missing or empty report file also returns `status: "not-reviewed"`.
+  `--review` and `--no-review` are mutually exclusive. `--no-review` closes anyway:
+  use it only for an abandoned, stalled or failed task or an unavailable review skill;
+  record why in the task log. If Rex restarted
   or pane creation failed, close and start refuse the stranded record; after checking
   the pane is gone, add `--force` to mark it closed without touching Rex.
 - Prune: `orc pane prune --path <checkout>` closes successful exits and idle/done

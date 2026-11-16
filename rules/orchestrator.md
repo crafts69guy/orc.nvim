@@ -28,16 +28,8 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   for the Claude review command (flags verified with codex-cli 0.167.0 `codex review --help` and
   `claude --help`). Give reviewers the fresh diff, brief and acceptance criteria.
   Rerun safe, reviewer-bounded `proven` commands; otherwise treat as `unproven`. Drop non-repros.
-- Pane implementer order: report → deterministic checks → self-review
-  (`orc pane review <task> --path <checkout>`) → cross-vendor review when the level
-  requires it → close. Self-review is the owning worker's ponytail-review of its
-  uncommitted diff, else `<base>...HEAD`; `--skill ponytail-audit` only when a
-  whole-repo audit is asked. It never replaces the cross-vendor review. `readOnly: false`
-  in its wait result is a violation: inspect the diff before accepting anything.
-  `pane close` and `pane prune` refuse a live TUI implementer without a done
-  self-review of the current checkout, so review again after a fix round. Use
-  `close --no-review` only for an abandoned, stalled or failed task or an unavailable review skill;
-  record why in the task log.
+- Pane implementer order: report → deterministic checks → self-review or saved cross-vendor review → close.
+  See dispatch's Rex reference for the close gate, `--review` and `--no-review`.
 - Require docs for changed exports and touched behavior. Missing evidence is not
   success. Partial, blocked, idle and process exit are not accepted completion.
 - Merge review findings into one follow-up for the same implementer; at high,
