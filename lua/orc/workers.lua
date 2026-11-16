@@ -223,15 +223,16 @@ end
 
 ---Parse the final-report fields shared by hooks, status and worker delivery.
 ---Labels may be bulleted, headed or wrapped in markdown emphasis.
+---The first Run and Status win: a report that quotes an earlier run's report keeps its own header.
 ---@param text string
 ---@return {run:string?,status:'done'|'partial'|'blocked'|nil,validation:boolean}
 function M.parse_report(text)
 	local run, status, validation, depth
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 		local plain = line:gsub("[*_]", ""):gsub("^%s*[#>%-]*%s*", "")
-		run = plain:match("^Run:%s*([%w%-]+)%s*$") or run
+		run = run or plain:match("^Run:%s*([%w%-]+)%s*$")
 		local found = (plain:match("^Status:%s*(%a+)%s*$") or ""):lower()
-		status = statuses[found] and found or status
+		status = status or (statuses[found] and found or nil)
 		local tail = plain:match("^Validation%s*:?(.*)$")
 		local level = #line:match("^%s*(#*)")
 		if tail then

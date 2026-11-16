@@ -2818,6 +2818,14 @@ Test.test("workers parse_report accepts bullets and bold labels and rejects pros
 	Test.eq(workers.parse_report("Status: Done\nValidation: ok").status, "done")
 end)
 
+Test.test("workers parse_report keeps its own header when it quotes an earlier report", function()
+	-- A follow-up run pasted its previous report, Run line included; the last Run used to win.
+	local parsed = workers.parse_report(
+		"Run: new\nStatus: partial\n## Validation\nran tests\n\n## Earlier report\nRun: old\nStatus: done\n"
+	)
+	Test.eq(parsed, { run = "new", status = "partial", validation = true })
+end)
+
 Test.test(
 	"workers parse_report keeps Validation sub-headings and stops at its own level",
 	function()
