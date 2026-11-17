@@ -3,10 +3,10 @@
 Use Rex only through `orc pane`; never infer success from a screen capture.
 Pane mode is automatic inside Rex; `--no-panes` or `ORC_PANES=0` disables it.
 Delegate scopers and implementers through Codex pane workers instead of native
-subagents; review follows the orchestrator rules' cross-vendor rule; shipper stays native.
+subagents; choose review by the active level in the orchestrator rules; shipper stays native.
 
-For a Codex-written diff under a Codex orchestrator, run the read-only Claude
-review with the harness's background execution and save stdout/stderr under
+When cross-vendor review is required for a Codex-written diff under a Codex
+orchestrator, run the read-only Claude review with the harness's background execution and save stdout/stderr under
 `.scratch/<feature>/`:
 
 ```sh
@@ -51,13 +51,17 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
   Use `--skill ponytail-audit` only when a whole-repo audit is asked.
   Its wait result adds `mode: "review"` and `readOnly`; `false` carries a `violation`
   because the checkout changed: inspect the diff before accepting anything.
-  Self-review never replaces the cross-vendor review. When the active level requires
-  a cross-vendor review of this diff, skip self-review, save the reviewer's report
+  Single (default) gets exactly one model review per diff: non-risky diffs get only
+  self-review; risky diffs (security, concurrency, migrations, public APIs, fund safety)
+  get one cross-vendor review. For an initial diff requiring cross-vendor review,
+  skip self-review, save the reviewer's report
   under `.scratch/<feature>/` and close with `--review <file>` after accepting it.
-  Otherwise, self-review stays required after the report and deterministic checks.
+  Otherwise, initial self-review stays required after the report and deterministic checks.
   After a fix round, self-review only the paths changed in that round, taken from
   the follow-up report and `git status`:
   `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
+  Use the same worker; never start a fresh native `orc:reviewer` unless the round
+  touches a new risky area. Keep high (Cascade) and max (Critique) review patterns.
   The close gate still compares the whole checkout.
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;

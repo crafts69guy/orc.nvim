@@ -350,6 +350,8 @@ Test.test("workers validation profile follows shared project memory and is optio
 		end
 		Test.eq(state.start().code, 0)
 		local prompt = table.concat(state.layout.block.options.command, " ")
+		assert(prompt:find("about 60 lines max", 1, true))
+		assert(prompt:find("cite their paths", 1, true))
 		Test.eq(prompt:find("Validation profile: read " .. profile, 1, true) ~= nil, present)
 		Test.eq(prompt:find("it overrides the brief's Validate section.", 1, true) ~= nil, present)
 	end
@@ -968,6 +970,8 @@ Test.test(
 			"End your final message with the report",
 			"Scope with file citations",
 			"Decisions",
+			"about 60 lines max",
+			"cite their paths",
 		}) do
 			assert(command:find(part, 1, true), part)
 		end
@@ -3233,6 +3237,8 @@ Test.test("workers review frames a read-only reviewer turn per worker kind", fun
 			call .. " on the uncommitted changes",
 			"End your final message with the report; do not write a report file",
 			"Findings numbered with file citations",
+			"about 60 lines max",
+			"cite their paths",
 		}) do
 			assert(state.writes[1]:find(part, 1, true), part)
 		end

@@ -465,6 +465,7 @@ local function prompt_text(rt, record, body)
 		.. ". Do not commit or push. "
 		.. body
 		.. " If you need a user decision, end the turn with a Status: blocked report that states the question; never wait at an interactive prompt."
+		.. " Keep the final report concise (about 60 lines max); put long logs/outputs in files under .scratch/ and cite their paths."
 	if role == "scoper" then
 		return prompt
 			.. " Do not modify files. End your final message with the report. Include Run: "

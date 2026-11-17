@@ -94,6 +94,13 @@ and updates the installed plugins.
 After `orc update` changes hooks, re-trust them in Codex's `/hooks` before
 workers can be acknowledged.
 
+The `UserPromptSubmit` context hook warns the main agent when the latest input
+usage reaches `ORC_CONTEXT_WARN` tokens (default `200000`; `0` disables it;
+invalid values use the default). It reads only the last 512 KiB of a Claude
+transcript or Codex rollout and ignores sidechains and workers (`ORC_ROLE` set).
+At task boundaries, log progress in `.scratch/<feature>/log.md`, then `/clear`
+and resume from the plan and log; use `/compact <focus>` mid-task.
+
 ## Commands
 
 | Command | Purpose |
@@ -108,7 +115,7 @@ workers can be acknowledged.
 | `orc pane start ... [--allow-subdir] [--precheck '<cmd>']` | Require a checkout toplevel by default; check prerequisites before pane creation |
 | `orc pane start ... [--mcp <name,...>]` | Workers start no MCP servers, configured or Codex-plugin, unless allowlisted; a Codex worker refuses to launch if Codex rejects the overrides or would still start one; the orchestrator keeps its own |
 | `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
-| `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only ponytail review of its uncommitted diff (else `<base>...HEAD`); `pane wait` adds `readOnly` and a `violation` when the checkout changed; required before closing a TUI implementer, again after each fix round, unless a cross-vendor review covers the diff and close uses `--review <file>` |
+| `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only ponytail review of its uncommitted diff (else `<base>...HEAD`); `pane wait` adds `readOnly` and a `violation` when the checkout changed; Single uses only self-review for non-risky diffs or one cross-vendor review with `close --review <file>` for risky diffs; re-check fix-round paths with the same worker's `--target`, unless a new risky area requires cross-vendor review |
 | `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; returns `stalled` with a recovery hint when a working TUI transcript is unchanged for 30+ minutes; a done report adds `next`: `pane review` after a TUI implementer's work run, else the close command; follows follow-up runs and lists replaced ones in `previousRuns`; failures return `state: "wait-failed"` with a `hint` |
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |

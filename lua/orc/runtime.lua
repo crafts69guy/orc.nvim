@@ -47,6 +47,7 @@ end
 ---@field async fun(argv:string[], opts:orc.ProcessOptions?, callback:fun(result:orc.ProcessResult)):orc.ProcessHandle
 ---@field stream fun(argv:string[], opts:orc.ProcessOptions?, on_data:fun(chunk:string)):orc.ProcessHandle
 ---@field read fun(path:string):string?,string?
+---@field tail fun(path:string,bytes:integer):string?,string? Read at most bytes from EOF, discarding a truncated first line.
 ---@field write fun(path:string,text:string) Atomically replace a file; throw on failure.
 ---@field append fun(path:string,line:string) Append one newline-terminated record of at most 4096 bytes in one write; throw on failure.
 ---@field mkdir fun(path:string) Create parent directories; throw on failure.
@@ -259,6 +260,27 @@ function M.new(opts)
 		local closed, close_err = uv.fs_close(fd)
 		if not closed then
 			return nil, close_err
+		end
+		return data, read_err
+	end
+	rt.tail = function(path, bytes)
+		local fd, err = uv.fs_open(path, "r", 0)
+		if not fd then
+			return nil, err
+		end
+		local stat, stat_err = uv.fs_fstat(fd)
+		if not stat then
+			uv.fs_close(fd)
+			return nil, stat_err
+		end
+		local offset = math.max(0, stat.size - bytes)
+		local data, read_err = uv.fs_read(fd, math.min(bytes, stat.size), offset)
+		local closed, close_err = uv.fs_close(fd)
+		if not closed then
+			return nil, close_err
+		end
+		if data and offset > 0 then
+			data = data:match("\n(.*)$") or ""
 		end
 		return data, read_err
 	end

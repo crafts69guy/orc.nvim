@@ -20,8 +20,12 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   in the checkout, never gates or suites. Run cross-workspace suites once per merged
   batch and the gate tier once before commit, both through `orc gate`, whose one
   lock queues heavy runs across checkouts. Never run two gates at once.
-- Primary reviewer uses the other vendor: Codex implementer → native
-  `orc:reviewer` from a Claude orchestrator. For Claude implementation or a second
+- Single (default): exactly one model review per diff. Non-risky diffs get only
+  pane self-review (`orc pane review`); risky diffs (security, concurrency,
+  migrations, public APIs, fund safety) get one cross-vendor review, skip self-review
+  and close with `--review <saved report>`. Keep high (Cascade) and max (Critique).
+- When the active level requires cross-vendor review, use the other vendor:
+  Codex implementer → native `orc:reviewer` from a Claude orchestrator. For Claude implementation or a second
   opinion, run `codex --no-daemon review --uncommitted` in the task checkout using
   the harness's background execution; save stdout/stderr under `.scratch/<feature>/`.
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex reference
@@ -35,11 +39,13 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Merge review findings into one follow-up for the same implementer; at high,
   escalate after a failed round. At most two fix rounds, then sharpen the brief
   for a new worker. Record kind, level, model/effort and escalation reasons in the task log.
+  Re-check fixes with the same worker's `orc pane review --target <paths changed in the round>`;
+  never start a fresh native `orc:reviewer` unless the round touches a new risky area.
 - On a usage/rate limit, restart the same brief and worktree with the other `--kind`;
   preserve prior work. The orchestrator owns architecture, conflicts and serial merges.
 - Pane mode is automatic inside Rex unless `--no-panes` or `ORC_PANES=0`.
   In pane mode, delegate scopers and implementers through `orc pane start ... --role scoper|implementer`
-  workers instead of native subagents; apply cross-vendor review above; shipper stays native.
+  workers instead of native subagents; choose review by the active level above; shipper stays native.
   Workers start no MCP servers unless `--mcp <name,...>` allowlists what the brief needs.
   After accepting a worker's report, close its pane (`orc pane close <task> --path <checkout>`
   or `orc pane prune --path <checkout>`) before reporting the task done; a `next` field in
@@ -54,6 +60,14 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   If a native subagent's report arrived but it shows "waiting on its own background
   work", stop it with TaskStop; the report stands.
   A delivery without acknowledgment is unconfirmed: inspect before any retry.
+- Context hygiene:
+  - Use one task T per context; state lives in the plan and `.scratch/<feature>/log.md`, not chat.
+  - After accepting and closing a worker, log progress then recommend `/clear`.
+  - Read report Status/Validation and `git diff --stat`; avoid whole reports and long logs.
+  - For a large session idle over 1 h, `/clear` and reload from the log before resuming.
+- Save full test/lint/build/gate output to `.scratch/<feature>/<name>.log`; read only
+  summaries/failures (`tail -n 40` or `rg`). Never print whole files, lockfiles or large
+  JSON; use `sed -n`/`rg` ranges.
 - Shipping is only through `orc:shipper`, after review and explicit user request.
   Workflow guards do not replace the harness sandbox or external permissions.
 - Capture outcome and gotchas in `.scratch/<feature>/log.md`, then use `reflect`.

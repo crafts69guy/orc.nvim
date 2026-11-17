@@ -32,6 +32,12 @@ The executable resolves its own real path, so a symlinked CLI can find its modul
 without changing the caller's working directory. Hooks run without user plugins,
 write machine-readable stdout and send diagnostics to stderr.
 
+The `UserPromptSubmit` context hook checks only a 512 KiB transcript tail for the
+latest main-thread input usage (Claude usage plus cache tokens, or Codex rollout
+`event_msg` / `token_count` → `info.last_token_usage.input_tokens`). It emits a
+user warning and orchestration context at `ORC_CONTEXT_WARN` (default 200000);
+`0` disables it and workers skip it. Missing or unusable usage produces no output.
+
 Captured commands receive an argv list. Interactive harnesses inherit file
 descriptors 0/1/2 and propagate exit/signal status. No shell is used to concatenate
 user input into commands. Business modules accept a runtime adapter for tests.

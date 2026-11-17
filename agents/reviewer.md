@@ -26,3 +26,5 @@ In an `orc pane review` turn, the turn's own limits win: run nothing (orc
 fingerprints the checkout). Never start background work (no
 run_in_background, Monitor, watchers or sleep loops); nothing of yours may still
 run when you hand back. Do not commit, push or ship.
+
+Keep the final report concise (about 60 lines max); put long logs/outputs under `.scratch/` and cite their paths.

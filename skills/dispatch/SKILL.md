@@ -20,17 +20,19 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
    worktrees. Do not allow commits.
 4. Read each report and inspect each diff. Rerun checks. A partial/blocked report
    requires a follow-up, never a merge. At most two fix rounds per worker.
-   When the active level requires a cross-vendor review of this diff, skip the pane
-   self-review and use the saved report from step 5. Otherwise, pane workers must
+   For the initial diff, when the active level requires cross-vendor review, skip
+   pane self-review and use the saved report from step 5. Otherwise, pane workers must
    self-review: `orc pane review <task> --path <worktree>`, waited like any run.
    After a fix round, self-review only the paths changed in that round, taken from
    the follow-up report and `git status`:
    `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
-   The close gate still compares the whole checkout. Self-review never replaces
-   the cross-vendor review.
-5. Apply the active level and cross-vendor rules: default (Single) reviews risky
-   diffs only; high (Cascade) escalates kind or Claude model after a failed review
-   round and records why; max (Critique) runs two independent vendor reviews in
+   Use the same worker; never start a fresh native `orc:reviewer` unless the round
+   touches a new risky area. The close gate still compares the whole checkout.
+5. Apply the active level: default (Single) gets exactly one model review per diff:
+   non-risky diffs get pane self-review only; risky diffs (security, concurrency,
+   migrations, public APIs, fund safety) get one cross-vendor review, skip self-review
+   and close with `--review <saved report>`. High (Cascade) escalates kind or Claude
+   model after a failed review round and records why; max (Critique) runs two independent vendor reviews in
    parallel for every substantial diff. Deterministic checks precede model review.
    Save the cross-vendor reviewer's report under `.scratch/<feature>/`; after
    accepting it, close with `orc pane close <task> --path <worktree> --review <file>`.

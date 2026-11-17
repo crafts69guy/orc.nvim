@@ -252,7 +252,7 @@ function M.context(rt, cwd)
 			"Level max (Critique): run deterministic checks first; every substantial diff gets two independent reviews in parallel from different vendors; merge findings into one follow-up for the same implementer."
 	else
 		text[#text + 1] =
-			"Level default (Single): one implementer per task; run deterministic checks first; use the reviewer only for risky diffs (security, concurrency, migrations, public APIs)."
+			"Level default (Single): one implementer per task; run deterministic checks first; use the reviewer only for risky diffs (security, concurrency, migrations, public APIs, fund safety)."
 	end
 	local flag = require("orc.inkdrop").flag(rt, cwd)
 	if flag then
@@ -263,6 +263,69 @@ function M.context(rt, cwd)
 			.. "). Use `orc inkdrop` for feature notes."
 	end
 	return table.concat(text, "\n\n")
+end
+
+local function token_number(value)
+	return type(value) == "number" and value >= 0 and value < math.huge
+end
+
+local function context_warning(rt, payload)
+	if (rt.env.ORC_ROLE and rt.env.ORC_ROLE ~= "") or rt.env.ORC_CONTEXT_WARN == "0" then
+		return nil
+	end
+	local threshold = tonumber(rt.env.ORC_CONTEXT_WARN)
+	if not token_number(threshold) or threshold == 0 then
+		threshold = 200000
+	end
+	local path = payload.transcript_path
+	if type(path) ~= "string" or path == "" then
+		return nil
+	end
+	local tokens
+	for line in ((rt.tail(path, 512 * 1024) or "") .. "\n"):gmatch("([^\n]+)\n") do
+		local ok, record = pcall(rt.decode, line)
+		if ok and type(record) == "table" and record.isSidechain ~= true then
+			local usage
+			if type(record.message) == "table" then
+				usage = record.message.usage
+			end
+			if usage ~= nil then
+				tokens = nil
+				if type(usage) == "table" then
+					local input = usage.input_tokens
+					local read = usage.cache_read_input_tokens or 0
+					local creation = usage.cache_creation_input_tokens or 0
+					if token_number(input) and token_number(read) and token_number(creation) then
+						tokens = input + read + creation
+					end
+				end
+			elseif record.type == "event_msg" and type(record.payload) == "table" then
+				local event = record.payload
+				if event.type == "token_count" and type(event.info) == "table" then
+					local last = event.info.last_token_usage
+					tokens = type(last) == "table" and last.input_tokens or nil
+				end
+			end
+		end
+	end
+	if not token_number(tokens) or tokens < threshold then
+		return nil
+	end
+	return {
+		systemMessage = string.format(
+			"orc: context ~%.0fk tokens (warn at %.0fk). Log progress, then /clear at the next task boundary.",
+			tokens / 1000,
+			threshold / 1000
+		),
+		hookSpecificOutput = {
+			hookEventName = "UserPromptSubmit",
+			additionalContext = table.concat({
+				"At the next task boundary (current T accepted, its pane closed), write outcome, open decisions and the next step to .scratch/<feature>/log.md.",
+				"Then tell the user to run /clear (SessionStart re-injects orc rules) and resume from the plan and log.",
+				"Mid-task, prefer /compact <focus>.",
+			}, "\n"),
+		},
+	}
 end
 
 ---Execute a lifecycle hook. Bad JSON is ignored rather than crashing the harness.
@@ -283,7 +346,9 @@ function M.run(rt, event, input)
 	end
 	local role = restricted[rt.env.ORC_ROLE] and rt.env.ORC_ROLE or M.role(payload.agent_type)
 	local output
-	if event == "session-start" and (not rt.env.ORC_ROLE or rt.env.ORC_ROLE == "") then
+	if event == "context" then
+		output = context_warning(rt, payload)
+	elseif event == "session-start" and (not rt.env.ORC_ROLE or rt.env.ORC_ROLE == "") then
 		output =
 			{ hookSpecificOutput = { hookEventName = "SessionStart", additionalContext = M.context(rt) } }
 	elseif event == "guard" then

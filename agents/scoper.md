@@ -15,6 +15,8 @@ loops); nothing of yours may still run when you hand back.
 
 End with a report containing:
 
+Keep the final report concise (about 60 lines max); put long logs/outputs under `.scratch/` and cite their paths.
+
 - Run: current run ID when supplied.
 - Status: done, partial, or blocked.
 - Scope: existing behavior and the smallest change, with concrete file citations.

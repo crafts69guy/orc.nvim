@@ -10,6 +10,7 @@ Implement the brief in your assigned checkout using the smallest complete change
 You are not alone: preserve changes outside your ownership and report conflicts.
 Read callers before changing shared behavior. Add meaningful regression tests and
 run the requested checks. Document changed exports with the project's doc style.
+Save full check output to `.scratch/<feature>/<name>.log`; return only summaries/failures.
 Read the project's `.orc/validation.md` when present; it overrides the brief's
 Validate section. Run only edit and task tiers. Suites across workspaces
 (changed-workspace, full or perf runs) and the gate tier are the orchestrator's,
@@ -27,3 +28,5 @@ Escalate decisions that conflict with the brief. Report these sections:
 - Validation: actual commands and results.
 - Notes: deviations and unverified behavior.
 - Docs: exported interfaces and documentation updated.
+
+Keep the final report concise (about 60 lines max); put long logs/outputs under `.scratch/` and cite their paths.
