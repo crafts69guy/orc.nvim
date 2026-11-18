@@ -353,12 +353,16 @@ Test.test(
 	"core Codex launcher injects context and generated roles without persisted config",
 	function()
 		local rt = fake()
+		rt.files["/plugin/rules/delegated-workflow.md"] = "Detailed workflow fixture"
 		rt.files["/plugin/codex/agents/implementer.toml"] =
 			'name = "implementer"\ndescription = "role"\n'
 		rt.files["/plugin/codex/agents/ignored.txt"] = ""
 		Test.eq(cli.run(rt, { "codex", "--yolo", "--sandbox", "workspace-write", "prompt" }).code, 0)
 		local joined = table.concat(rt.launched[1].argv, " ")
 		assert(joined:find("developer_instructions=", 1, true))
+		assert(joined:find(vim.fn.sha256("Fixture rules"), 1, true))
+		assert(joined:find("/plugin/rules/delegated-workflow.md", 1, true))
+		assert(not joined:find("Detailed workflow fixture", 1, true))
 		assert(joined:find('agents.implementer.description="role"', 1, true))
 		assert(joined:find("--add-dir /repo/.git", 1, true))
 		assert(joined:find("--dangerously-bypass-approvals-and-sandbox", 1, true))
@@ -368,6 +372,125 @@ Test.test(
 		assert(not table.concat(rt.launched[2].argv, " "):find("--add-dir", 1, true))
 	end
 )
+
+Test.test("core context resolves rule and guide paths from the invoking root", function()
+	local rt = fake()
+	local install = runtime.new()
+	local rules = assert(install.read(install.path(install.root, "rules/orchestrator.md")))
+	local guide = assert(install.read(install.path(install.root, "rules/delegated-workflow.md")))
+	local version = vim.trim(cli.run(rt, { "--version" }).out)
+	rt.env.ORC = "1"
+	local read, reads = rt.read, {}
+	rt.read = function(path)
+		reads[path] = true
+		return read(path)
+	end
+	local fingerprints = {}
+	for _, root in ipairs({ "/checkout", "/cached-plugin" }) do
+		rt.root = root
+		local path = rt.path(root, "rules/orchestrator.md")
+		local guide_path = rt.path(root, "rules/delegated-workflow.md")
+		local content = rules .. "\n" .. root
+		rt.files[path], rt.files[guide_path] = content, guide
+		local hash = vim.fn.sha256(content)
+		fingerprints[#fingerprints + 1] = hash
+		local expected = { path = path, version = version, sha256 = hash }
+		for _, scope in ipairs({ "user", "project", "all" }) do
+			local result = cli.run(rt, { "context", "--scope", scope, "--json" })
+			Test.eq(result.code, 0)
+			Test.eq(rt.decode(result.out).orchestratorRule, expected)
+		end
+		local line = ("Orc runtime orchestrator rule: `%s` (CLI version `%s`, SHA-256 `%s`)."):format(
+			path,
+			version,
+			hash
+		)
+		assert(cli.run(rt, { "context" }).out:find(line, 1, true))
+		for _, level in ipairs({ "default", "high", "max" }) do
+			rt.env.ORC_LEVEL = level
+			local hook = cli.run(rt, { "hook", "session-start" }, "{}")
+			local context = rt.decode(hook.out).hookSpecificOutput.additionalContext
+			assert(context:find(line, 1, true))
+			local policy = context:gsub("%s+", " ")
+			for _, clause in ipairs({
+				"low-risk changes directly",
+				"read the exact absolute delegated workflow guide path",
+				"Never edit beside an active implementer or overwrite another session's work",
+				"only with a `done` report and validation evidence",
+				"`partial`, `blocked`, idle, and process exit as insufficient",
+			}) do
+				assert(policy:find(clause, 1, true), clause)
+			end
+			local discovered = context:match("`(/[^`\n]+/delegated%-workflow%.md)`")
+			Test.eq(discovered, guide_path)
+			Test.eq(reads[discovered], nil)
+			assert(not context:find(guide, 1, true), "delegated guide was injected at startup")
+		end
+		local procedure = assert(rt.read(guide_path)):gsub("\n  +", " ")
+		for level, clauses in pairs({
+			Single = { "pane self-review", "one cross-vendor review" },
+			Cascade = { "escalates after a failed review round" },
+			Critique = { "two independent reviews in parallel from different vendors" },
+		}) do
+			local bullet =
+				assert(procedure:match("\n%- " .. level .. " ([^\n]+)"), "missing " .. level .. " bullet")
+			for _, clause in ipairs(clauses) do
+				assert(bullet:find(clause, 1, true), level .. ": " .. clause)
+			end
+		end
+	end
+	assert(fingerprints[1] ~= fingerprints[2])
+end)
+
+Test.test("core context reports unavailable rule provenance through warnings", function()
+	local rt = fake()
+	local path = "/plugin/rules/orchestrator.md"
+	local read = rt.read
+	rt.read = function(file)
+		if file == path then
+			return nil, "permission denied"
+		end
+		return read(file)
+	end
+	rt.files["/repo/CLAUDE.md"] = "@missing.md"
+	local result = cli.run(rt, { "context", "--scope=user", "--json" })
+	Test.eq(result.code, 0)
+	local doc = rt.decode(result.out)
+	Test.eq(doc.orchestratorRule, { path = path, version = cli.version })
+	Test.eq(#doc.findings, 1)
+	local item = doc.findings[1]
+	Test.eq({ item.harness, item.status, item.name }, { "orc", "warn", "unreadable" })
+	Test.eq(item.scope, nil)
+	Test.eq(item.detail, path .. ": permission denied")
+	result = cli.run(rt, { "context", "--scope=project" })
+	Test.eq(result.code, 1)
+	assert(result.out:find("broken-import", 1, true))
+	assert(result.out:find("SHA-256 `unavailable`", 1, true))
+	assert(result.out:find(item.detail, 1, true))
+	rt.env.ORC = "1"
+	result = cli.run(rt, { "hook", "session-start" }, "{}")
+	Test.eq(result.code, 1)
+	assert(result.err:find(item.detail, 1, true))
+
+	rt.read = function(file)
+		if file == path then
+			error("rule read failed")
+		end
+		return read(file)
+	end
+	result = cli.run(rt, { "context", "--scope=user" })
+	Test.eq(result.code, 0)
+	assert(result.out:find("rule read failed", 1, true))
+
+	with_module("orc.cli", {}, function()
+		result = cli.run(rt, { "context", "--scope=project", "--json" })
+		Test.eq(result.code, 1)
+		doc = rt.decode(result.out)
+		Test.eq(doc.orchestratorRule, nil)
+		Test.eq(doc.sources[1].path, "/repo/CLAUDE.md")
+		assert(doc.findings[#doc.findings].detail:find("Orc CLI version is unavailable", 1, true))
+	end)
+end)
 
 Test.test("core context and status surface failures loading owned modules", function()
 	for _, name in ipairs({ "orc.workers", "orc.inkdrop" }) do
@@ -606,16 +729,8 @@ Test.test(
 		)
 		rt.env.ORC_PAIR, rt.env.ORC_PANES = nil, "1"
 		local pane_context = hooks.context(rt)
-		for _, guidance in ipairs({
-			"Pane mode",
-			"--role scoper|implementer",
-			"cross-vendor review",
-			"--here",
-			"dispatch worktrees",
-			"background execution",
-		}) do
-			assert(pane_context:find(guidance, 1, true), guidance)
-		end
+		assert(pane_context:find("Pane mode delegates scoping and implementation in Rex.", 1, true))
+		assert(not pane_context:find("Pair mode", 1, true))
 		rt.env.REX_BLOCK = nil
 		Test.raises("Rex terminal", function()
 			hooks.context(rt)
@@ -1684,7 +1799,7 @@ Test.test("core context injects only the active level with its routing instructi
 		{
 			level = "high",
 			pattern = "Cascade",
-			guidance = { "escalate", "other --kind", "stronger Claude model", "record why" },
+			guidance = { "Escalate after a failed review round" },
 		},
 		{
 			level = "max",
@@ -1700,7 +1815,7 @@ Test.test("core context injects only the active level with its routing instructi
 		local rt = fake()
 		rt.env.ORC_LEVEL = case.level
 		local context = hooks.context(rt)
-		assert(context:find("deterministic checks first", 1, true))
+		assert(context:lower():find("deterministic checks first", 1, true))
 		for _, pattern in ipairs({ "Single", "Cascade", "Critique" }) do
 			Test.eq(context:find("(" .. pattern .. ")", 1, true) ~= nil, pattern == case.pattern)
 		end

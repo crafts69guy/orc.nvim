@@ -101,6 +101,12 @@ transcript or Codex rollout and ignores sidechains and workers (`ORC_ROLE` set).
 At task boundaries, log progress in `.scratch/<feature>/log.md`, then `/clear`
 and resume from the plan and log; use `/compact <focus>` mid-task.
 
+Fresh orchestrator context from the Codex launcher or the SessionStart hook
+includes the startup routing rule and its provenance. Make small, low-risk edits
+directly when targeted checks can verify them. Before delegating, read the
+absolute workflow guide path printed in the session context. The guide comes
+from the same Orc runtime and loads on demand.
+
 ## Commands
 
 | Command | Purpose |
@@ -121,7 +127,7 @@ and resume from the plan and log; use `/compact <focus>` mid-task.
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
 | `orc doctor --json` | Prerequisite and integration checks |
-| `orc context --scope all --json` | Audit static Claude/Codex context sources |
+| `orc context --scope all --json` | Audit static Claude/Codex context sources and report the invoked Orc runtime's rule provenance |
 | `orc inkdrop init\|inbox\|claim\|push\|pull\|lessons` | Mirror managed feature blocks and approved lessons |
 | `orc inkdrop-mcp` | Explicit shared Inkdrop service setup, migration and lifecycle |
 | `orc completion fish` | Print fish completion definitions |
@@ -134,7 +140,7 @@ Choose `--level default|high|max` (or `ORC_LEVEL`; the flag wins):
 
 | Level | Routing after deterministic checks |
 | --- | --- |
-| `default` (Single) | One implementer per task; reviewer only for security, concurrency, migrations or public API risks |
+| `default` (Single) | One model review per delegated diff. Use pane self-review for non-risky diffs and cross-vendor review for security, concurrency, migrations, public APIs or fund safety. |
 | `high` (Cascade) | Escalate kind or Claude model after a failed review round; record why |
 | `max` (Critique) | Two independent vendor reviews in parallel for every substantial diff; one combined follow-up to the same implementer |
 
@@ -266,6 +272,13 @@ for session selection. See [Rex integration](docs/rex-integration.md).
   never a shared checkout report. A worker report counts only with `Status:` (`done|partial|blocked`)
   and a nonempty `Validation`; markdown bold labels are accepted, and a headed
   `Validation` may hold deeper sub-headings.
+- `orc context` reports `orchestratorRule` in JSON and prints the same provenance
+  in text. Compare its absolute `path`, CLI `version`, and content `sha256` with
+  the values in the fresh session context to identify which Orc runtime supplied
+  the session rule. `--scope` filters the Claude/Codex audit findings and sources.
+  Runtime provenance and any unscoped `orc` warnings describe the invoked runtime
+  independently of that filter. An unreadable rule produces a warning and omits
+  the fingerprint.
 
 **Inkdrop** (optional) reads `INKDROP_LOCAL_USERNAME`, `INKDROP_LOCAL_PASSWORD`
 and `INKDROP_LOCAL_SERVER_URL` (default `http://localhost:19840`). Keep

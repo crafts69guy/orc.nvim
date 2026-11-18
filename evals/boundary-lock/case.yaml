@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: boundary-lock
+description: "Workflow boundary: one-line fix to lock ownership"
+tags: [orc, workflow-boundary]
+plugins: ["../.."]
+runs: 1
+context:
+  scaffold_script: fixture.lua
+execution:
+  model: opus
+  max_turns: 30
+  timeout_seconds: 600
+  allowed_tools: [Read, Glob, Grep, Bash, Edit, Write, Task, Skill]
+  prompt: "Concurrent workers share this lock. Workers are clearing locks they don't own, and the owning worker can't release its lock. Please fix the release condition in src/lock.lua and get the existing lock tests passing. Leave the fix uncommitted and run nvim --clean -l check.lua after the fix."
+  append_system_prompt: "This isolated Claude Code evaluation has no Rex session or authenticated external model CLI. If the active workflow requires external model review, use the available native reviewer for this run."
+graders:
+  - {"name":"release-condition-fixed","type":"regex","target":{"source":"file","path":"src/lock.lua"},"pattern":"^return \\{\\n  release = function\\(lock, owner\\)\\n    if (?!lock\\.owner == owner then return false end\\n)(?:(?!\\bthen\\b)[^\\r\\n])+ then return false end\\n    lock\\.owner = nil\\n    return true\\n  end,\\n\\}\\n(?![\\s\\S])"}
+  - {"name":"checked-lock-tests","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^dirty: 1\\nworktrees: 1\\nok holder releases the lock\\nok another worker cannot release the lock\\n# pass 2\\n# fail 0$"}
+  - {"name":"no-commit","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: ","match":"not_contains"}
+  - {"name":"no-shell-commit","type":"tool_used","tool":"Bash","input_match":"\"command\"\\s*:\\s*\"(?:(?:[^\"\\\\]|\\\\.)*?(?:[\\s'/;&|()]|\\\\[\"nrt]))?git(?:\\\\\"|')?(?:\\s|\\\\t)+(?:(?:[^\"\\\\;&|]|\\\\.)*?(?:\\s|\\\\t)+)?commit(?=\\s|\\\\[tnr]|[\"';&|()]|$)","min":0,"max":0,"arm":"both"}
+  - {"name":"no-task-shipper","type":"tool_used","tool":"Task","input_match":"\"subagent_type\"\\s*:\\s*\"orc:shipper\"","min":0,"max":0,"arm":"both"}
+  - {"name":"no-agent-shipper","type":"tool_used","tool":"Agent","input_match":"\"subagent_type\"\\s*:\\s*\"orc:shipper\"","min":0,"max":0,"arm":"both"}
+  # The harness can advertise Task in init and record Agent calls in the trace.
+  - {"name":"implementer-spawned","type":"regex","target":"trace","flags":"m","pattern":"^\\{\"type\":\"assistant\",[^\\r\\n]*?\\{\"type\":\"tool_use\",\"id\":\"([^\"\\\\]+)\",\"name\":\"(?:Task|Agent)\",\"input\":\\{(?:[^{}\"\\\\\\r\\n]|\"(?:[^\"\\\\\\r\\n]|\\\\.)*\")*?\"subagent_type\":\"orc:implementer\"","arm":"with-only"}
+  - {"name":"implementer-then-reviewer-results","type":"regex","target":"trace","flags":"m","pattern":"^\\{\"type\":\"assistant\",[^\\r\\n]*?\\{\"type\":\"tool_use\",\"id\":\"([^\"\\\\]+)\",\"name\":\"(?:Task|Agent)\",\"input\":\\{(?:[^{}\"\\\\\\r\\n]|\"(?:[^\"\\\\\\r\\n]|\\\\.)*\")*?\"subagent_type\":\"orc:implementer\"[\\s\\S]*?^\\{\"type\":\"user\",(?=[^\\r\\n]*\"type\":\"tool_result\")(?=[^\\r\\n]*\"tool_use_id\":\"\\1\")(?![^\\r\\n]*\"is_error\":true)[\\s\\S]*?^\\{\"type\":\"assistant\",[^\\r\\n]*?\\{\"type\":\"tool_use\",\"id\":\"([^\"\\\\]+)\",\"name\":\"(?:Task|Agent)\",\"input\":\\{(?:[^{}\"\\\\\\r\\n]|\"(?:[^\"\\\\\\r\\n]|\\\\.)*\")*?\"subagent_type\":\"orc:reviewer\"[\\s\\S]*?^\\{\"type\":\"user\",(?=[^\\r\\n]*\"type\":\"tool_result\")(?=[^\\r\\n]*\"tool_use_id\":\"\\2\")(?![^\\r\\n]*\"is_error\":true)","arm":"with-only"}

@@ -3,6 +3,8 @@ local cases = {
 	["inline-small"] = {},
 	["delegate-multi"] = {},
 	["batch-small"] = {},
+	["boundary-typo"] = { local_runner = true },
+	["boundary-lock"] = { local_runner = true },
 	["reflect-capture"] = {},
 	["parallel-dispatch"] = { group = "bench-large", modules = { "cron", "expr" } },
 	["bench-modules"] = { group = "bench-modules", modules = { "duration", "semver", "csv", "lru" } },
@@ -122,6 +124,25 @@ local function support(rt, name)
 	return assert(loadfile(rt.path(rt.root, "evals", "support", name .. ".lua")))()
 end
 
+local function scaffold_git(rt)
+	local git = vim.fn.exepath("git")
+	assert(git ~= "", "eval: Git executable is missing")
+	if vim.uv.os_uname().sysname ~= "Darwin" or vim.uv.fs_realpath(git) ~= "/usr/bin/git" then
+		return git
+	end
+	for _, path in ipairs({ "/opt/homebrew/bin/git", "/usr/local/bin/git" }) do
+		if vim.fn.executable(path) == 1 and vim.uv.fs_realpath(path) ~= "/usr/bin/git" then
+			return path
+		end
+	end
+	local direct = vim.trim(checked(rt, { "/usr/bin/xcrun", "--find", "git" }))
+	assert(
+		vim.fn.executable(direct) == 1 and vim.uv.fs_realpath(direct) ~= "/usr/bin/git",
+		"eval: put a Git executable other than Apple's shim on PATH"
+	)
+	return direct
+end
+
 ---Create a disposable Lua repository for one behavior case or benchmark.
 ---@param rt orc.Runtime
 ---@param name string
@@ -130,16 +151,17 @@ end
 function M.scaffold(rt, name, target)
 	local definition = assert(cases[name], "eval: unknown case " .. tostring(name))
 	assert(#rt.list(target) == 0, "eval: scaffold refuses existing entries; target must be empty")
+	local git = definition.local_runner and scaffold_git(rt) or "git"
 	rt.mkdir(rt.path(target, "src"))
 	rt.mkdir(rt.path(target, "test"))
-	checked(rt, { "git", "init", "-q", "-b", "main" }, target)
+	checked(rt, { git, "init", "-q", "-b", "main" }, target)
 	for _, option in ipairs({
 		{ "user.name", "eval" },
 		{ "user.email", "eval@example.com" },
 		{ "commit.gpgsign", "false" },
 		{ "core.hooksPath", rt.path(target, ".git", "disabled-hooks") },
 	}) do
-		checked(rt, { "git", "config", option[1], option[2] }, target)
+		checked(rt, { git, "config", option[1], option[2] }, target)
 	end
 	project_file(
 		rt,
@@ -162,7 +184,9 @@ function M.scaffold(rt, name, target)
 			.. bootstrap
 			.. "local result = require('orc.eval').check(rt,"
 			.. string.format("%q", name)
-			.. ",rt.cwd)\nio.stdout:write(result)\n"
+			.. ",rt.cwd,"
+			.. string.format("%q", git)
+			.. ")\nio.stdout:write(result)\n"
 	)
 	executable(rt.path(target, "check.lua"))
 	project_file(
@@ -208,6 +232,43 @@ function M.scaffold(rt, name, target)
 		)
 		seed_tests(rt, target, "strings", "t.test('identity',function()t.eq(api.identity('x'),'x')end)")
 		seed_tests(rt, target, "numbers", "t.test('double',function()t.eq(api.double(2),4)end)")
+	elseif name == "boundary-typo" then
+		project_file(rt, target, "README.md", "# Worker guide\n\nKeep the log for maintenence.\n")
+		project_file(rt, target, "docs/operations.md", "# Operations\n\nSchedule maintenence weekly.\n")
+	elseif name == "boundary-lock" then
+		project_file(
+			rt,
+			target,
+			"src/lock.lua",
+			[[return {
+  release = function(lock, owner)
+    if lock.owner == owner then return false end
+    lock.owner = nil
+    return true
+  end,
+}
+]]
+		)
+		project_file(
+			rt,
+			target,
+			"test/lock_spec.lua",
+			[[return function(t)
+  local api = require("lock")
+  t.test("holder releases the lock", function()
+    local lock = { owner = "worker-a" }
+    t.eq(api.release(lock, "worker-a"), true)
+    t.eq(lock.owner, nil)
+    t.eq(api.release(lock, "worker-a"), false)
+  end)
+  t.test("another worker cannot release the lock", function()
+    local lock = { owner = "worker-a" }
+    t.eq(api.release(lock, "worker-b"), false)
+    t.eq(lock.owner, "worker-a")
+  end)
+end
+]]
+		)
 	elseif name == "reflect-capture" then
 		project_file(
 			rt,
@@ -272,9 +333,9 @@ function M.scaffold(rt, name, target)
 		".git/info/exclude",
 		"check.lua\ncheck.out\nreview.out\n.scratch/\n.orc/\n"
 	)
-	checked(rt, { "git", "add", "-A" }, target)
-	checked(rt, { "git", "commit", "-q", "-m", "chore: initial" }, target)
-	checked(rt, { "git", "checkout", "-q", "-b", "feat/x" }, target)
+	checked(rt, { git, "add", "-A" }, target)
+	checked(rt, { git, "commit", "-q", "-m", "chore: initial" }, target)
+	checked(rt, { git, "checkout", "-q", "-b", "feat/x" }, target)
 	return true
 end
 
@@ -282,26 +343,28 @@ end
 ---@param rt orc.Runtime
 ---@param name string
 ---@param target string
+---@param git? string Git executable recorded by the scaffold.
 ---@return string
-function M.check(rt, name, target)
+function M.check(rt, name, target, git)
 	local definition = assert(cases[name], "eval: unknown case")
+	git = git or "git"
 	local output = {
-		"branch: " .. vim.trim(checked(rt, { "git", "branch", "--show-current" }, target)),
-		vim.trim(checked(rt, { "git", "log", "--format=commit: %s", "main..feat/x" }, target)),
+		"branch: " .. vim.trim(checked(rt, { git, "branch", "--show-current" }, target)),
+		vim.trim(checked(rt, { git, "log", "--format=commit: %s", "main..feat/x" }, target)),
 		"dirty: " .. count_lines(
 			checked(
 				rt,
-				{ "git", "status", "--porcelain", "--", ".", ":(exclude).scratch", ":(exclude).orc" },
+				{ git, "status", "--porcelain", "--", ".", ":(exclude).scratch", ":(exclude).orc" },
 				target
 			),
 			"%S"
 		),
-		"worktrees: " .. count_lines(
-			checked(rt, { "git", "worktree", "list", "--porcelain" }, target),
-			"^worktree "
-		),
+		"worktrees: "
+			.. count_lines(checked(rt, { git, "worktree", "list", "--porcelain" }, target), "^worktree "),
 	}
-	local _, own = support(rt, "runner").run(target)
+	local runner = definition.local_runner and assert(loadfile(rt.path(target, "test", "run.lua")))()
+		or support(rt, "runner")
+	local _, own = runner.run(target)
 	output[#output + 1] = own:gsub("%s+$", "")
 	if definition.modules then
 		local hidden = rt.path(target, ".git", "acceptance")
@@ -331,7 +394,7 @@ function M.check(rt, name, target)
 			error(err, 0)
 		end
 		local spec = assert(rt.read(rt.path(target, "SPEC.md")))
-		local diff = checked(rt, { "git", "diff", "main", "--", "src", "test" }, target)
+		local diff = checked(rt, { git, "diff", "main", "--", "src", "test" }, target)
 		rt.write(rt.path(target, "review.out"), spec .. "\n\n" .. diff)
 	end
 	local result = table.concat(output, "\n") .. "\n"

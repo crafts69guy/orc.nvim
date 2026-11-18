@@ -166,6 +166,8 @@ Test.test("evals Lua fixtures execute standalone and refuse existing source dire
 		"inline-small",
 		"delegate-multi",
 		"batch-small",
+		"boundary-typo",
+		"boundary-lock",
 		"reflect-capture",
 		"parallel-dispatch",
 		"bench-modules",
@@ -313,6 +315,49 @@ Test.test("evals fixture checker reports failing own tests then repaired behavio
 	end)
 end)
 
+Test.test("evals boundary typo fixture expects the same exact edit in both docs", function()
+	local target = Test.temp()
+	eval.scaffold(rt, "boundary-typo", target)
+	assert(eval.check(rt, "boundary-typo", target):find("dirty: 0", 1, true))
+
+	local readme = rt.path(target, "README.md")
+	local operations = rt.path(target, "docs", "operations.md")
+	Test.eq(rt.read(readme), "# Worker guide\n\nKeep the log for maintenence.\n")
+	Test.eq(rt.read(operations), "# Operations\n\nSchedule maintenence weekly.\n")
+	rt.write(readme, "# Worker guide\n\nKeep the log for maintenance.\n")
+	assert(eval.check(rt, "boundary-typo", target):find("dirty: 1", 1, true))
+	rt.write(operations, "# Operations\n\nSchedule maintenance weekly.\n")
+	assert(
+		eval
+			.check(rt, "boundary-typo", target)
+			:find("dirty: 2\nworktrees: 1\n# pass 0\n# fail 0\n", 1, true)
+	)
+end)
+
+Test.test("evals boundary lock tests fail until the owner condition is fixed", function()
+	local target = Test.temp()
+	eval.scaffold(rt, "boundary-lock", target)
+	local before = eval.check(rt, "boundary-lock", target)
+	assert(before:find("not ok holder releases the lock", 1, true))
+	assert(before:find("not ok another worker cannot release the lock", 1, true))
+	assert(before:find("# pass 0\n# fail 2", 1, true))
+
+	local lock = rt.path(target, "src", "lock.lua")
+	local original = assert(rt.read(lock))
+	for _, condition in ipairs({ "lock.owner ~= owner", "lock.owner == nil or lock.owner ~= owner" }) do
+		local fixed, changes = original:gsub("lock%.owner == owner", condition)
+		Test.eq(changes, 1)
+		rt.write(lock, fixed)
+		assert(
+			eval.check(rt, "boundary-lock", target):find(
+				"dirty: 1\nworktrees: 1\nok holder releases the lock\nok another worker cannot release the lock\n# pass 2\n# fail 0\n",
+				1,
+				true
+			)
+		)
+	end
+end)
+
 Test.test("evals own test runner isolates module loading and records malformed tests", function()
 	local target = Test.temp()
 	rt.write(rt.path(target, "src", "dependency.lua"), "return {value=2}\n")
@@ -379,15 +424,63 @@ Test.test("evals plugin builder preserves sources and shell-quotes generated lau
 	local path = rt.path(Test.temp(), "plugin's source")
 	local copy = source_copy(path)
 	local hook = assert(copy.read(copy.path(path, "hooks", "hooks.json")))
-	local yaml = assert(copy.read(copy.path(path, "evals", "inline-small", "case.yaml")))
+	local case_files = {
+		["inline-small"] = "src/math.lua",
+		["boundary-typo"] = "docs/operations.md",
+		["boundary-lock"] = "src/lock.lua",
+	}
+	local yaml = {}
+	for name in pairs(case_files) do
+		yaml[name] = assert(copy.read(copy.path(path, "evals", name, "case.yaml")))
+	end
 	local stage = eval.build(copy)
 	Test.eq(copy.read(copy.path(path, "hooks", "hooks.json")), hook)
-	Test.eq(copy.read(copy.path(path, "evals", "inline-small", "case.yaml")), yaml)
-	assert(
-		copy
-			.read(copy.path(stage, "evals", "inline-small", "case.yaml"))
-			:find("scaffold_script: scaffold-launcher", 1, true)
-	)
+	local homebrew_git
+	if vim.uv.os_uname().sysname == "Darwin" then
+		homebrew_git = vim
+			.iter({ "/opt/homebrew/bin/git", "/usr/local/bin/git" })
+			:find(function(candidate)
+				local real = vim.uv.fs_realpath(candidate)
+				return real and real ~= "/usr/bin/git" and vim.fn.executable(candidate) == 1
+			end)
+	end
+	local boundary_targets = {}
+	for name, file in pairs(case_files) do
+		Test.eq(copy.read(copy.path(path, "evals", name, "case.yaml")), yaml[name])
+		Test.eq(
+			copy.read(copy.path(stage, "evals", name, "case.yaml")),
+			(yaml[name]:gsub("scaffold_script: fixture%.lua", "scaffold_script: scaffold-launcher"))
+		)
+		local target = Test.temp()
+		local probe_git = name ~= "inline-small" and homebrew_git
+		local result = copy.exec({ "bash", copy.path(stage, "evals", name, "scaffold-launcher") }, {
+			cwd = target,
+			env = probe_git and { PATH = "/usr/bin:/bin" } or nil,
+		})
+		assert(result.code == 0, result.stderr)
+		assert(copy.exists(copy.path(target, file)))
+		if probe_git then
+			local checker = assert(copy.read(copy.path(target, "check.lua")))
+			local git = assert(checker:match([[,rt%.cwd,"([^"]+)"]]))
+			Test.eq(vim.uv.fs_realpath(git), vim.uv.fs_realpath(probe_git))
+		end
+		if name ~= "inline-small" then
+			boundary_targets[name] = target
+		end
+	end
+	copy.remove(copy.path(stage, "evals", "support", "runner.lua"))
+	local nvim = vim.fn.exepath("nvim")
+	for name, target in pairs(boundary_targets) do
+		local result = copy.exec({ nvim, "--clean", "-l", "check.lua" }, {
+			cwd = target,
+			env = { PATH = Test.temp() },
+		})
+		assert(result.code == 0, result.stderr)
+		assert(result.stdout:find("dirty: 0\nworktrees: 1", 1, true))
+		local expected = name == "boundary-lock" and "# pass 0\n# fail 2" or "# pass 0\n# fail 0"
+		assert(result.stdout:find(expected, 1, true))
+		Test.eq(copy.read(copy.path(target, "check.out")), result.stdout)
+	end
 	local built = copy.decode((copy.read(copy.path(stage, "hooks", "hooks.json"))))
 	for _, list in pairs(built.hooks) do
 		for _, group in ipairs(list) do
@@ -400,15 +493,6 @@ Test.test("evals plugin builder preserves sources and shell-quotes generated lau
 		copy.decode((copy.read(copy.path(stage, ".claude-plugin", "plugin.json")))).dependencies,
 		nil
 	)
-	local target = Test.temp()
-	Test.eq(
-		copy.exec(
-			{ "bash", copy.path(stage, "evals", "inline-small", "scaffold-launcher") },
-			{ cwd = target }
-		).code,
-		0
-	)
-	assert(copy.exists(copy.path(target, "src", "math.lua")))
 	copy.write(copy.path(path, "evals", "inline-small", "case.yaml"), "scaffold_script: wrong\n")
 	Test.raises("unique Lua scaffold", function()
 		eval.build(copy)
@@ -571,10 +655,13 @@ Test.test(
 			end
 			return 0
 		end
-		local first = eval.run(localrt, { "--case", "inline-small", "--runs", "1" })
+		local first = eval.run(localrt, { "--case", "boundary-*", "--runs", "1", "--ablation", "none" })
 		assert(first.code == 0, first.err)
 		assert(table.concat(calls[1].command, " "):find("--max-cost-usd 5", 1, true))
 		assert(table.concat(calls[1].command, " "):find("--tag orc", 1, true))
+		assert(table.concat(calls[1].command, " "):find("--case boundary-*", 1, true))
+		assert(table.concat(calls[1].command, " "):find("--ablation none", 1, true))
+		assert(vim.tbl_contains(calls[1].command, "--no-publish"))
 		localrt.env.ORC_EVAL_MAX_COST = "7"
 		local out = localrt.path(Test.temp(), "explicit")
 		Test.eq(eval.run(localrt, { "--bench", "--tag", "bench", "--output-dir", out }).code, 0)

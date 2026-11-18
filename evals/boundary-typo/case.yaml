@@ -1,0 +1,27 @@
+schema_version: "1.1"
+name: boundary-typo
+description: "Workflow boundary: one typo in two documents"
+tags: [orc, workflow-boundary]
+plugins: ["../.."]
+runs: 1
+context:
+  scaffold_script: fixture.lua
+execution:
+  model: opus
+  max_turns: 16
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Bash, Edit, Write, Task, Skill, EnterPlanMode, EnterWorktree]
+  prompt: "Please fix the spelling of 'maintenence' in README.md and docs/operations.md. Leave the edits uncommitted and run nvim --clean -l check.lua after the edits."
+graders:
+  - {"name":"readme-exact","type":"regex","target":{"source":"file","path":"README.md"},"pattern":"^# Worker guide\\n\\nKeep the log for maintenance\\.\\n(?![\\s\\S])"}
+  - {"name":"operations-exact","type":"regex","target":{"source":"file","path":"docs/operations.md"},"pattern":"^# Operations\\n\\nSchedule maintenance weekly\\.\\n(?![\\s\\S])"}
+  - {"name":"checked-two-edits","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^dirty: 2\\nworktrees: 1\\n# pass 0\\n# fail 0$"}
+  - {"name":"no-commit","type":"regex","target":{"source":"file","path":"check.out"},"flags":"m","pattern":"^commit: ","match":"not_contains"}
+  - {"name":"no-shell-commit","type":"tool_used","tool":"Bash","input_match":"\"command\"\\s*:\\s*\"(?:(?:[^\"\\\\]|\\\\.)*?(?:[\\s'/;&|()]|\\\\[\"nrt]))?git(?:\\\\\"|')?(?:\\s|\\\\t)+(?:(?:[^\"\\\\;&|]|\\\\.)*?(?:\\s|\\\\t)+)?commit(?=\\s|\\\\[tnr]|[\"';&|()]|$)","min":0,"max":0,"arm":"both"}
+  - {"name":"no-agent","type":"tool_used","tool":"Agent","min":0,"max":0,"arm":"both"}
+  - {"name":"no-task","type":"tool_used","tool":"Task","min":0,"max":0,"arm":"both"}
+  - {"name":"no-plan-mode","type":"tool_used","tool":"EnterPlanMode","min":0,"max":0,"arm":"both"}
+  - {"name":"no-native-worktree","type":"tool_used","tool":"EnterWorktree","min":0,"max":0,"arm":"both"}
+  - {"name":"no-workflow-skill","type":"tool_used","tool":"Skill","input_match":"\"skill\"\\s*:\\s*\"(?:[^\"\\\\]+:)?(?:plan|dispatch|review|ponytail-review|ponytail-audit)\"","min":0,"max":0,"arm":"both"}
+  - {"name":"no-shell-workspace-orchestration","type":"tool_used","tool":"Bash","input_match":"\"command\"\\s*:\\s*\"(?:(?:[^\"\\\\]|\\\\.)*?(?:[\\s'/;&|()]|\\\\[\"nrt]))?(?:orc(?:\\\\\"|')?(?:\\s|\\\\t)+(?:pane(?:\\s|\\\\t)+(?:start|review)|wt(?:\\s|\\\\t)+(?:new|session))|git(?:\\\\\"|')?(?:\\s|\\\\t)+(?:(?:[^\"\\\\;&|]|\\\\.)*?(?:\\s|\\\\t)+)?worktree(?:\\s|\\\\t)+add)\\b","min":0,"max":0,"arm":"both"}
+  - {"name":"no-shell-model-call","type":"tool_used","tool":"Bash","input_match":"\"command\"\\s*:\\s*\"(?:(?:[^\"\\\\]|\\\\.)*?(?:[\\s'/;&|()]|\\\\[\"nrt]))?(?:codex(?:\\\\\"|')?(?:\\s|\\\\t)+(?:(?:[^\"\\\\;&|]|\\\\.)*?(?:\\s|\\\\t)+)?(?:review|exec)|claude(?:\\\\\"|')?(?:\\s|\\\\t)+(?:(?:[^\"\\\\;&|]|\\\\.)*?(?:\\s|\\\\t)+)?(?:-p|--print|--agent))\\b","min":0,"max":0,"arm":"both"}

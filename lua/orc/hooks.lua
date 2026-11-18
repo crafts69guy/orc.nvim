@@ -190,17 +190,56 @@ function M.handback(rt, path)
 	return found
 end
 
----Build the common orchestration context for both harnesses.
+---@class orc.OrchestratorRuleSource
+---@field path string Absolute path under the active Orc runtime root.
+---@field version string Version reported by that runtime's CLI.
+---@field sha256? string SHA-256 of the rule contents, when readable.
+
+---Read the startup rule and describe the source used by this Orc runtime.
+---@param rt orc.Runtime
+---@return orc.OrchestratorRuleSource source
+---@return string? rules
+---@return string? read_error
+function M.rule_source(rt)
+	local version = require("orc.cli").version
+	assert(type(version) == "string" and version ~= "", "Orc CLI version is unavailable")
+	---@type orc.OrchestratorRuleSource
+	local source = { path = rt.path(rt.root, "rules", "orchestrator.md"), version = version }
+	local ok, rules, err = pcall(rt.read, source.path)
+	if not ok or not rules then
+		return source, nil, tostring(ok and (err or "file is missing") or rules)
+	end
+	source.sha256 = vim.fn.sha256(rules)
+	return source, rules
+end
+
+---Format the provenance shared by the static audit and fresh session context.
+---@param source orc.OrchestratorRuleSource
+---@return string
+function M.format_rule_source(source)
+	return string.format(
+		"Orc runtime orchestrator rule: `%s` (CLI version `%s`, SHA-256 `%s`).",
+		source.path,
+		source.version,
+		source.sha256 or "unavailable"
+	)
+end
+
+---Build the common orchestration context for both harnesses with runtime provenance.
 ---Includes only the active ORC_LEVEL routing paragraph (default: Single).
+---Resolves the delegated guide path without reading the guide.
 ---@param rt orc.Runtime
 ---@param cwd? string
 ---@return string
 function M.context(rt, cwd)
-	local rules = assert(
-		rt.read(rt.path(rt.root, "rules", "orchestrator.md")),
-		"orc: rules/orchestrator.md is missing"
-	)
-	local text = { rules, "CLI: `" .. rt.path(rt.root, "bin", "orc") .. "`." }
+	local source, rules, err = M.rule_source(rt)
+	assert(rules, source.path .. ": " .. tostring(err))
+	local text = {
+		rules,
+		"CLI: `" .. rt.path(rt.root, "bin", "orc") .. "`.",
+		M.format_rule_source(source),
+		"Delegated workflow guide: `" .. rt.path(rt.root, "rules", "delegated-workflow.md") .. "`.",
+	}
 	local root = require("orc.worktrees").root(rt, cwd)
 	if root then
 		text[#text + 1] = "Scratch dir: " .. rt.path(root, ".scratch")
@@ -237,22 +276,18 @@ function M.context(rt, cwd)
 	if rt.env.ORC_PAIR == "1" or rt.env.ORC_PANES == "1" then
 		assert(rt.env.REX_SESSION and rt.env.REX_BLOCK, "orc: pair/pane mode needs a Rex terminal")
 		text[#text + 1] = rt.env.ORC_PAIR == "1"
-				and "Pair mode: use one Codex worker with `orc pane start <feature> <task> --here --path <checkout> --brief <file> --kind codex`; do not write beside the worker."
-			or table.concat({
-				"Pane mode (automatic in Rex): delegate scopers and implementers through `orc pane start <feature> <task> --path <checkout> --brief <file> --role scoper|implementer` workers (Codex by default), rather than native subagents.",
-				"Use cross-vendor review per the orchestrator rules; shipper stays native. For a single task add `--here` in the session checkout; the orchestrator must not edit beside the implementer.",
-				"For parallel tasks use dispatch worktrees. Run `orc pane wait` with the harness's background execution.",
-			}, "\n")
+				and "Pair mode uses one Codex implementer in the selected checkout."
+			or "Pane mode delegates scoping and implementation in Rex."
 	end
 	if rt.env.ORC_LEVEL == "high" then
 		text[#text + 1] =
-			"Level high (Cascade): run deterministic checks first; after a review round fails, escalate instead of retrying the same tier: switch the worker to the other --kind or a stronger Claude model, and record why."
+			"Level high (Cascade) requires deterministic checks first. Escalate after a failed review round."
 	elseif rt.env.ORC_LEVEL == "max" then
 		text[#text + 1] =
-			"Level max (Critique): run deterministic checks first; every substantial diff gets two independent reviews in parallel from different vendors; merge findings into one follow-up for the same implementer."
+			"Level max (Critique) requires deterministic checks first. Give every substantial diff two independent reviews in parallel from different vendors. Merge findings into one follow-up for the same implementer."
 	else
 		text[#text + 1] =
-			"Level default (Single): one implementer per task; run deterministic checks first; use the reviewer only for risky diffs (security, concurrency, migrations, public APIs, fund safety)."
+			"Level default (Single) uses one implementer per task. Run deterministic checks first. Use a cross-vendor reviewer only for risky diffs (security, concurrency, migrations, public APIs, fund safety)."
 	end
 	local flag = require("orc.inkdrop").flag(rt, cwd)
 	if flag then

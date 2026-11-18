@@ -748,17 +748,34 @@ function M.analyze(data, scope)
 	return { schemaVersion = 1, sources = kept, findings = output }
 end
 
----Audit configuration for both harnesses without contacting servers or models.
----@param rt table
----@param cwd? string
----@return table
-function M.collect(rt, cwd)
-	cwd = cwd or rt.cwd
-	return M.analyze(collect_sources(rt, project_root(rt, cwd), cwd))
+local function add_rule_source(rt, data)
+	local ok, source, _, err = pcall(function()
+		return require("orc.hooks").rule_source(rt)
+	end)
+	if ok then
+		data.orchestratorRule = source
+	end
+	if not ok or err then
+		local detail = ok and (source.path .. ": " .. err) or tostring(source)
+		local item = finding("warn", "unreadable", detail, "check the Orc runtime files")
+		item.harness = "orc"
+		data.findings[#data.findings + 1] = item
+	end
+	return data
 end
 
----Run the scope-filtered audit; structural failures produce exit code 1.
----@param rt table
+---Audit both harnesses offline and report the invoking Orc runtime's rule source.
+---@param rt orc.Runtime
+---@param cwd? string
+---@return table result Static audit with optional orchestratorRule provenance.
+function M.collect(rt, cwd)
+	cwd = cwd or rt.cwd
+	return add_rule_source(rt, M.analyze(collect_sources(rt, project_root(rt, cwd), cwd)))
+end
+
+---Run the scope-filtered audit with independent provenance for the invoking CLI.
+---Structural failures produce exit code 1; unavailable provenance is a warning.
+---@param rt orc.Runtime
 ---@param argv string[]
 ---@return table
 function M.run(rt, argv)
@@ -779,6 +796,7 @@ function M.run(rt, argv)
 		item.harness = "claude"
 		data = { schemaVersion = 1, sources = {}, findings = { item } }
 	end
+	add_rule_source(rt, data)
 	local code = 0
 	for _, item in ipairs(data.findings) do
 		if item.status == "fail" then
@@ -789,7 +807,10 @@ function M.run(rt, argv)
 		return { code = code, out = rt.encode(data) .. "\n", err = "" }
 	end
 	local rendered = {}
-	for _, harness in ipairs({ "claude", "codex" }) do
+	if data.orchestratorRule then
+		rendered[#rendered + 1] = require("orc.hooks").format_rule_source(data.orchestratorRule)
+	end
+	for _, harness in ipairs({ "claude", "codex", "orc" }) do
 		local own = {}
 		for _, item in ipairs(data.findings) do
 			if item.harness == harness then
