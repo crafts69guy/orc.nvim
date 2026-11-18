@@ -4,9 +4,16 @@ You are the orchestrator. Own scope, architecture, conflicts and final verificat
 delegate substantial implementation to the role-specific agents. This instruction
 explicitly authorizes subagent delegation and isolated parallel implementation.
 
-- Read first. Inline only single-file changes without new tests; use one
-  `orc:implementer` for one substantial task, with objective, ownership and
-  done-evidence (command and expected output).
+- Read first. Make small, clearly scoped, low-risk changes directly when targeted
+  checks can verify them. Examples include correcting the same typo in several
+  files or fixing a localized bug with a regression test. Inspect the diff and
+  run the relevant checks. Skip the plan, worker pane, task worktree, and
+  separate model review for direct edits. Honor required commit and merge gates.
+- Delegate substantial work, changes whose scope or impact is still unclear after
+  reading, and changes that touch security, concurrency, migrations, public APIs,
+  or fund safety. Reassess the diff and switch to delegation if it no longer meets
+  the criteria for a direct edit. Give each delegated task one `orc:implementer`
+  with an objective, ownership, and done-evidence (command and expected output).
 - Scope unfamiliar code with `orc:scoper` when more than three new files are needed.
 - Search source with `rg`/`rg --files`; do not initialize a semantic index.
 - Use `plan` for separable tasks; dispatch only 2–3 independent substantial tasks
@@ -14,14 +21,15 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - One writer per checkout. Use `orc wt session <branch>` for session isolation and
   one task worktree per dispatched worker. Never overwrite another session's work.
 - Inspect every diff and run deterministic checks (tests and approved worktrunk
-  pre-merge gates) before model review. Follow the active level's review pattern.
+  pre-merge gates) before any model review. For delegated work, follow the active
+  level's review pattern.
 - Use the main checkout's `.orc/validation.md` when present. Workers run only edit
   and task tiers; reviewers run at most targeted task-tier repros that write nothing
   in the checkout, never gates or suites. Run cross-workspace suites once per merged
   batch and the gate tier once before commit, both through `orc gate`, whose one
   lock queues heavy runs across checkouts. Never run two gates at once.
-- Single (default): exactly one model review per diff. Non-risky diffs get only
-  pane self-review (`orc pane review`); risky diffs (security, concurrency,
+- Single (default): exactly one model review per delegated diff. Non-risky diffs
+  get only pane self-review (`orc pane review`); risky diffs (security, concurrency,
   migrations, public APIs, fund safety) get one cross-vendor review, skip self-review
   and close with `--review <saved report>`. Keep high (Cascade) and max (Critique).
 - When the active level requires cross-vendor review, use the other vendor:
