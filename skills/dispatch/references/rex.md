@@ -5,13 +5,32 @@ Pane mode is automatic inside Rex; `--no-panes` or `ORC_PANES=0` disables it.
 Delegate scopers and implementers through Codex pane workers instead of native
 subagents; choose review by the active level in the orchestrator rules; shipper stays native.
 
-When cross-vendor review is required for a Codex-written diff under a Codex
-orchestrator, run the read-only Claude review with the harness's background execution and save stdout/stderr under
-`.scratch/<feature>/`:
+For independent review, prefer the other vendor. If quota or unsupported
+transport prevents that, start a fresh same-vendor reviewer and record the reason
+in the task log. Critique uses two independent reviews where available. Use TUI
+for interactive work. Opt in to exec for bounded one-turn work. If independent
+review is unavailable, record the blocker and leave the review pending.
 
-```sh
-claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-system-prompt 'Review only; do not edit files or run tests.' 'Use the ponytail:ponytail-review skill when it is available. Review the uncommitted diff against the task brief; report concrete findings.'
+For a Codex-written diff under a Codex orchestrator, this is a bounded Claude
+review. Run it from the task checkout with absolute `worktree`, `brief` and
+`report` paths. Pin the checkout before launching the reviewer.
+
+```fish
+orc pane review-begin "$task" --path "$worktree" --review "$report"
+and claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill \
+    --append-system-prompt 'Review only. Read the code and diff without writing files or running tests.' \
+    "Use ponytail:ponytail-review when available. Review the uncommitted diff against the brief at $brief and report findings and a verdict." \
+    > "$report" 2> "$report.stderr"
 ```
+
+Read the saved verdict and close only after accepting it:
+
+```fish
+orc pane close "$task" --path "$worktree" --review "$report"
+```
+
+For parallel reviewers, pin the acceptance report before dispatch. Save both
+outputs and verdicts in that report and accept both before closing.
 
 - Start: `orc pane start <feature> <task> --path <worktree> --brief <file> --role implementer [--transport tui|exec]`.
   Codex and implementer are defaults; use `--role scoper` for read-only scoping
@@ -25,8 +44,8 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
   block, process exit/error or timeout; a working TUI transcript unchanged for 30+ minutes returns `stalled` with a recovery hint. Missing evidence never ends this wait.
   A done report adds `next`: `orc pane review` for a TUI implementer's work run, then
   `orc pane close` after its review run (directly for scopers and exec workers).
-  When the active level requires a cross-vendor review of this diff, use the saved
-  report with `close --review <file>` instead of the suggested self-review.
+  When the active level requires independent review, use `pane review-begin`
+  followed by a saved report and `close --review <file>`.
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
   Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
   `unacknowledged`; inspect the pane and trust the hooks before retrying.
@@ -53,9 +72,8 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
   because the checkout changed: inspect the diff before accepting anything.
   Single (default) gets exactly one model review per diff: non-risky diffs get only
   self-review; risky diffs (security, concurrency, migrations, public APIs, fund safety)
-  get one cross-vendor review. For an initial diff requiring cross-vendor review,
-  skip self-review, save the reviewer's report
-  under `.scratch/<feature>/` and close with `--review <file>` after accepting it.
+  get one independent review. For that initial diff, pin the checkout before
+  dispatching a reviewer and use the saved report to close after acceptance.
   Otherwise, initial self-review stays required after the report and deterministic checks.
   After a fix round, self-review only the paths changed in that round, taken from
   the follow-up report and `git status`:
@@ -66,14 +84,18 @@ claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill --append-syst
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
   never type into a worker pane with `rex send`, which bypasses run IDs and reports.
+- Pin independent review: `orc pane review-begin <task> --path <worktree> --review <new-file>`.
+  Use a new path under `.scratch/<feature>/`, preferably outside the task
+  checkout. Start the reviewer after pinning succeeds. If the run or checkout
+  changes, pin again with a new path and review the updated tree.
 - Close: `orc pane close <task> --path <worktree> [--review <file>]`. A live TUI
   implementer closes only after a done self-review of the checkout as it is now or
-  an accepted saved cross-vendor review report passed with `--review <file>`.
-  The orchestrator attests that the saved report covers the checkout as it is now.
+  an accepted saved independent review passed with `--review <file>`. Close checks
+  the pinned path, run and checkout fingerprint. The orchestrator checks the verdict.
   Without either, close returns `status: "not-reviewed"` naming the review command;
   a missing or empty report file also returns `status: "not-reviewed"`.
   `--review` and `--no-review` are mutually exclusive. `--no-review` closes anyway:
-  use it only for an abandoned, stalled or failed task or an unavailable review skill;
+  use it for cleanup of an abandoned, stalled or failed task;
   record why in the task log. If Rex restarted
   or pane creation failed, close and start refuse the stranded record; after checking
   the pane is gone, add `--force` to mark it closed without touching Rex.
@@ -92,7 +114,9 @@ Close only panes created for your task. Closing Neovim leaves workers running.
 For a single task use `start --here --path <checkout>`; the orchestrator
 does not edit beside its implementer. Scopers never claim checkout ownership.
 Pair mode uses one Codex implementer at a time in that checkout. Review the diff
-and rerun validation before closing. Parallel work uses dispatch task worktrees.
+and rerun validation before closing. The same gates apply when only one task can
+run. Parallel work uses dispatch task worktrees. After integration, use `orc gate`
+for checks against the actual tree to be committed.
 Start requires a checkout toplevel; `--allow-subdir` permits a subdirectory, including
 with `--here`, which also supports another repository. Use `--precheck '<cmd>'` in
 `sh` before creating a pane; failure returns `precheck-failed`, its exit code and

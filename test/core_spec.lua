@@ -428,9 +428,9 @@ Test.test("core context resolves rule and guide paths from the invoking root", f
 		end
 		local procedure = assert(rt.read(guide_path)):gsub("\n  +", " ")
 		for level, clauses in pairs({
-			Single = { "pane self-review", "one cross-vendor review" },
+			Single = { "pane self-review", "one independent review" },
 			Cascade = { "escalates after a failed review round" },
-			Critique = { "two independent reviews in parallel from different vendors" },
+			Critique = { "two independent reviews in parallel", "Prefer different vendors" },
 		}) do
 			local bullet =
 				assert(procedure:match("\n%- " .. level .. " ([^\n]+)"), "missing " .. level .. " bullet")
@@ -438,6 +438,7 @@ Test.test("core context resolves rule and guide paths from the invoking root", f
 				assert(bullet:find(clause, 1, true), level .. ": " .. clause)
 			end
 		end
+		assert(procedure:find("start a fresh same-vendor reviewer", 1, true))
 	end
 	assert(fingerprints[1] ~= fingerprints[2])
 end)
@@ -1789,12 +1790,12 @@ Test.test("core context injects only the active level with its routing instructi
 	for _, case in ipairs({
 		{
 			pattern = "Single",
-			guidance = { "one implementer per task", "only for risky diffs", "public APIs" },
+			guidance = { "one implementer per task", "independent review for risky diffs", "public APIs" },
 		},
 		{
 			level = "default",
 			pattern = "Single",
-			guidance = { "security", "concurrency", "migrations" },
+			guidance = { "security", "concurrency", "migrations", "delegated guide for fallback" },
 		},
 		{
 			level = "high",
@@ -1807,7 +1808,7 @@ Test.test("core context injects only the active level with its routing instructi
 			guidance = {
 				"every substantial diff",
 				"two independent reviews in parallel",
-				"different vendors",
+				"different vendors when available",
 				"same implementer",
 			},
 		},

@@ -32,13 +32,22 @@
   See dispatch's Rex reference for the close gate, `--review` and `--no-review`.
 - Single (default) uses exactly one model review per delegated diff. For non-risky
   diffs, use pane self-review (`orc pane review`). For risky diffs (security,
-  concurrency, migrations, public APIs, fund safety), use one cross-vendor review
-  and close with `--review <saved report>`.
+  concurrency, migrations, public APIs, fund safety), use one independent review.
 - Cascade (high) escalates after a failed review round. Switch the worker to the
   other `--kind` or a stronger Claude model and record why.
-- Critique (max) uses two independent reviews in parallel from different vendors
-  for every substantial diff. Combine findings into one follow-up for the same
-  implementer.
+- Critique (max) uses two independent reviews in parallel where available for
+  every substantial diff. Prefer different vendors and combine findings into one
+  follow-up for the same implementer.
+- Prefer the other vendor for independent review. If quota or unsupported review
+  transport prevents it, start a fresh same-vendor reviewer and record the reason
+  in the task log. Give that reviewer the brief and current diff in a new session.
+  If no independent reviewer can run, record the blocker and leave the independent
+  review pending. Deterministic checks and the applicable review still apply,
+  including for work with no parallel tasks.
+- Before launching a saved independent review of a pane task, pin the checkout
+  with `orc pane review-begin <task> --path <checkout> --review <new-file>`.
+  Save the reviewer's output there and read the verdict before passing that same
+  path to `orc pane close --review`. See dispatch's Rex reference for details.
 - For cross-vendor review of Codex implementation from a Claude orchestrator, use
   a native `orc:reviewer`. For Claude implementation or a second opinion, run
   `codex --no-daemon review --uncommitted` in the task checkout using the harness's
@@ -50,6 +59,10 @@
 
 ## Follow-ups and handoff
 
+- After integration, run the applicable validation through the existing
+  `orc gate` on the exact tree that will be committed. Reuse a gate run when the
+  tree and required checks match. Run the affected checks again if integration or
+  fixes change that tree.
 - Merge findings into one follow-up for the same implementer. Allow at most two
   fix rounds, then sharpen the brief for a new worker. Record kind, level,
   model/effort and escalation reasons in the task log.

@@ -116,12 +116,13 @@ from the same Orc runtime and loads on demand.
 | `orc claude --panes`, `orc codex --panes` | Force pane delegation (automatic inside Rex) |
 | `orc claude --no-panes`, `orc codex --no-panes` | Disable automatic pane mode |
 | `orc wt new\|merge\|apply\|remove\|list\|session` | Manage isolated worktrees and serial merges; `apply` stages a task in the current checkout without committing on base; re-running it after a fix round stages only the delta; `new` reuses live task worktrees; a merge whose cleanup fails still reports `merged` with a `warning` |
-| `orc pane start\|wait\|prompt\|close [--force] [--no-review \| --review <file>]` | Manage a worker and its report; `close` refuses a live TUI implementer without a done self-review of the current checkout (`status: "not-reviewed"`) unless `--no-review` or a readable, non-empty saved cross-vendor report is supplied with `--review <file>`; `close --force` marks an unreachable record closed without calling Rex |
+| `orc pane start\|wait\|prompt\|close [--force] [--no-review \| --review <file>]` | Manage a worker and its report. Close a live TUI implementer with a current done self-review or an accepted independent review at the pinned `--review` path. `--no-review` is for cleanup. `--force` marks an unreachable record closed without calling Rex. |
 | `orc pane prune --path <dir>` | Close successful exits or idle/done workers with a matching done report and evidence, skipping unreviewed live TUI implementers; print closed/skipped JSON with reasons |
 | `orc pane start ... [--allow-subdir] [--precheck '<cmd>']` | Require a checkout toplevel by default; check prerequisites before pane creation |
 | `orc pane start ... [--mcp <name,...>]` | Workers start no MCP servers, configured or Codex-plugin, unless allowlisted; a Codex worker refuses to launch if Codex rejects the overrides or would still start one; the orchestrator keeps its own |
 | `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
-| `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only ponytail review of its uncommitted diff (else `<base>...HEAD`); `pane wait` adds `readOnly` and a `violation` when the checkout changed; Single uses only self-review for non-risky diffs or one cross-vendor review with `close --review <file>` for risky diffs; re-check fix-round paths with the same worker's `--target`, unless a new risky area requires cross-vendor review |
+| `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only review of its uncommitted diff (else `<base>...HEAD`). `pane wait` reports whether the checkout changed. Recheck fix-round paths with `--target` unless a new risky area requires independent review. |
+| `orc pane review-begin <task> --path <dir> --review <new-file>` | Pin the current run and checkout before independent review. Save the review output at that path, read its verdict, then pass the same path to `pane close --review`. |
 | `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; returns `stalled` with a recovery hint when a working TUI transcript is unchanged for 30+ minutes; a done report adds `next`: `pane review` after a TUI implementer's work run, else the close command; follows follow-up runs and lists replaced ones in `previousRuns`; failures return `state: "wait-failed"` with a `hint` |
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
@@ -140,14 +141,18 @@ Choose `--level default|high|max` (or `ORC_LEVEL`; the flag wins):
 
 | Level | Routing after deterministic checks |
 | --- | --- |
-| `default` (Single) | One model review per delegated diff. Use pane self-review for non-risky diffs and cross-vendor review for security, concurrency, migrations, public APIs or fund safety. |
+| `default` (Single) | One model review per delegated diff. Use pane self-review for non-risky diffs and independent review for security, concurrency, migrations, public APIs or fund safety. |
 | `high` (Cascade) | Escalate kind or Claude model after a failed review round; record why |
-| `max` (Critique) | Two independent vendor reviews in parallel for every substantial diff; one combined follow-up to the same implementer |
+| `max` (Critique) | Two independent reviews in parallel where available for every substantial diff, with one combined follow-up to the same implementer. |
 
 Claude `high` and `max` share elevated role models; Codex model selection stays
 native. Worker records and picker rows show the level captured at start; older
-records show `default`. Primary review uses the other vendor. On a usage/rate
-limit, restart the same brief and worktree with the other `--kind`.
+records show `default`. Prefer the other vendor for independent review. If quota
+or unsupported transport prevents it, start a fresh same-vendor reviewer and
+record the reason. If none can run, record the blocker and leave independent
+review pending. Review and deterministic gates still apply when nothing can run
+in parallel. If the implementer hits a usage limit, restart the same brief and
+worktree with the other `--kind`.
 
 Inside Rex (`REX_SESSION` and `REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
@@ -161,8 +166,8 @@ Choose a worker transport with `--transport tui|exec`:
 
 | Transport | Providers | Trade-off |
 | --- | --- | --- |
-| `tui` (default, including older records) | Codex, Claude | Interactive steering, approvals and `pane prompt` follow-ups; hook-based reports |
-| `exec` (opt-in) | Codex | Headless JSONL events and token usage; no interactive steering or `pane prompt` follow-ups |
+| `tui` (default, including older records) | Codex, Claude | Interactive steering, approvals, `pane prompt` follow-ups and hook-based reports |
+| `exec` (opt-in for bounded one-turn work) | Codex | Headless JSONL events, token usage and start/wait/close |
 
 For example, add `--transport exec` to `orc pane start`. Exec workers save raw
 events to `<checkout>/.orc/runs/<runId>.jsonl` and store `threadId`, last-turn
@@ -174,10 +179,10 @@ with `--kind claude --transport tui`. Exec follow-ups currently require closing
 and starting a new worker; the saved thread ID is diagnostic metadata, not an
 automatic resume. Workers never answer approvals.
 
-In pane mode, scopers and implementers use pane workers (Codex by default);
-review follows the cross-vendor rules and shippers stay native. For one task add
-`--here --path <checkout>` and do not edit beside its implementer. Parallel
-tasks use dispatch worktrees.
+In pane mode, scopers and implementers use pane workers (Codex by default).
+Independent review follows the vendor preference above and shippers stay native.
+For one task add `--here --path <checkout>` and leave the checkout to its
+implementer. Parallel tasks use dispatch worktrees.
 Start requires the checkout's git toplevel; `--allow-subdir` explicitly permits a
 subdirectory. `--here` also supports a checkout in another repository.
 `--precheck '<cmd>'` runs in `--path` using `sh -c` before creation;
@@ -228,8 +233,9 @@ tiers with concrete commands, for example:
 - gate: run the full suite and coverage once before commit.
 ```
 
-Workers run only edit and task tiers. The orchestrator alone runs the gate tier once
-before commit through `orc gate`; never run two gates at once. `orc gate` preserves
+Workers run only edit and task tiers. After integration, the orchestrator runs the
+gate tier once through `orc gate` against the exact tree to be committed. A gate
+run covering that tree and the required checks can be reused. `orc gate` preserves
 the child exit code, streams stdout/stderr and tees both to `--log` when supplied.
 Its lock is `$ORC_GATE_LOCK`, otherwise `${XDG_CACHE_HOME:-~/.cache}/orc/gate.lock`.
 The private JSON lock records pid, label, cwd and start time; waiting prints the

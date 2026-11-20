@@ -1,6 +1,8 @@
 local M = {}
 local serial = 0
 local statuses = { done = true, partial = true, blocked = true }
+local TERMINAL_CREATOR = "com.superlogical.terminal"
+local TERMINAL_FLAVOR = TERMINAL_CREATOR .. ".shell"
 
 ---@class orc.Worker
 ---@field runId string Identity of the current prompt attempt.
@@ -18,6 +20,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field level 'default'|'high'|'max' ORC_LEVEL at start; missing levels default to default.
 ---@field sessionId string Rex session ID.
 ---@field blockId? string Rex block created by this run.
+---@field launchLabel? string Unique Rex label for the original launch, absent on legacy records.
 ---@field windowId? string Rex window returned during creation.
 ---@field state string Observed worker lifecycle state.
 ---@field acknowledged boolean Whether UserPromptSubmit accepted this run marker.
@@ -44,6 +47,7 @@ local statuses = { done = true, partial = true, blocked = true }
 ---@field deliveryError? string Diagnostic for an unconfirmed terminal write.
 ---@field observationError? string Diagnostic for a failed live status observation.
 ---@field review? {skill:string,target:string,baseline:string} Read-only review run and its checkout fingerprint.
+---@field reviewPin? {runId:string,report:string,baseline:string,started:number} Independent review requested before dispatch.
 ---@field reviewed? {runId?:string,report?:string,baseline:string} Last done review run or absolute saved report, kept across runs; close requires its fingerprint.
 
 local function main_root(rt, cwd)
@@ -148,13 +152,18 @@ local function save(rt, record, mode)
 				end
 				return
 			end
-			if mode == "new" then
+			if mode == "review-pin" then
+				assert(latest.runId == record.runId, "orc pane: current run changed while writing")
+				latest.reviewPin = record.reviewPin
+				record = latest
+			elseif mode == "new" then
 				assert(
 					latest.state == "closed" or latest.runId == record.previousRunId,
 					"orc pane: current run changed while writing"
 				)
 			else
 				assert(latest.runId == record.runId, "orc pane: current run changed while writing")
+				record.reviewPin = latest.reviewPin
 				if record.transport == "exec" and mode ~= "exec" then
 					for _, field in ipairs({ "threadId", "usage", "exitCode", "rateLimited", "execFinished" }) do
 						if latest[field] ~= nil then
@@ -202,19 +211,23 @@ local function local_block(client, record, block)
 				found.host_id == record.hostId,
 				"orc pane: block is remote; local worktrees are unavailable"
 			)
-			return
+			return found
 		end
 	end
 	error("orc pane: owned block is missing", 0)
 end
 
-local function client_for(rt, record)
-	local client = require("orc.rex").new(rt)
+local function verify_server(client, record)
 	local identity = client.identity()
 	assert(
 		identity.host_id == record.hostId and identity.instance_id == record.instanceId,
 		"orc pane: Rex server identity changed; refusing stale block"
 	)
+end
+
+local function client_for(rt, record)
+	local client = require("orc.rex").new(rt)
+	verify_server(client, record)
 	if record.blockId then
 		local_block(client, record, record.blockId)
 	end
@@ -411,11 +424,16 @@ end
 
 -- Rex-side failures can strand a record; tell the user how to release it locally.
 local function hinted(record, fn, ...)
+	local pending = not record.blockId and record.launchLabel
 	local ok, value = pcall(fn, ...)
 	if not ok then
+		local recovery = pending
+				and "; retry the same orc pane start to reconcile the pending launch. If the pane is gone, "
+			or "; "
 		error(
 			tostring(value)
-				.. "; run orc pane close "
+				.. recovery
+				.. "run orc pane close "
 				.. record.task
 				.. " --path "
 				.. record.path
@@ -440,6 +458,7 @@ local function new_run(rt, record)
 	record.report = rt.path(record.path, ".orc", "reports", record.runId .. ".md")
 	record.state, record.acknowledged, record.reportStatus = "unconfirmed", false, nil
 	record.hookState, record.review = "pending", nil
+	record.reviewPin = nil
 	record.inputReady, record.nativeState, record.nativeOwner = false, nil, nil
 	record.createdAt = rt.now()
 end
@@ -506,6 +525,7 @@ local function fingerprint(rt, path)
 		git(rt, path, "rev-parse", "HEAD"),
 		status,
 		git(rt, path, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
+		git(rt, path, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
 	}
 	local untracked = { "hash-object", "--" }
 	for _, entry in ipairs(vim.split(status, "\0", { trimempty = true })) do
@@ -517,6 +537,70 @@ local function fingerprint(rt, path)
 		parts[#parts + 1] = git(rt, path, unpack(untracked))
 	end
 	return vim.fn.sha256(table.concat(parts, "\0"))
+end
+
+local function independent_review_hint(record)
+	local target = record.task .. " --path " .. vim.fn.shellescape(record.path)
+	return "run orc pane review-begin "
+		.. target
+		.. " --review <new-file> before dispatching an independent review; read and accept its verdict, then run orc pane close "
+		.. target
+		.. " --review <saved report>"
+end
+
+local function require_new_review_file(file)
+	local _, err, code = vim.uv.fs_lstat(file)
+	assert(code == "ENOENT", "orc pane review-begin: report must be a new file: " .. (err or file))
+end
+
+local function review_begin(rt, record, path)
+	assert(record.state ~= "closed", "orc pane review-begin: worker is closed")
+	assert(path and path ~= "", "orc pane review-begin: --review is required")
+	local file = rt.abspath(path)
+	require_new_review_file(file)
+	local baseline = fingerprint(rt, record.path)
+	local seconds, microseconds = vim.uv.gettimeofday()
+	require_new_review_file(file)
+	record.reviewPin = {
+		runId = record.runId,
+		report = file,
+		baseline = baseline,
+		started = seconds + microseconds / 1000000,
+	}
+	save(rt, record, "review-pin")
+	return result(
+		rt,
+		0,
+		{ status = "review-pinned", task = record.task, runId = record.runId, report = file }
+	)
+end
+
+local function independent_review(rt, record, path)
+	local pin = record.reviewPin
+	assert(
+		pin and pin.runId == record.runId,
+		"orc pane close: no independent review pinned for the current run"
+	)
+	local file = rt.abspath(path)
+	assert(
+		file == pin.report,
+		"orc pane close: review report differs from the pinned path " .. pin.report
+	)
+	local stat, err = vim.uv.fs_lstat(file)
+	assert(stat, "orc pane close: cannot read review report " .. file .. ": " .. tostring(err))
+	assert(stat.type == "file", "orc pane close: review report must be a regular file")
+	assert(
+		stat.mtime.sec + stat.mtime.nsec / 1000000000 >= pin.started,
+		"orc pane close: review report predates the pin"
+	)
+	local text, read_error = rt.read(file)
+	assert(text, "orc pane close: cannot read review report " .. file .. ": " .. tostring(read_error))
+	assert(text:find("%S"), "orc pane close: review report is empty: " .. file)
+	assert(
+		fingerprint(rt, record.path) == pin.baseline,
+		"orc pane close: checkout changed after review-begin"
+	)
+	return { runId = pin.runId, report = pin.report, baseline = pin.baseline }
 end
 
 -- Default target: the checkout's uncommitted diff, else its task branch against the base.
@@ -554,6 +638,68 @@ local function review_body(record, review)
 		.. ". If the skill is unavailable, end with Status: blocked."
 end
 
+local function launch_block(found, record)
+	return found.host_id == record.hostId
+		and found.label == record.launchLabel
+		and found.flavor == TERMINAL_FLAVOR
+		and found.creator_name == TERMINAL_CREATOR
+end
+
+local function process_name_matches(value, expected)
+	return type(value) == "string" and vim.fs.basename(value):lower() == expected
+end
+
+local function reconcile_launch(rt, client, record)
+	local listed = client.call("session.list_blocks", {}, record.sessionId)
+	local candidate
+	for _, block in ipairs(listed.blocks or {}) do
+		if block.label == record.launchLabel then
+			assert(not candidate, "orc pane: multiple Rex blocks match the pending launch")
+			candidate = block
+		end
+	end
+	assert(
+		candidate
+			and type(candidate.block_id) == "string"
+			and candidate.block_id ~= ""
+			and launch_block(candidate, record),
+		"orc pane: pending launch has no unique local terminal with its run label"
+	)
+	local process = client.block(record.sessionId, candidate.block_id, "process")
+	local child = type(process.child) == "table" and process.child or {}
+	local expected = record.transport == "exec" and "nvim" or record.kind
+	local matching_name = process_name_matches(child.name, expected)
+		or process_name_matches(child.path, expected)
+		or (record.transport == "tui" and process_name_matches(child.script, expected .. ".js"))
+	assert(
+		matching_name
+			and type(child.cwd) == "string"
+			and (vim.uv.fs_realpath(child.cwd) or child.cwd) == record.path
+			and process_matches(process, record),
+		"orc pane: pending launch process does not match the worker and checkout"
+	)
+	verify_server(client, record)
+	record.blockId = candidate.block_id
+	record.windowId = type(candidate.window_id) == "string" and candidate.window_id or nil
+	save(rt, record)
+end
+
+local function start_result(rt, record)
+	return result(rt, 0, {
+		task = record.task,
+		runId = record.runId,
+		status = record.acknowledged and "started" or "unconfirmed",
+		state = record.state,
+		pane = record.blockId or rt.null,
+		path = record.path,
+	})
+end
+
+-- Rex's create RPC alone can take ten seconds before reconciliation begins.
+local function launch_deadline(rt, record)
+	return rt.clock() + (record.launchLabel and 60000 or 5000)
+end
+
 local function start(rt, feature, task, values, file)
 	local transport = values.transport or "tui"
 	assert(transport == "tui" or transport == "exec", "orc pane: transport must be tui or exec")
@@ -565,18 +711,14 @@ local function start(rt, feature, task, values, file)
 	if previous and previous.state ~= "closed" then
 		hinted(previous, function()
 			local client = client_for(rt, previous)
+			if not previous.blockId and previous.launchLabel then
+				reconcile_launch(rt, client, previous)
+			end
 			if previous.blockId then
 				snapshot(rt, client, previous)
 			end
 		end)
-		return result(rt, 0, {
-			task = task,
-			runId = previous.runId,
-			status = previous.acknowledged and "started" or "unconfirmed",
-			state = previous.state,
-			pane = previous.blockId or rt.null,
-			path = previous.path,
-		})
+		return start_result(rt, previous)
 	end
 	local client = require("orc.rex").new(rt)
 	local identity = client.identity()
@@ -621,13 +763,14 @@ local function start(rt, feature, task, values, file)
 	local creators = client.call("block_creator.list", {})
 	local terminal
 	for _, creator in ipairs(creators.creators or {}) do
-		if creator.name == "com.superlogical.terminal" then
+		if creator.name == TERMINAL_CREATOR then
 			assert(creator.host_id == record.hostId, "orc pane: terminal creator is remote")
 			terminal = true
 		end
 	end
 	assert(terminal, "orc pane: local terminal creator unavailable")
 	new_run(rt, record)
+	record.launchLabel = "orc:" .. record.runId .. ":" .. task:sub(1, 99)
 	local launch = require("orc.providers").plan(rt, {
 		kind = kind,
 		role = role,
@@ -671,8 +814,8 @@ local function start(rt, feature, task, values, file)
 	end
 	local layout = {
 		block = {
-			flavor = "com.superlogical.terminal.shell",
-			label = "orc:" .. task,
+			flavor = TERMINAL_FLAVOR,
+			label = record.launchLabel,
 			options = {
 				shell = "none",
 				login = false,
@@ -682,50 +825,50 @@ local function start(rt, feature, task, values, file)
 			},
 		},
 	}
-	local created = values.here
-			and client.call("session.new_split", {
+	local method, request =
+		"session.new_window",
+		{ window_label = "orc:" .. feature .. "/" .. task, layout = layout, focus = false }
+	if values.here then
+		method, request =
+			"session.new_split", {
 				anchor_id = rt.env.REX_BLOCK,
 				direction = "horizontal",
 				side = "after",
 				layout = layout,
 				focus = false,
-			}, record.sessionId)
-		or client.call(
-			"session.new_window",
-			{ window_label = "orc:" .. feature .. "/" .. task, layout = layout, focus = false },
-			record.sessionId
-		)
-	assert(
-		type(created.block_ids) == "table" and type(created.block_ids[1]) == "string",
-		"rex: creation returned no block ID"
-	)
-	record.blockId, record.windowId = created.block_ids[1], created.window_id
-	local saved, err = pcall(save, rt, record)
-	if not saved then
-		pcall(client.call, "block.close", { block_id = record.blockId }, record.sessionId)
-		error(err, 0)
+			}
 	end
-	local observed, observation_error = pcall(function()
-		client_for(rt, record)
+	local ok, created = pcall(client.call, method, request, record.sessionId)
+	hinted(record, function()
+		client = client_for(rt, record)
+		if
+			ok
+			and type(created.block_ids) == "table"
+			and #created.block_ids == 1
+			and type(created.block_ids[1]) == "string"
+			and created.block_ids[1] ~= ""
+		then
+			local block = local_block(client, record, created.block_ids[1])
+			assert(
+				launch_block(block, record),
+				"orc pane: create reply does not identify the launched terminal"
+			)
+			record.blockId, record.windowId = created.block_ids[1], created.window_id
+			save(rt, record)
+		else
+			local recovered, reason = pcall(reconcile_launch, rt, client, record)
+			if not recovered then
+				error(
+					(ok and "rex: creation returned no single block ID" or tostring(created))
+						.. "; "
+						.. tostring(reason),
+					0
+				)
+			end
+		end
 		snapshot(rt, client, record)
 	end)
-	if not observed then
-		local cleaned =
-			pcall(client.call, "block.close", { block_id = record.blockId }, record.sessionId)
-		if cleaned then
-			record.state = "closed"
-			pcall(save, rt, record)
-		end
-		error(observation_error, 0)
-	end
-	return result(rt, 0, {
-		task = task,
-		runId = record.runId,
-		status = record.acknowledged and "started" or "unconfirmed",
-		state = record.state,
-		pane = record.blockId,
-		path = path,
-	})
+	return start_result(rt, record)
 end
 
 ---@param review? {skill:string,target:string} Frames the run as a read-only review instead.
@@ -922,8 +1065,8 @@ function M.worker_run(rt, file)
 			and rt.env.ORC_WORKER_FILE == file,
 		"orc worker: record path mismatch"
 	)
-	local deadline = rt.clock() + 5000
-	while not record.blockId and rt.clock() < deadline do
+	local deadline = launch_deadline(rt, record)
+	while not record.blockId and record.state ~= "closed" and rt.clock() < deadline do
 		rt.sleep(25)
 		record = assert(read_record(rt, file), "orc worker: missing record")
 		assert(record.runId == run_id, "orc worker: current run changed during launch")
@@ -1087,7 +1230,7 @@ local function wait_for(rt, record, timeout, until_report)
 								.. record.path
 								.. (fingerprinted and "" or ": " .. tostring(now))
 						elseif done then
-							answer.next = "after any cross-vendor review accepts the diff: orc pane close "
+							answer.next = "after accepting the review verdict: orc pane close "
 								.. target
 								.. "; send findings as one orc pane prompt follow-up instead"
 						end
@@ -1099,9 +1242,8 @@ local function wait_for(rt, record, timeout, until_report)
 					then
 						answer.next = "after reading the report, inspecting the diff and running checks: orc pane review "
 							.. target
-							.. "; or when a cross-vendor review covers this diff: orc pane close "
-							.. target
-							.. " --review <saved report>"
+							.. "; or "
+							.. independent_review_hint(record)
 					elseif done then
 						answer.next = "after accepting the report: orc pane close " .. target
 					end
@@ -1209,77 +1351,75 @@ local function unreviewed(rt, record)
 		.. record.task
 		.. " --path "
 		.. vim.fn.shellescape(record.path)
-		.. " and wait for it, then close; or when a cross-vendor review covers this diff, close with --review <saved report>; pass --no-review only for an abandoned, stalled or failed task or an unavailable review skill"
+		.. " and wait for it, then close; or "
+		.. independent_review_hint(record)
+		.. "; pass --no-review only for an abandoned, stalled or failed task or an unavailable review skill"
 end
 
----@return string? refusal Why a live implementer still needs a review.
-local function close_owned(rt, record, no_review)
+---@return string? refusal Why the worker still needs a review.
+local function close_owned(rt, record, authorize)
 	local client = client_for(rt, record)
 	assert(record.blockId, "orc pane: run has no confirmed owned block")
 	local process = client.block(record.sessionId, record.blockId, "process")
 	local exited = type(process.last_exit) == "table"
 	assert(
-		exited or process_matches(process, record),
+		(exited and type(process.child) ~= "table") or process_matches(process, record),
 		"orc pane: process changed; refusing to close block"
 	)
-	if not (no_review or exited) and reviewable(record) then
-		-- A git error must not reach hinted's --force advice, which leaves a live pane untracked.
-		local checked, refusal = pcall(unreviewed, rt, record)
-		if not checked then
-			return "orc pane close: cannot compare the checkout with its review: "
-				.. tostring(refusal)
-				.. "; inspect git status in "
-				.. record.path
-				.. ", or pass --no-review"
-		elseif refusal then
-			return refusal
-		end
+	verify_server(client, record)
+	local refusal = authorize(exited)
+	if refusal then
+		return refusal
 	end
 	client.call("block.close", { block_id = record.blockId }, record.sessionId)
 end
 
 local function close(rt, record, force, no_review, review)
-	if review then
-		local checked, accepted = pcall(function()
-			local file = rt.abspath(review)
-			local text, err = rt.read(file)
-			assert(text, "orc pane close: cannot read review report " .. file .. ": " .. tostring(err))
-			assert(#text > 0, "orc pane close: review report is empty: " .. file)
-			-- shortcut: orc cannot prove the report covers this fingerprint and trusts the orchestrator, upgrade when reviews carry verifiable provenance.
-			return { report = file, baseline = fingerprint(rt, record.path) }
-		end)
-		if not checked then
-			return result(rt, 1, {
-				status = "not-reviewed",
-				task = record.task,
-				runId = record.runId,
-				stderr = tostring(accepted),
-			})
+	local accepted
+	local function authorize(skip_self_review)
+		if review then
+			local checked, value = pcall(independent_review, rt, record, review)
+			if not checked then
+				return tostring(value) .. "; " .. independent_review_hint(record)
+			end
+			accepted = value
+		elseif not (skip_self_review or no_review) and reviewable(record) then
+			-- Keep review failures out of hinted's local-only recovery path.
+			local checked, refusal = pcall(unreviewed, rt, record)
+			if not checked then
+				return "orc pane close: cannot compare the checkout with its review: "
+					.. tostring(refusal)
+					.. "; inspect git status in "
+					.. record.path
+					.. ", or pass --no-review"
+			end
+			return refusal
 		end
-		record.reviewed = accepted
 	end
-	if record.state == "closed" then
+	local already_closed = record.state == "closed"
+	local refusal
+	if force or already_closed then
+		refusal = authorize(true)
+	else
+		refusal = hinted(record, close_owned, rt, record, authorize)
+	end
+	if refusal then
 		return result(
 			rt,
-			0,
-			{ status = "closed", task = record.task, pane = record.blockId or rt.null }
+			1,
+			{ status = "not-reviewed", task = record.task, runId = record.runId, stderr = refusal }
 		)
 	end
-	if not force then
-		local refusal = hinted(record, close_owned, rt, record, no_review)
-		if refusal then
-			return result(
-				rt,
-				1,
-				{ status = "not-reviewed", task = record.task, runId = record.runId, stderr = refusal }
-			)
+	if not already_closed then
+		if accepted then
+			record.reviewed = accepted
 		end
+		record.state = "closed"
+		save(rt, record)
+		-- Best effort: the allowlisted MCP config can carry credentials.
+		local file = record_path(rt, record.root, record.task, record.path)
+		pcall(rt.remove, (file:gsub("%.json$", "")) .. ".mcp.json")
 	end
-	record.state = "closed"
-	save(rt, record)
-	-- Best effort: the allowlisted MCP config can carry credentials.
-	local file = record_path(rt, record.root, record.task, record.path)
-	pcall(rt.remove, (file:gsub("%.json$", "")) .. ".mcp.json")
 	return result(rt, 0, { status = "closed", task = record.task, pane = record.blockId or rt.null })
 end
 
@@ -1333,8 +1473,8 @@ function M.event(rt, input)
 	end
 	assert(type(input) == "table", "orc worker: invalid hook input")
 	local record = assert(read_record(rt, rt.env.ORC_WORKER_FILE), "orc worker: missing record")
-	local deadline = rt.clock() + 5000
-	while not record.blockId and rt.clock() < deadline do
+	local deadline = launch_deadline(rt, record)
+	while not record.blockId and record.state ~= "closed" and rt.clock() < deadline do
 		rt.sleep(25)
 		record = assert(read_record(rt, rt.env.ORC_WORKER_FILE), "orc worker: missing record")
 	end
@@ -1343,7 +1483,9 @@ function M.event(rt, input)
 		"orc worker: record path mismatch"
 	)
 	assert(
-		rt.env.REX_SESSION == record.sessionId and rt.env.REX_BLOCK == record.blockId,
+		type(record.blockId) == "string"
+			and rt.env.REX_SESSION == record.sessionId
+			and rt.env.REX_BLOCK == record.blockId,
 		"orc worker: Rex block identity mismatch"
 	)
 	if record.state == "closed" then
@@ -1436,7 +1578,7 @@ local function prune(rt, path)
 	return result(rt, 0, { status = "pruned", closed = closed, skipped = skipped })
 end
 
----Run start/wait/prompt/review/pause/close/prune with a per-task lock and machine-readable output.
+---Manage workers and pin independent reviews with machine-readable output.
 ---@param rt orc.Runtime
 ---@param argv string[]
 ---@return table result Exit code, JSON stdout and diagnostics.
@@ -1465,7 +1607,10 @@ function M.run(rt, argv)
 			target = "string",
 		})
 		assert(not values.force or command == "close", "orc pane: --force only applies to close")
-		assert(not values.review or command == "close", "orc pane: --review only applies to close")
+		assert(
+			not values.review or command == "close" or command == "review-begin",
+			"orc pane: --review only applies to close and review-begin"
+		)
 		assert(
 			not (values.review and values["no-review"]),
 			"orc pane: --review and --no-review are mutually exclusive"
@@ -1549,6 +1694,12 @@ function M.run(rt, argv)
 				return follow_up(rt, record, values)
 			elseif command == "review" then
 				return review_run(rt, record, values)
+			elseif command == "review-begin" then
+				assert(
+					vim.tbl_count(values) == 2 and values.review,
+					"usage: orc pane review-begin <task> --path <dir> --review <new-file>"
+				)
+				return review_begin(rt, record, values.review)
 			elseif command == "pause" then
 				return pause(rt, record)
 			elseif command == "close" then

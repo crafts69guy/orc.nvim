@@ -40,14 +40,16 @@ invocations in Bash. `EnterPlanMode` and `EnterWorktree` are checked when
 available. The headless pilot omitted both tools with the documented grants.
 
 `boundary-lock` requires a one-line change to the shared lock's release
-condition and both existing lock tests to pass. The plugin arm requires a
-matching non-error `orc:implementer` `Task` result before the `orc:reviewer`
-call, then a matching non-error reviewer result. The isolated eval uses the
-native reviewer when the active rules call for external model review. Add
-`--keep-temp` to retain the trace. To verify each handback, find its `tool_use`
-ID in the run's `trace_path` and follow it to the matching `tool_result`.
-A non-error result can acknowledge a background launch. In that case inspect
-the completion notification and verify the implementer finished before review.
+condition and both existing lock tests to pass. The fixture supplies a quota
+exhaustion result and an unsupported external transport. This isolated harness
+offers fresh Claude native subagents through `Task` or `Agent`. The plugin arm
+checks that a non-error native implementer result precedes native reviewer
+dispatch and that the matching reviewer result also succeeds. It rejects
+explicit background dispatch and recognizable shell calls to unavailable review
+transports. Add `--keep-temp` to inspect each `tool_use` ID and its corresponding
+`tool_result` in the run's `trace_path`. This case supplies availability as input
+and checks routing and handback. Live provider errors, Rex pane transport and the
+reviewer's finding accuracy require separate checks.
 
 Both cases check the saved Git state and reject recognizable `git commit`
 calls and shipper invocations in the trace. Bash matching is lexical. Quoted
@@ -57,6 +59,94 @@ detection.
 The boundary scaffolds record the resolved Git executable in `check.lua` and
 stage the runner in `test/run.lua`. On macOS they resolve past the Apple Git
 shim before the model sandbox starts.
+
+## Reviewer comparison
+
+Offline check from a checkout containing commits `162c5d2` and `588bc8c`:
+
+```fish
+nvim --clean -l evals/reviewer/check.lua --self-check
+```
+
+Both prompts use the same pre-`162c5d2` parser as their diff base. The buggy
+candidate is the parser after `162c5d2`; the fixed candidate is the parser after
+`588bc8c`. The self-check replays the latter commit's regression case against
+both historical implementations. It also checks grading for a miss, a hit, an
+incorrect blocker, an ungraded finding and a clean review. The grader replays
+reports with a plain `Run:` and `Status:` header, validation evidence, and a
+later plain or Markdown-quoted pair with a different run or status. It counts
+`missedKnownBugs` and `incorrectActionableBlockers` independently. Findings
+outside that quoted-header case count as `ungradedFindings`. Missing or malformed
+reviewer output is a failed or unavailable run.
+
+For an opt-in comparison, use an explicitly approved model budget and
+authenticated Claude and Codex CLIs. Treat the candidate as Claude-authored.
+Claude is the fresh same-vendor arm; Codex is the cross-vendor arm. Share exactly
+the same prompt file between arms for each candidate. Record model IDs, output
+and exit status for each call. Record an unavailable arm and its reason if quota
+or transport prevents a run. Start every invocation as a fresh session. The full
+pair uses up to four paid invocations. The Claude cap is per invocation. Run the
+Codex arm only within its separately approved usage limit.
+
+```fish
+set -l checker (pwd)/evals/reviewer/check.lua
+set -l eval_dir (mktemp -d)
+for candidate in buggy fixed
+    nvim --clean -l "$checker" prompt "$candidate" > "$eval_dir/$candidate.prompt"
+end
+cd "$eval_dir"
+```
+
+Set `review_claude_model`, `review_claude_cap` (USD per call), and
+`review_codex_model` to the approved values in the same Fish shell:
+
+```fish
+for candidate in buggy fixed
+    claude -p --tools '' --setting-sources '' --strict-mcp-config \
+        --max-turns 1 --max-budget-usd "$review_claude_cap" \
+        --no-session-persistence --model "$review_claude_model" \
+        < "$candidate.prompt" > "claude-$candidate.json" 2> "claude-$candidate.log"
+    echo $status > "claude-$candidate.status"
+
+    codex --no-daemon -a never exec --ignore-user-config --ignore-rules \
+        --ephemeral --sandbox read-only --skip-git-repo-check \
+        -m "$review_codex_model" -o "codex-$candidate.json" - \
+        < "$candidate.prompt" > "codex-$candidate.stdout" 2> "codex-$candidate.log"
+    echo $status > "codex-$candidate.status"
+
+    for reviewer in claude codex
+        test (cat "$reviewer-$candidate.status") = 0; or continue
+        printf '%s %s\n' "$candidate" "$reviewer"
+        nvim --clean -l "$checker" grade "$candidate" "$reviewer-$candidate.json"
+    end
+end
+```
+
+## Rex smoke
+
+Run the offline self-check with Neovim and Git on PATH:
+
+```fish
+nvim --clean -l evals/rex-smoke.lua --self-check
+```
+
+To exercise real Rex, run the next command from this checkout in an existing
+local Rex terminal with `REX_SESSION` and `REX_BLOCK` set. It requires an already
+running local Rex server and a compatible Rex CLI on PATH or in the app bundle.
+Run without a model account or paid eval budget:
+
+```fish
+nvim --clean -l evals/rex-smoke.lua
+```
+
+The smoke creates a private Git repository and checkout in the temp directory.
+It starts one unfocused exec worker in the existing session with only the fake
+Codex on its PATH. The smoke verifies acknowledgment, matching report and close.
+It deliberately stops the first event client and observes its exit. It can
+relabel its own pane to generate an event and releases the fake worker after
+decoding an event from the replacement watch. In both success and failure paths,
+the smoke checks Rex for the owned pane after close. If the pane is still listed
+or the check fails, the script prints and retains its temp root and ownership record.
 
 ## Scaffold adapter
 

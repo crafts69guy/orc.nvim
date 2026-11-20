@@ -49,7 +49,7 @@ function M.fish()
 	end
 	for _, pair in ipairs({
 		{ "wt", "new merge apply remove list session" },
-		{ "pane", "start wait prompt review pause close prune" },
+		{ "pane", "start wait prompt review pause close prune review-begin" },
 		{ "inkdrop", "init inbox claim push pull lessons" },
 		{
 			"inkdrop-mcp",
@@ -74,8 +74,11 @@ function M.fish()
 	lines[#lines + 1] =
 		"complete -c orc -n '__fish_seen_subcommand_from pane' -l transport -x -a 'tui exec'"
 	lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from pane' -l until -x -a report"
-	lines[#lines + 1] =
-		"complete -c orc -n '__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from close' -l review -r"
+	for _, command in ipairs({ "close", "review-begin" }) do
+		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from "
+			.. command
+			.. "' -l review -r"
+	end
 	lines[#lines + 1] =
 		"complete -c orc -n '__fish_seen_subcommand_from pane' -l skill -x -a 'ponytail-review ponytail-audit'"
 	for _, flag in ipairs({ "label", "log" }) do

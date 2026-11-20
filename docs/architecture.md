@@ -75,6 +75,9 @@ smoke is part of ordinary validation.
 Every assignment has a distinct `runId`. A durable record associates its feature,
 task and worktree with the Rex server/session/block and acknowledged prompt.
 The record's block ID, not its label, identifies a terminal the workflow may close.
+If a create response is lost, Orc uses a run-specific label to locate candidates
+and verifies the Rex server, terminal and worker process before saving the block
+ID. Retrying an unresolved launch checks the same run for its pane.
 After reconnect, events trigger a fresh snapshot rather than assuming missed events
 can be replayed.
 
@@ -83,6 +86,10 @@ Unknown delivery stays unconfirmed until the receiving harness acknowledges it;
 retrying an ambiguous send must not type a duplicate prompt. Report validation
 checks the current run ID and required sections. Only the orchestrator accepts
 work after reading the diff and rerunning the task's validation.
+For a saved independent review, `pane review-begin` binds a new report path to the
+current run and Git fingerprint before the reviewer starts. `pane close --review`
+checks the pin against the current checkout and the chosen report after the
+orchestrator reads the verdict.
 
 `pane start` guards the checkout's own git toplevel (`--allow-subdir` is explicit),
 including `--here` starts in another repository. `--precheck` runs via `sh -c`
@@ -97,9 +104,10 @@ An unacknowledged report wait keeps waiting until timeout, then includes the hoo
 Native `working` clears an observed hook block after an auto-resolved permission.
 
 The shared main checkout's `.orc/validation.md` is optional project memory and is
-injected into implementer prompts. Workers run edit/task tiers; the orchestrator
-runs the gate tier once before commit through `orc gate`. The gate uses an exclusive
-private machine-wide JSON lock with owner metadata, sleeps between polls, recovers
+injected into implementer prompts. Workers run edit/task tiers. The orchestrator
+runs the gate tier on the integrated tree before commit through `orc gate`. The
+gate uses an exclusive private machine-wide JSON lock with owner metadata,
+sleeps between polls, recovers
 dead pids and pre-boot owners, streams both output channels and releases on
 command/error/handled exit.
 

@@ -284,10 +284,10 @@ function M.context(rt, cwd)
 			"Level high (Cascade) requires deterministic checks first. Escalate after a failed review round."
 	elseif rt.env.ORC_LEVEL == "max" then
 		text[#text + 1] =
-			"Level max (Critique) requires deterministic checks first. Give every substantial diff two independent reviews in parallel from different vendors. Merge findings into one follow-up for the same implementer."
+			"Level max (Critique) requires deterministic checks first. Give every substantial diff two independent reviews in parallel. Prefer different vendors when available. Merge findings into one follow-up for the same implementer."
 	else
 		text[#text + 1] =
-			"Level default (Single) uses one implementer per task. Run deterministic checks first. Use a cross-vendor reviewer only for risky diffs (security, concurrency, migrations, public APIs, fund safety)."
+			"Level default (Single) uses one implementer per task. Run deterministic checks first. Use independent review for risky diffs (security, concurrency, migrations, public APIs, fund safety). Prefer cross-vendor review and follow the delegated guide for fallback."
 	end
 	local flag = require("orc.inkdrop").flag(rt, cwd)
 	if flag then

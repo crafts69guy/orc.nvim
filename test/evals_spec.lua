@@ -53,15 +53,95 @@ local function source_copy(path)
 	end
 	return runtime.new({ root = path })
 end
-local function entry(path, target)
+local function entry(path, target, args)
 	local saved_arg, saved_cwd, saved_path = arg, vim.uv.cwd(), package.path
-	arg = { [0] = path }
+	arg = { [0] = path, unpack(args or {}) }
 	assert(vim.uv.chdir(target))
 	local ok, value = pcall(dofile, path)
 	arg, package.path = saved_arg, saved_path
 	assert(vim.uv.chdir(saved_cwd))
 	return ok, value
 end
+
+Test.test("evals reviewer CLI grades historical parser fixtures without model calls", function()
+	-- Simulate Git history locally so the ordinary suite also works in shallow clones.
+	local fixed = assert(rt.read(rt.path(rt.root, "lua", "orc", "workers.lua")))
+	local buggy, run_replacements = fixed:gsub("run = run or (plain:match%b())", "run = %1 or run", 1)
+	local status_replacements
+	buggy, status_replacements = buggy:gsub(
+		"status = status or %((statuses%[found%] and found) or nil%)",
+		"status = %1 or status",
+		1
+	)
+	Test.eq({ run_replacements, status_replacements }, { 1, 1 })
+	local sources = {
+		["162c5d2^"] = buggy:gsub("%-%- A headed Validation[^\n]+", "-- Before changing Validation", 1),
+		["162c5d2"] = buggy,
+		["588bc8c"] = fixed,
+	}
+	local root, script = Test.temp(), rt.path(rt.root, "evals", "reviewer", "check.lua")
+	local findings = rt.path(root, "findings.json")
+	local original_system, original_write, original_print = vim.system, io.write, print
+	local output, git_unavailable
+	vim.system = function(argv)
+		assert(argv[1] == "git" and argv[4] == "show")
+		local revision = assert(argv[5]:match("^([^:]+):lua/orc/workers%.lua$"))
+		return {
+			wait = function()
+				if git_unavailable then
+					return { code = 128, stderr = "fixture history unavailable" }
+				end
+				return { code = 0, stdout = assert(sources[revision]) }
+			end,
+		}
+	end
+	io.write = function(...)
+		output[#output + 1] = table.concat({ ... })
+	end
+	_G.print = io.write
+	local function invoke(args, expected_error)
+		output = {}
+		local result, detail = entry(script, root, args)
+		if expected_error then
+			assert(not result and tostring(detail):find(expected_error, 1, true), tostring(detail))
+		else
+			assert(result, detail)
+		end
+		return table.concat(output)
+	end
+	local ok, err = pcall(function()
+		assert(invoke({ "--self-check" }):find("reviewer self-check passed", 1, true))
+		assert(invoke({ "prompt", "buggy" }):find("Before changing Validation", 1, true))
+		assert(invoke({ "prompt", "fixed" }):find("run = run or", 1, true))
+		rt.write(findings, "[]")
+		Test.eq(rt.decode(invoke({ "grade", "buggy", findings })).missedKnownBugs, 1)
+		Test.eq(rt.decode(invoke({ "grade", "fixed", findings })).missedKnownBugs, 0)
+		local incomplete = {
+			description = "A claim missing evidence",
+			report = "Run: new\nStatus: partial\nRun: old\nStatus: done\n",
+			expectedRun = "new",
+			expectedStatus = "partial",
+		}
+		rt.write(findings, rt.encode({ incomplete }))
+		Test.eq(rt.decode(invoke({ "grade", "buggy", findings })).ungradedFindings, 1)
+		incomplete.report =
+			"Run: new\nStatus: partial\nValidation: checked\nRun: old\nStatus: invalid\n"
+		rt.write(findings, rt.encode({ incomplete }))
+		Test.eq(rt.decode(invoke({ "grade", "buggy", findings })).ungradedFindings, 1)
+		rt.write(findings, "{}")
+		invoke({ "grade", "buggy", findings }, "expected a JSON array")
+		rt.write(findings, "[{}]")
+		invoke({ "grade", "buggy", findings }, "each finding needs")
+		rt.write(findings, "[1]")
+		invoke({ "grade", "buggy", findings }, "each finding needs")
+		invoke({ "grade", "unknown", findings }, "choose buggy or fixed")
+		invoke({ "other", "fixed" }, "usage: check.lua")
+		git_unavailable = true
+		invoke({ "prompt", "buggy" }, "fixture history unavailable")
+	end)
+	vim.system, io.write, _G.print = original_system, original_write, original_print
+	assert(ok, err)
+end)
 
 Test.test("evals hidden suites accept every fresh Lua reference and reject every stub", function()
 	local total = 0

@@ -16,6 +16,16 @@ and follow-up prompts; exec currently supports start/wait/close only. See the
 `--here` can target another repository's checkout. Optional
 `--precheck '<cmd>'` runs in `--path` using `sh -c` before creation; failure returns
 `precheck-failed`, the exit code and the last 40 lines, with no pane or worker record.
+A missing or malformed Rex create reply leaves the launch pending. Orc looks for
+one terminal with the saved run label on the recorded Rex server and checks its
+process and checkout. Retrying the same `pane start` can recover the existing pane.
+While ownership is unresolved, it sends no new create request. If you confirm the
+pane is gone, `pane close --force` releases the pending record locally.
+
+Both Codex and Claude load the shared `UserPromptSubmit` worker-event hook.
+Its 70-second timeout covers the 60-second wait for a new pane's confirmed
+block ID and allows time to start the hook and save the acknowledgment.
+After updating the Codex plugin, re-approve the changed hook in `/hooks`.
 
 For TUI follow-ups, `pane prompt --queue` queues on acknowledged working programs
 using Codex Tab or Claude Enter, with the same ownership and hook checks. `queued`
@@ -28,15 +38,27 @@ Wait failures are `state: "wait-failed"` with `stderr` and a `hint`.
 `pane pause` interrupts a working TUI worker with Esc, or records a manual Esc, so a
 later `pane prompt` can resume it; Esc emits no Stop hook.
 `pane review` is a follow-up framed as a read-only review run under the reviewer role.
-Before the paste it records a fingerprint of the checkout (HEAD, porcelain status,
-binary diff and untracked file hashes; ignored paths excluded); `pane wait` compares it
-again and returns `readOnly`, with a `violation` when they differ. It detects edits but
+Before the paste it records a checkout fingerprint from HEAD, porcelain status,
+the combined and staged binary diffs against HEAD, and untracked file hashes.
+It skips ignored paths. `pane wait` compares the fingerprint again and returns
+`readOnly`, with a `violation` when they differ. It detects edits but
 cannot prevent them: the worker keeps its sandbox and tools. `--queue` is refused,
 because a baseline taken mid-turn would be meaningless.
 A done review run is kept on the record as `reviewed` (`runId`, `baseline`) across
-later runs. `pane close` and `pane prune` refuse a live TUI implementer unless that
-baseline equals the checkout's fingerprint at close; `close --no-review` overrides.
-Scopers, exec workers and exited processes are exempt.
+later runs. `pane close` and `pane prune` require a matching review fingerprint
+for a live TUI implementer. Scopers, exec workers and exited processes are exempt
+from that requirement. Use `close --no-review` for explicit abandonment.
+
+For an independent review, first run
+`orc pane review-begin <task> --path <dir> --review <new-file>`. Choose a path
+that does not exist yet, such as a new file under the ignored `.scratch/` directory.
+Orc pins the current run, absolute report path and checkout fingerprint before
+dispatch. Use the same procedure for an independent fallback. The orchestrator
+still reads and accepts the verdict before running
+`orc pane close <task> --path <dir> --review <file>`. After verifying Rex ownership,
+close checks the pin, a fresh nonempty report at that path and an unchanged
+checkout fingerprint immediately before closing the pane.
+A follow-up run or checkout edit requires a new pin and review.
 Use `pane wait --until report` to continue until a matching report with Status and
 Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
 `turn-ended-no-report` from `blocked`; a report wait returns it with a hint only after

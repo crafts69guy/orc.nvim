@@ -139,20 +139,37 @@ local function fake()
 				if state.blocksNil then
 					return response({})
 				end
-				return response({
-					blocks = state.blocksMissing and {} or {
-						{ block_id = "block:main", host_id = state.anchorHost or "host" },
-						{ block_id = "block:worker", host_id = state.blockHost or "host" },
-					},
-				})
+				local blocks = {}
+				if not state.blocksMissing then
+					blocks[1] = { block_id = "block:main", host_id = state.anchorHost or "host" }
+					if not state.workerHidden then
+						blocks[2] = vim.tbl_extend("force", {
+							block_id = "block:worker",
+							window_id = "window:worker",
+							host_id = state.blockHost or "host",
+							label = state.layout and state.layout.block.label,
+							flavor = "com.superlogical.terminal.shell",
+							creator_name = "com.superlogical.terminal",
+						}, state.workerBlock or {})
+					end
+					if state.extraBlock then
+						blocks[#blocks + 1] = state.extraBlock
+					end
+				end
+				return response({ blocks = blocks })
 			elseif method == "session.new_split" or method == "session.new_window" then
+				state.createAttempts = (state.createAttempts or 0) + 1
 				if state.createFail then
 					return failure("could not create")
 				end
 				state.created = state.created + 1
 				state.layout, state.method, state.creation = input.layout, method, input
+				if state.lostCreate then
+					return failure("create reply was lost")
+				end
 				return response(
-					state.noBlock and {} or { block_ids = { "block:worker" }, window_id = "window:worker" }
+					state.noBlock and {}
+						or { block_ids = { state.returnedBlock or "block:worker" }, window_id = "window:worker" }
 				)
 			elseif method == "block.close" then
 				if state.closeFail then
@@ -182,9 +199,12 @@ local function fake()
 					state.hook("UserPromptSubmit")
 				end
 				return response({
-					child = state.childOverride
-						or state.noChild and rt.null
-						or { pid = state.pid, name = state.processName, path = "/bin/" .. state.processName },
+					child = state.childOverride or state.noChild and rt.null or {
+						pid = state.pid,
+						name = state.processName,
+						path = "/bin/" .. state.processName,
+						cwd = state.processCwd or root,
+					},
 					last_exit = state.exitCode ~= nil and { exit_code = state.exitCode } or rt.null,
 					foreground = state.foreground
 						or state.childOverride
@@ -237,8 +257,6 @@ local function fake()
 			root,
 			"--brief",
 			root .. "/brief.md",
-			"--kind",
-			"codex",
 		}
 		vim.list_extend(args, extra or {})
 		return workers.run(rt, args)
@@ -622,6 +640,8 @@ Test.test("workers launch persists exact ownership and native codex sandbox", fu
 	Test.eq(state.creation.focus, false)
 	local record = state.record()
 	Test.eq(record.blockId, "block:worker")
+	Test.eq(record.launchLabel, "orc:" .. record.runId .. ":task")
+	Test.eq(state.layout.block.label, record.launchLabel)
 	Test.eq(record.hostId, "host")
 	Test.eq(record.instanceId, "instance")
 	Test.eq(record.level, "default")
@@ -831,6 +851,183 @@ Test.test("workers exec runner persists metadata with hook evidence and terminal
 		Test.eq(state.record().state, "closed")
 	end
 end)
+
+Test.test("workers retry a lost create without replay while the exec runner waits", function()
+	local rt, state = fake()
+	local args = { "--transport", "exec", "--here" }
+	state.lostCreate, state.workerHidden = true, true
+	state.processName = "nvim"
+	local first = state.start(args)
+	Test.eq(first.code, 1)
+	assert(first.result.stderr:find("create reply was lost", 1, true))
+	assert(first.result.stderr:find("retry the same orc pane start", 1, true))
+	local pending = state.record()
+	Test.eq(pending.blockId, nil)
+	Test.eq(state.createAttempts, 1)
+	rt.env.ORC_WORKER_FILE, rt.env.REX_BLOCK = state.file(), "block:worker"
+	state.onSleep = function()
+		if state.clock > 10000 then
+			state.workerHidden, state.onSleep = false, nil
+			local retried = state.start(args)
+			Test.eq(retried.code, 0)
+			Test.eq({ retried.result.pane, retried.result.runId }, { "block:worker", pending.runId })
+		end
+	end
+	with_exec_runner(function(_, _, _, update)
+		Test.eq(state.record().process.pid, state.pid)
+		update({ threadId = "recovered" })
+		return { code = 0, out = "", err = "" }
+	end, function()
+		Test.eq(workers.worker_run(rt, state.file()).code, 0)
+	end)
+	Test.eq(state.record().threadId, "recovered")
+	Test.eq(state.record().windowId, "window:worker")
+	Test.eq(state.createAttempts, 1)
+	Test.eq(state.method, "session.new_split")
+	Test.eq(state.closed, {})
+end)
+
+Test.test("workers TUI submit hook survives delayed launch recovery in both harnesses", function()
+	for _, kind in ipairs({ "codex", "claude" }) do
+		local rt, state = fake()
+		local function read_json(path)
+			return rt.decode((assert(rt.read(rt.path(rt.root, path)))))
+		end
+		local plugin = read_json("." .. kind .. "-plugin/plugin.json")
+		local submit = read_json(plugin.hooks).hooks.UserPromptSubmit[1].hooks[1]
+		local args = { "--kind=" .. kind }
+		state.processName = kind
+		state.lostCreate, state.workerHidden = true, true
+		Test.eq(state.start(args).code, 1)
+		local pending = state.record()
+		local hook_rt = vim.tbl_extend("force", {}, rt, {
+			env = vim.tbl_extend("force", {}, rt.env, {
+				ORC = "1",
+				ORC_ROLE = "implementer",
+				ORC_WORKER_FILE = state.file(),
+				REX_BLOCK = "block:worker",
+			}),
+		})
+		local deadline = rt.clock() + submit.timeout * 1000
+		state.onSleep = function()
+			assert(rt.clock() < deadline, kind .. " canceled its submit hook before recovery")
+			if rt.clock() >= 59000 then
+				state.onSleep, state.workerHidden = nil, false
+				local recovered = state.start(args)
+				Test.eq({ recovered.code, recovered.result.runId }, { 0, pending.runId })
+				Test.eq(recovered.result.status, "unconfirmed")
+			end
+		end
+		local hook = require("orc.hooks").run(
+			hook_rt,
+			"worker-event",
+			rt.encode({
+				hook_event_name = "UserPromptSubmit",
+				prompt = "[orc-run:" .. pending.runId .. "] work",
+			})
+		)
+		Test.eq(hook.code, 0)
+		Test.eq(state.start(args).result.status, "started")
+		Test.eq(state.createAttempts, 1)
+	end
+end)
+
+Test.test(
+	"workers adopt a corroborated terminal immediately for ambiguous create replies",
+	function()
+		for _, failure in ipairs({ "lostCreate", "noBlock" }) do
+			local rt, state = fake()
+			state[failure] = true
+			state.workerBlock = { window_id = rt.null }
+			local started = state.start()
+			Test.eq({ started.code, started.result.pane }, { 0, "block:worker" })
+			Test.eq(started.result.runId, state.record().runId)
+			Test.eq(state.record().windowId, nil)
+			Test.eq(state.start().result.pane, "block:worker")
+			Test.eq(state.createAttempts, 1)
+			state.pid = state.pid + 1
+			Test.eq(state.run("close", { "--no-review" }).code, 1)
+			Test.eq(state.closed, {})
+		end
+	end
+)
+
+Test.test("workers preserve confirmed and pending records from before launch labels", function()
+	local rt, state = fake()
+	Test.eq(state.start().code, 0)
+	local legacy = state.record()
+	legacy.launchLabel = nil
+	state.store(legacy)
+	Test.eq(state.start().result.pane, legacy.blockId)
+	legacy.blockId = nil
+	state.store(legacy)
+	local pending = state.start()
+	Test.eq({ pending.code, pending.result.pane, pending.result.runId }, { 0, rt.null, legacy.runId })
+	Test.eq(state.createAttempts, 1)
+end)
+
+Test.test(
+	"workers reject ambiguous or wrong launch evidence without creating or closing another pane",
+	function()
+		for _, case in ipairs({
+			{ field = "instance", value = "wrong-instance", reason = "identity changed" },
+			{ field = "blockHost", value = "remote", reason = "no unique local terminal" },
+			{ field = "workerBlock", value = { flavor = "other" }, reason = "no unique local terminal" },
+			{
+				field = "workerBlock",
+				value = { creator_name = "other" },
+				reason = "no unique local terminal",
+			},
+			{
+				field = "workerBlock",
+				value = { label = "orc:previous:task" },
+				reason = "no unique local terminal",
+			},
+			{ field = "processName", value = "not-codex", reason = "process does not match" },
+			{ field = "processCwd", value = "/elsewhere", reason = "process does not match" },
+			{
+				field = "childOverride",
+				value = { name = "codex", cwd = false },
+				reason = "process does not match",
+			},
+			{ field = "noChild", value = true, reason = "process does not match" },
+			{ field = "processFail", value = true, reason = "block not found" },
+			{ field = "extraBlock", reason = "multiple Rex blocks" },
+		}) do
+			local _, state = fake()
+			state.lostCreate, state.workerHidden = true, true
+			Test.eq(state.start().code, 1)
+			local pending = state.record()
+			state.workerHidden = false
+			state[case.field] = case.value or { label = pending.launchLabel, block_id = "block:other" }
+			local retried = state.start()
+			Test.eq(retried.code, 1)
+			assert(retried.result.stderr:find(case.reason, 1, true), retried.result.stderr)
+			Test.eq({ state.record().runId, state.record().blockId }, { pending.runId, nil })
+			Test.eq(state.run("close", { "--no-review" }).code, 1)
+			Test.eq(state.createAttempts, 1)
+			Test.eq(state.closed, {})
+		end
+		local _, state = fake()
+		state.returnedBlock = "block:main"
+		Test.eq(state.start().code, 1)
+		Test.eq(state.record().blockId, nil)
+		Test.eq(state.closed, {})
+		Test.eq(state.start().result.pane, "block:worker")
+		Test.eq(state.createAttempts, 1)
+	end
+)
+
+Test.test(
+	"workers close an owned Rex pane after the child exits and its process disappears",
+	function()
+		local _, state = fake()
+		Test.eq(state.start().code, 0)
+		state.noChild, state.exitCode = true, 0
+		Test.eq(state.run("close").result.status, "closed")
+		Test.eq(state.closed, { "block:worker" })
+	end
+)
 
 Test.test(
 	"workers exec rate limits survive snapshots and hooks and wait suggests the other kind",
@@ -1799,10 +1996,11 @@ Test.test(
 		Test.eq(state.start().code, 1)
 		state.creatorMissing, state.blockHost = false, "remote"
 		Test.eq(state.start().code, 1)
-		Test.eq(state.closed, { "block:worker" })
-		Test.eq(state.record().state, "closed")
+		Test.eq(state.closed, {})
+		Test.eq(state.record().blockId, nil)
 		state.blockHost = nil
 		Test.eq(state.start().code, 0)
+		Test.eq(state.created, 1)
 		state.blockHost = "remote"
 		Test.eq(state.run("prompt", { "--text", "do not send" }).code, 1)
 		Test.eq(state.run("close").code, 1)
@@ -1832,8 +2030,9 @@ Test.test(
 		state.createFail = true
 		Test.eq(state.start().code, 1)
 		Test.eq(state.created, 0)
-		Test.eq(state.start().result.status, "unconfirmed")
+		assert(state.start().result.stderr:find("pending launch", 1, true))
 		Test.eq(state.created, 0)
+		Test.eq(state.createAttempts, 1)
 		local other_rt, other = fake()
 		other.ack = true
 		other.start()
@@ -1854,7 +2053,11 @@ Test.test(
 			write(path, text)
 		end
 		Test.eq(failed.start().code, 1)
-		Test.eq(failed.closed, { "block:worker" })
+		Test.eq(failed.closed, {})
+		Test.eq(failed.record().blockId, nil)
+		failed_rt.write = write
+		Test.eq(failed.start().result.pane, "block:worker")
+		Test.eq(failed.createAttempts, 1)
 		assert(not other_rt.exists(other_rt.cwd .. "/.orc/unrelated"))
 		assert(rt.exists(rt.cwd))
 	end
@@ -2070,7 +2273,7 @@ Test.test("workers corrupted unreadable and malformed durable metadata fail clos
 	end)
 	Test.eq(#state.closed, 0)
 	local _, no_block = fake()
-	no_block.noBlock = true
+	no_block.noBlock, no_block.workerHidden = true, true
 	Test.eq(no_block.start().code, 1)
 	Test.eq(no_block.run("wait", { "--timeout", "0" }).code, 1)
 	Test.eq(no_block.run("close").code, 1)
@@ -2141,9 +2344,11 @@ Test.test("workers hook boot ordering validates block identity and ignores stale
 	record.blockId = nil
 	state.store(record)
 	state.onSleep = function()
-		record.blockId = "block:worker"
-		state.store(record)
-		state.onSleep = nil
+		if state.clock > 10000 then
+			record.blockId = "block:worker"
+			state.store(record)
+			state.onSleep = nil
+		end
 	end
 	Test.eq(
 		workers.event(
@@ -3135,55 +3340,74 @@ local function review_fixture(kind)
 	return rt, state, git
 end
 
-Test.test("workers close accepts a saved cross-vendor report for the current checkout", function()
-	local rt, state = review_fixture()
-	rt.write(rt.cwd .. "/.gitignore", ".orc/\n")
-	rt.write(rt.cwd .. "/review.md", "Cross-vendor review: accepted\n")
-	state.report()
-	local next_step = state.run("wait", { "--until", "report", "--timeout", "0" }).result.next
-	assert(next_step:find("orc pane review task", 1, true))
-	assert(next_step:find("--review <saved report>", 1, true))
-	Test.eq(state.record().reviewed, nil)
-	Test.eq(state.run("close", { "--review", "review.md" }).result.status, "closed")
-	Test.eq(state.closed, { "block:worker" })
-	local record = state.record()
-	Test.eq(record.reviewed.report, rt.cwd .. "/review.md")
-	Test.eq(record.reviewed.runId, nil)
-	Test.eq(#record.reviewed.baseline, 64)
-	-- Reopening only the fake record checks that the saved baseline matches and detects edits.
-	record.state = "idle"
-	state.store(record)
-	rt.write(rt.cwd .. "/tracked.txt", "changed after review\n")
-	local refused = state.run("close")
-	Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
-	assert(
-		refused.result.stderr:find(
-			"checkout changed after saved review " .. record.reviewed.report,
-			1,
-			true
+Test.test(
+	"workers close accepts a fresh pinned independent review for the current checkout",
+	function()
+		local rt, state = review_fixture()
+		local args = { "--review", ".scratch/review.md" }
+		state.report()
+		local next_step = state.run("wait", { "--until", "report", "--timeout", "0" }).result.next
+		assert(next_step:find("orc pane review task", 1, true))
+		assert(next_step:find("orc pane review-begin task", 1, true))
+		assert(next_step:find("--review <saved report>", 1, true))
+		local pin = state.run("review-begin", args).result
+		local report_path = rt.cwd .. "/.scratch/review.md"
+		Test.eq(
+			{ pin.status, pin.report, pin.runId },
+			{ "review-pinned", report_path, state.record().runId }
 		)
-	)
-	rt.write(rt.cwd .. "/tracked.txt", "base\n")
-	Test.eq(state.run("close").result.status, "closed")
-end)
+		rt.write(report_path, "Independent review: accepted\n")
+		Test.eq(state.record().reviewed, nil)
+		state.closeFail = true
+		Test.eq(state.run("close", args).code, 1)
+		Test.eq(state.record().reviewed, nil)
+		Test.eq(state.record().reviewPin.runId, pin.runId)
+		state.closeFail = false
+		Test.eq(state.run("close", { "--review", report_path }).result.status, "closed")
+		Test.eq(state.closed, { "block:worker" })
+		local record = state.record()
+		Test.eq(record.reviewed.report, report_path)
+		Test.eq(record.reviewed.runId, pin.runId)
+		Test.eq(#record.reviewed.baseline, 64)
+		-- Reopening only the fake record checks that the saved baseline matches and detects edits.
+		record.state = "idle"
+		state.store(record)
+		rt.write(rt.cwd .. "/tracked.txt", "changed after review\n")
+		local refused = state.run("close")
+		Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
+		assert(
+			refused.result.stderr:find(
+				"checkout changed after saved review " .. record.reviewed.report,
+				1,
+				true
+			)
+		)
+		rt.write(rt.cwd .. "/tracked.txt", "base\n")
+		Test.eq(state.run("close").result.status, "closed")
+	end
+)
 
 Test.test("workers close refuses missing empty and unreadable saved reviews", function()
 	local rt, state = review_fixture()
-	rt.write(rt.cwd .. "/empty.md", "")
 	local read = rt.read
 	rt.read = function(file)
-		if file == rt.cwd .. "/unreadable.md" then
+		if file == rt.cwd .. "/.scratch/unreadable.md" then
 			return nil, "permission denied"
 		end
 		return read(file)
 	end
 	for _, case in ipairs({
 		{ "missing.md", "cannot read review report" },
-		{ "empty.md", "review report is empty" },
-		{ "unreadable.md", "permission denied" },
+		{ "empty.md", "review report is empty", " \n" },
+		{ "unreadable.md", "permission denied", "Accepted\n" },
 	}) do
+		local file = ".scratch/" .. case[1]
+		Test.eq(state.run("review-begin", { "--review", file }).code, 0)
+		if case[3] then
+			rt.write(rt.abspath(file), case[3])
+		end
 		for _, force in ipairs({ {}, { "--force" } }) do
-			local args = { "--review", case[1] }
+			local args = { "--review", file }
 			vim.list_extend(args, force)
 			local refused = state.run("close", args)
 			Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
@@ -3193,24 +3417,169 @@ Test.test("workers close refuses missing empty and unreadable saved reviews", fu
 			Test.eq(#state.closed, 0)
 		end
 	end
-	rt.write(rt.cwd .. "/review.md", "Accepted\n")
+	local args = { "--review", ".scratch/review.md" }
+	Test.eq(state.run("review-begin", args).code, 0)
+	rt.write(rt.abspath(args[2]), "Accepted\n")
 	state.failGit = "status"
-	local failed = state.run("close", { "--review", "review.md" })
+	local failed = state.run("close", args)
 	Test.eq({ failed.code, failed.result.status }, { 1, "not-reviewed" })
 	assert(failed.result.stderr:find("git status failed", 1, true))
 	Test.eq(#state.closed, 0)
 end)
 
-Test.test("workers saved review flag is exclusive and only applies to close", function()
+Test.test("workers reject stale review evidence after the final Rex identity read", function()
+	for _, change in ipairs({
+		{
+			file = "tracked.txt",
+			text = "edited during Rex ownership check\n",
+			reason = "checkout changed",
+		},
+		{ file = ".scratch/review.md", text = "", reason = "review report is empty" },
+	}) do
+		local rt, state = review_fixture()
+		local args = { "--review", ".scratch/review.md" }
+		Test.eq(state.run("review-begin", args).code, 0)
+		rt.write(rt.abspath(args[2]), "Accepted\n")
+		local exec, identities = rt.exec, 0
+		rt.exec = function(argv, opts)
+			if argv[2] == "whoami" then
+				identities = identities + 1
+				if identities == 2 then
+					rt.write(rt.abspath(change.file), change.text)
+				end
+			end
+			return exec(argv, opts)
+		end
+		local refused = state.run("close", args)
+		Test.eq(identities, 2)
+		Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
+		assert(refused.result.stderr:find(change.reason, 1, true))
+		assert(refused.result.stderr:find("orc pane review-begin", 1, true))
+		Test.eq(state.closed, {})
+		Test.eq(state.record().reviewed, nil)
+	end
+end)
+
+Test.test("workers reject stale reviews after an index-only edit to an MM file", function()
+	local rt, state, git = review_fixture()
+	local tracked = rt.abspath("tracked.txt")
+	local args = { "--review", ".scratch/review.md" }
+	rt.write(tracked, "staged first\n")
+	git("add", "--", "tracked.txt")
+	rt.write(tracked, "same working file\n")
+	local status = git("status", "--porcelain=v1", "-z")
+	local combined = git("diff", "--binary", "HEAD")
+	local staged = git("diff", "--cached", "--binary", "HEAD")
+	Test.eq(status, "MM tracked.txt\0")
+	Test.eq(state.run("review-begin", args).code, 0)
+	rt.write(rt.abspath(args[2]), "Accepted\n")
+
+	rt.write(tracked, "staged second\n")
+	git("add", "--", "tracked.txt")
+	rt.write(tracked, "same working file\n")
+	Test.eq(git("status", "--porcelain=v1", "-z"), status)
+	Test.eq(git("diff", "--binary", "HEAD"), combined)
+	assert(git("diff", "--cached", "--binary", "HEAD") ~= staged)
+	local refused = state.run("close", args)
+	Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
+	assert(refused.result.stderr:find("checkout changed after review-begin", 1, true))
+	Test.eq(state.closed, {})
+	Test.eq(state.record().reviewed, nil)
+end)
+
+Test.test(
+	"workers reject a preexisting report, stale content and pins for another path, diff or run",
+	function()
+		local rt, state = review_fixture()
+		local old = { "--review", ".scratch/old.md" }
+		local args = { "--review", ".scratch/review.md" }
+		local file = rt.abspath(args[2])
+		rt.write(rt.abspath(old[2]), "Old review\n")
+		assert(state.run("review-begin", old).result.stderr:find("must be a new file", 1, true))
+		assert(vim.uv.fs_symlink("absent.md", rt.abspath(".scratch/link.md")))
+		assert(
+			state
+				.run("review-begin", { "--review", ".scratch/link.md" }).result.stderr
+				:find("must be a new file", 1, true)
+		)
+		local function refuse(which, reason)
+			local response = state.run("close", which)
+			Test.eq({ response.code, response.result.status }, { 1, "not-reviewed" })
+			assert(response.result.stderr:find(reason, 1, true), response.result.stderr)
+			assert(response.result.stderr:find("orc pane review-begin", 1, true))
+			Test.eq(state.record().reviewed, nil)
+			Test.eq(state.closed, {})
+		end
+		refuse(old, "no independent review pinned for the current run")
+		Test.eq(state.run("review-begin", args).code, 0)
+		refuse(old, "differs from the pinned path")
+		assert(vim.uv.fs_symlink(rt.abspath(old[2]), file))
+		refuse(args, "review report must be a regular file")
+		assert(vim.uv.fs_unlink(file))
+		assert(vim.uv.fs_rename(rt.abspath(old[2]), file))
+		assert(vim.uv.fs_utime(file, 1, 1))
+		refuse(args, "review report predates the pin")
+		rt.write(file, "Fresh review\n")
+		rt.write(rt.cwd .. "/tracked.txt", "new implementation\n")
+		refuse(args, "checkout changed after review-begin")
+		rt.write(rt.cwd .. "/tracked.txt", "base\n")
+		local old_pin = state.record().reviewPin
+		Test.eq(state.run("prompt", { "--text", "follow up" }).result.sent, true)
+		local record = state.record()
+		Test.eq(record.reviewPin, nil)
+		record.reviewPin = old_pin
+		state.store(record)
+		refuse(args, "no independent review pinned for the current run")
+	end
+)
+
+Test.test("workers review pin and hook or snapshot writes preserve each other's state", function()
+	local rt, state = review_fixture()
+	local first = { "--review", ".scratch/first.md" }
+	local second = { "--review", ".scratch/second.md" }
+	local third = { "--review", ".scratch/third.md" }
+	state.onLock = function()
+		state.hook("PermissionRequest")
+	end
+	Test.eq(state.run("review-begin", first).code, 0)
+	Test.eq(state.record().hookState, "blocked")
+	Test.eq(state.record().reviewPin.report, rt.abspath(first[2]))
+	state.onLock = function()
+		Test.eq(state.run("review-begin", second).code, 0)
+	end
+	state.hook("Stop")
+	Test.eq(state.record().hookState, "idle")
+	Test.eq(state.record().reviewPin.report, rt.abspath(second[2]))
+	state.onLock = function()
+		Test.eq(state.run("review-begin", third).code, 0)
+	end
+	workers.collect(rt)
+	Test.eq(state.record().reviewPin.report, rt.abspath(third[2]))
+end)
+
+Test.test("workers expose review-begin and scope the saved review flag", function()
 	local _, state = fake()
 	state.start()
+	assert(
+		require("orc.cli").usage:find(
+			"pane review-begin <task> --path <dir> --review <new-file>",
+			1,
+			true
+		)
+	)
+	assert(
+		require("orc.completion")
+			.fish()
+			:find("__fish_seen_subcommand_from review-begin' -l review -r", 1, true)
+	)
+	Test.eq(state.run("review-begin").code, 1)
 	local conflict = state.run("close", { "--review", "review.md", "--no-review" })
 	Test.eq(conflict.code, 1)
 	assert(conflict.result.stderr:find("--review and --no-review are mutually exclusive", 1, true))
 	for _, command in ipairs({ "start", "wait", "prompt", "review", "pause", "prune" }) do
 		local refused = state.run(command, { "--review", "review.md" })
 		Test.eq(refused.code, 1)
-		assert(refused.result.stderr:find("--review only applies to close", 1, true))
+		assert(refused.result.stderr:find("--review only applies to close and review-begin", 1, true))
 	end
 	Test.eq(#state.closed, 0)
 end)
@@ -3312,7 +3681,7 @@ Test.test("workers review wait reports whether the checkout stayed byte-identica
 		{ "review", true, true, "done", nil }
 	)
 	assert(
-		clean.next:find("cross-vendor review accepts the diff: orc pane close task --path '", 1, true)
+		clean.next:find("after accepting the review verdict: orc pane close task --path '", 1, true)
 	)
 	rt.write(rt.cwd .. "/new file.txt", "edited\n")
 	local edited = wait()
