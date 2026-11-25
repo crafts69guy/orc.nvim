@@ -7,9 +7,9 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Read first and choose a workflow before editing. Make small, clearly scoped,
   low-risk changes directly when targeted checks can verify them. Examples
   include correcting the same typo in several files or fixing a localized bug
-  with a regression test. Inspect the diff and run the relevant checks. Skip
-  the plan, worker pane, task worktree, and
-  separate model review for direct edits. Honor required commit and merge gates.
+  with a regression test that fails before the fix. Inspect the diff and run
+  the relevant checks. Skip the plan, worker pane, task worktree, and separate
+  model review for direct edits. Honor required commit and merge gates.
 - Delegate substantial work, changes whose scope or impact is still unclear after
   reading, and changes that touch security, concurrency, migrations, public APIs,
   or fund safety. A one-line change to lock ownership touches concurrency.

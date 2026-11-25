@@ -25,7 +25,9 @@ Escalate decisions that conflict with the brief. Report these sections:
 
 - Status: done, partial, or blocked.
 - Changes: files and behavior changed.
-- Validation: actual commands and results.
+- Validation: actual commands and results. For a bug fix or new check a test can
+  reproduce, show the test failing before your change and passing after;
+  otherwise say why not.
 - Notes: deviations and unverified behavior.
 - Docs: exported interfaces and documentation updated.
 

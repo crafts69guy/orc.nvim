@@ -28,19 +28,10 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
    `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
    Use the same worker; never start a fresh native `orc:reviewer` unless the round
    touches a new risky area. The close gate still compares the whole checkout.
-5. Apply the active level: default (Single) gets exactly one model review per diff:
-   non-risky diffs get pane self-review only; risky diffs (security, concurrency,
-   migrations, public APIs, fund safety) get one independent review. High (Cascade)
-   escalates kind or Claude model after a failed review round and records why.
-   Max (Critique) uses two independent reviews in parallel where available for
-   every substantial diff. Prefer different vendors. If quota or unsupported
-   transport prevents cross-vendor review, use a fresh same-vendor reviewer and
-   save the reason in the task log. If no independent reviewer can run, record
-   the blocker and keep the independent review pending. Deterministic checks and
-   the active review level also apply when nothing can be dispatched in parallel.
-   Before launching a saved independent review for a pane task, run
-   `orc pane review-begin <task> --path <worktree> --review <new-file>` using a new
-   path under `.scratch/<feature>/`. Save the reviewer output at that path. Read
+5. Apply the active level's review pattern and reviewer fallback from the
+   delegated workflow guide. Before launching a saved independent review for a
+   pane task, run `orc pane review-begin <task> --path <worktree> --review <new-file>`
+   using a new path under `.scratch/<feature>/`. Save the reviewer output at that path. Read
    the verdict and, once accepted, close with
    `orc pane close <task> --path <worktree> --review <file>` using the same path.
    See the [Rex reference](references/rex.md) for transport and pinning details.

@@ -45,6 +45,10 @@ Base branch: feat/example
 The parser accepts flat task fields and inline dependency lists. Keep that format.
 Each task's `validate` names done-evidence: the command and expected observable
 output that prove its goal. If you cannot name that evidence, scope the task first.
-Ownership must be disjoint for tasks with no dependency path. A substantial task
-is its own module or feature needing multiple edit/test cycles. Batch small tasks.
+Prefer evidence that fails without the change, such as a named test that fails
+on the base branch: `exit 0` alone also passes when the test never ran.
+Ownership must be disjoint for tasks with no dependency path. Shared state counts
+as ownership too: tasks that touch the same generated file, record or lock go on
+one dependency path. A substantial task is its own module or feature needing
+multiple edit/test cycles. Batch small tasks.
 Show the task ordering; dispatch substantial independent tasks in worktree waves.

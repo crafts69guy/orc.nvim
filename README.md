@@ -154,6 +154,13 @@ review pending. Review and deterministic gates still apply when nothing can run
 in parallel. If the implementer hits a usage limit, restart the same brief and
 worktree with the other `--kind`.
 
+Reviewers end with a `pass`, `fail` or `inconclusive` verdict, and inconclusive
+is not a pass. For risky diffs they name the premise the change's safety rests
+on and try to break it, including readers that grep misses. Implementers show a
+reproducible bug fix or new check failing before the change and passing after.
+When a fix round leaves its finding open, the orchestrator records the shared
+assumption of the failed fixes and checks it before the next attempt.
+
 Inside Rex (`REX_SESSION` and `REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with

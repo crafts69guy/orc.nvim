@@ -23,7 +23,9 @@
 
 - Worker reports must identify their current Run and contain Status and Validation.
   Require done status, validation evidence and docs for changed exports and touched
-  behavior. If a native subagent has handed back its report and shows "waiting on
+  behavior. A bug fix or new check that a test can reproduce also needs the test
+  failing before the change and passing after, or a stated reason why not.
+  If a native subagent has handed back its report and shows "waiting on
   its own background work", stop it with TaskStop and keep the report.
 - For an implementer pane, get the report, inspect the diff, run deterministic
   checks, complete the applicable review, then close the pane. The wait result's
@@ -55,7 +57,8 @@
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex
   reference for the Claude review command. Give reviewers the fresh diff, brief
   and acceptance criteria. Rerun safe, reviewer-bounded `proven` commands and treat
-  other claims as `unproven`. Drop non-repros.
+  other claims as `unproven`. Drop non-repros. An `inconclusive` verdict is not a
+  pass: run the missing check or record the review as pending.
 
 ## Follow-ups and handoff
 
@@ -64,8 +67,11 @@
   tree and required checks match. Run the affected checks again if integration or
   fixes change that tree.
 - Merge findings into one follow-up for the same implementer. Allow at most two
-  fix rounds, then sharpen the brief for a new worker. Record kind, level,
-  model/effort and escalation reasons in the task log.
+  fix rounds, then sharpen the brief for a new worker. When a fix round leaves
+  its finding open, write the assumption the failed fixes share in the task log
+  and check it before the next attempt. Give a new worker the original brief,
+  the follow-ups and the last report. Record kind, level, model/effort and
+  escalation reasons in the task log.
 - Recheck fixes with the same worker's `orc pane review --target <paths changed in
   the round>`. Start a fresh native `orc:reviewer` only if the round touches a new
   risky area.

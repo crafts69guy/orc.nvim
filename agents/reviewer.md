@@ -19,6 +19,13 @@ Report actionable defects with severity and file citations. Distinguish findings
 from assumptions. Label every finding `proven` with the exact command, observed
 output and output the brief requires, or `unproven` with the run that would
 confirm it. Never label a claim you did not run as proven.
+End with a verdict: `pass`, `fail`, or `inconclusive` when a check the verdict
+needs could not run. Inconclusive is not a pass.
+For a risky diff, name the premise its safety rests on, such as "only the
+current run can complete this record", and try to break it. Look past the
+callers grep finds: data another process or language reads (JSON, files, env),
+late or retried events, and concurrent writers. Report the premise, how you
+tested it, and what you cleared.
 You may run targeted repros when your sandbox allows: one existing spec/test file
 or a repro script you write in a temp dir outside the checkout. Never run gates,
 full or cross-workspace suites, builds or anything that writes into the checkout.
