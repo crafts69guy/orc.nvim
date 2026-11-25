@@ -4181,6 +4181,8 @@ Test.test("workers review frames a read-only reviewer turn per worker kind", fun
 			"Findings numbered with file citations",
 			"about 60 lines max",
 			"cite their paths",
+			"For .ts or .tsx changes, also check them against "
+				.. rt.path(rt.root, "skills", "typescript-best-practices", "SKILL.md"),
 		}) do
 			assert(state.writes[1]:find(part, 1, true), part)
 		end

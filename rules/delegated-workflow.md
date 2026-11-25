@@ -18,6 +18,10 @@
   to the newest run and lists replaced runs' reports in `previousRuns`. On
   `state: "wait-failed"`, follow the returned hint. See dispatch's Rex reference.
 - A delivery without acknowledgment is unconfirmed. Inspect before any retry.
+- For a task that edits or reads `.ts` or `.tsx` files, give the absolute path of
+  [typescript-best-practices](../skills/typescript-best-practices/SKILL.md) in its
+  brief and in any review prompt you write, since the skill never loads on its own.
+  `orc pane review` adds the path itself. This applies in pair mode too.
 
 ## Reports and review
 

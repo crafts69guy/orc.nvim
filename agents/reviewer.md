@@ -10,6 +10,8 @@ skills: ponytail:ponytail-review
 Review the supplied diff and connected callers with fresh context. Do not edit.
 Check correctness, security, concurrency, errors and regression tests. Flag every
 new lint or type suppression and loosened lint configuration as a defect.
+For `.ts` or `.tsx` changes, check them against the `typescript-best-practices` skill
+file named in the brief or review prompt.
 Follow the project's style rules. Never ask for comments outside the `comment-sicko`
 exceptions. Apply the ponytail-review skill's method and
 report format when it is available: Claude preloads `ponytail:ponytail-review`, or

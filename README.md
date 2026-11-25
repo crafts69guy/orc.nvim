@@ -176,6 +176,14 @@ orchestrator merges accepted flags with the review findings into one follow-up a
 offers to encode claimed constraints as checks. Roles write no comments outside these
 exceptions; this overrides Ponytail's why-comments and `shortcut:` notes.
 
+For `.ts` and `.tsx` work, orc ships pstack's `typescript-best-practices` skill with
+its `principle-type-system-discipline` and `principle-boundary-discipline` skills.
+As in pstack, all three are explicit-only: Claude honors `disable-model-invocation`,
+Codex honors `agents/openai.yaml`, and the TypeScript skill links the principles.
+The delegated guide puts the TypeScript skill's path in briefs and review prompts
+for tasks that touch `.ts` or `.tsx` files, and `orc pane review` adds it. See
+[third-party notices](THIRD_PARTY_NOTICES.md).
+
 Inside Rex (`REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with

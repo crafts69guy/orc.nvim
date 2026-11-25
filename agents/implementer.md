@@ -19,6 +19,8 @@ your report instead of running them.
 Never add lint or type suppressions (`eslint-disable`, `oxlint-disable`,
 `@ts-ignore`, `@ts-expect-error`, `nolint`) or loosen lint configuration to pass a
 check; fix the cause or report the failure.
+For `.ts` or `.tsx` work, read and follow the `typescript-best-practices` skill file
+named in the brief.
 Follow the project's style rules, including the injected Ponytail guidance, except
 that you write no comments outside the `comment-sicko` exceptions: no narration,
 workaround notes or `shortcut:` comments.

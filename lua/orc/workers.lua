@@ -675,7 +675,7 @@ local function review_target(rt, record, values)
 	)
 end
 
-local function review_body(record, review)
+local function review_body(rt, record, review)
 	local call = record.kind == "claude" and "Use the Skill tool to run ponytail:" or "Run $"
 	return "Review-only turn: for this run agents/reviewer.md replaces your "
 		.. record.role
@@ -684,7 +684,9 @@ local function review_body(record, review)
 		.. review.skill
 		.. " on "
 		.. review.target
-		.. ". If the skill is unavailable, end with Status: blocked."
+		.. ". If the skill is unavailable, end with Status: blocked. For .ts or .tsx changes, also check them against "
+		.. rt.path(rt.root, "skills", "typescript-best-practices", "SKILL.md")
+		.. "."
 end
 
 local function launch_block(found, record)
@@ -1022,7 +1024,7 @@ local function follow_up(rt, record, values, review)
 	)
 	local body = "Follow-up: " .. tostring(values.text)
 	if review then
-		body = review_body(record, review)
+		body = review_body(rt, record, review)
 		-- Baseline after readiness so it is the state the reviewer starts from.
 		review.baseline = fingerprint(rt, record.path)
 	elseif values.file then
