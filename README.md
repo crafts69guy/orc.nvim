@@ -161,6 +161,19 @@ reproducible bug fix or new check failing before the change and passing after.
 When a fix round leaves its finding open, the orchestrator records the shared
 assumption of the failed fixes and checks it before the next attempt.
 
+Before any model review of a delegated diff, once the worker is idle, the orchestrator
+follows the `no-comments` skill (explicit only, never invoked implicitly), which runs
+the `comment-sicko` role with fresh context. It deletes every comment in scope except
+legal or license headers; non-obvious behavior forced by an external dependency,
+platform, vendor or protocol we cannot reshape; `prettier-ignore` and
+`stylua: ignore`; lint suppressions whose rule is faulty, pedantic or style-only;
+doc comments that define a public API contract; LuaLS type annotations; and issue
+or RFC links that explain a constraint code cannot express. It flags our own
+surprising code `MUST KILL` for a rename, extraction or type instead of prose. The
+orchestrator merges accepted flags with the review findings into one follow-up and
+offers to encode claimed constraints as checks. Roles write no comments outside these
+exceptions; this overrides Ponytail's why-comments and `shortcut:` notes.
+
 Inside Rex (`REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with

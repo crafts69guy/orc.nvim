@@ -622,7 +622,13 @@ Test.test(
 		local response = state.run("wait", { "--until", "report", "--timeout", "0" })
 		Test.eq(response.result.state, "working")
 		Test.eq(response.result.evidence, true)
-		assert(response.result.next:find("checks: orc pane review task --path '", 1, true))
+		assert(
+			response.result.next:find(
+				"no-comments once the worker is idle: orc pane review task --path '",
+				1,
+				true
+			)
+		)
 		state.report("partial")
 		Test.eq(state.run("wait", { "--until", "report", "--timeout", "0" }).result.next, nil)
 		local rt, missing = fake()
@@ -1336,7 +1342,7 @@ Test.test(
 				Test.eq(response.result.closed, {})
 				Test.eq(response.result.skipped[1].task, "task")
 				local reason = case.unreviewed
-						and "no done self-review for this implementer; run orc pane review task"
+						and "no done self-review for this implementer; run no-comments on the current diff, then orc pane review task"
 					or "no completed report"
 				assert(response.result.skipped[1].reason:find(reason, 1, true), reason)
 				Test.eq(#state.closed, 0)
@@ -1952,7 +1958,7 @@ Test.test("workers close verifies process server and recorded block rather than 
 	Test.eq({ refused.code, refused.result.status }, { 1, "not-reviewed" })
 	assert(
 		refused.result.stderr:find(
-			"no done self-review for this implementer; run orc pane review task --path '",
+			"no done self-review for this implementer; run no-comments on the current diff, then orc pane review task --path '",
 			1,
 			true
 		)

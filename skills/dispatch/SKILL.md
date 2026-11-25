@@ -18,13 +18,14 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
    workflow is untried, pilot one task and accept its report before starting the rest: a flawed
    brief then costs one worker. Start the rest concurrently in their assigned
    worktrees. Do not allow commits.
-4. Read each report and inspect each diff. Rerun checks. A partial/blocked report
-   requires a follow-up, never a merge. At most two fix rounds per worker.
+4. Read each report and inspect each diff. Rerun checks, then read and follow
+   [no-comments](../no-comments/SKILL.md) before any model review. A partial or
+   blocked report requires a follow-up, never a merge. At most two fix rounds per worker.
    For the initial diff, when the active level requires an independent review, skip
    pane self-review and use the saved report from step 5. Otherwise, pane workers must
    self-review: `orc pane review <task> --path <worktree>`, waited like any run.
-   After a fix round, self-review only the paths changed in that round, taken from
-   the follow-up report and `git status`:
+   After a fix round, run no-comments on the paths changed in that round, then
+   self-review only those paths, taken from the follow-up report and `git status`:
    `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
    Use the same worker; never start a fresh native `orc:reviewer` unless the round
    touches a new risky area. The close gate still compares the whole checkout.

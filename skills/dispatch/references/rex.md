@@ -76,9 +76,10 @@ outputs and verdicts in that report and accept both before closing.
   self-review; risky diffs (security, concurrency, migrations, public APIs, fund safety)
   get one independent review. For that initial diff, pin the checkout before
   dispatching a reviewer and use the saved report to close after acceptance.
-  Otherwise, initial self-review stays required after the report and deterministic checks.
-  After a fix round, self-review only the paths changed in that round, taken from
-  the follow-up report and `git status`:
+  Otherwise, initial self-review stays required after the report, deterministic checks
+  and no-comments. After a fix round, run no-comments on the paths changed in that
+  round, then self-review only those paths, taken from the follow-up report and
+  `git status`:
   `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
   Use the same worker; never start a fresh native `orc:reviewer` unless the round
   touches a new risky area. Keep high (Cascade) and max (Critique) review patterns.

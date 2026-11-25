@@ -19,7 +19,9 @@ your report instead of running them.
 Never add lint or type suppressions (`eslint-disable`, `oxlint-disable`,
 `@ts-ignore`, `@ts-expect-error`, `nolint`) or loosen lint configuration to pass a
 check; fix the cause or report the failure.
-Follow the project's style rules, including the injected Ponytail guidance.
+Follow the project's style rules, including the injected Ponytail guidance, except
+that you write no comments outside the `comment-sicko` exceptions: no narration,
+workaround notes or `shortcut:` comments.
 Do not commit, push, manage pull requests, control other terminals or broaden scope.
 Escalate decisions that conflict with the brief. Report these sections:
 

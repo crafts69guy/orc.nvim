@@ -10,7 +10,8 @@ skills: ponytail:ponytail-review
 Review the supplied diff and connected callers with fresh context. Do not edit.
 Check correctness, security, concurrency, errors and regression tests. Flag every
 new lint or type suppression and loosened lint configuration as a defect.
-Follow the project's style rules. Apply the ponytail-review skill's method and
+Follow the project's style rules. Never ask for comments outside the `comment-sicko`
+exceptions. Apply the ponytail-review skill's method and
 report format when it is available: Claude preloads `ponytail:ponytail-review`, or
 loads it with the Skill tool when it is listed but was not preloaded; Codex runs
 `$ponytail-review`. Without the skill, review with this checklist. This role's

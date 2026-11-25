@@ -25,7 +25,8 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
   one task worktree per dispatched worker. Keep concurrent writers to at most
   three, with disjoint file ownership.
 - Inspect every diff and run deterministic checks (tests and approved worktrunk
-  pre-merge gates) before any model review.
+  pre-merge gates), then [no-comments](../skills/no-comments/SKILL.md), before any model
+  review. Write no comments outside its exceptions, even where Ponytail asks for them.
 - Use the main checkout's `.orc/validation.md` when present. Workers run only edit
   and task tiers; reviewers run at most targeted task-tier repros that write nothing
   in the checkout, never gates or suites. Run cross-workspace suites once per merged

@@ -548,7 +548,7 @@ end
 
 local function independent_review_hint(record)
 	local target = record.task .. " --path " .. vim.fn.shellescape(record.path)
-	return "run orc pane review-begin "
+	return "run no-comments on the current diff, then orc pane review-begin "
 		.. target
 		.. " --review <new-file> before dispatching an independent review; read and accept its verdict, then run orc pane close "
 		.. target
@@ -1257,7 +1257,7 @@ local function wait_for(rt, record, timeout, until_report)
 						and record.state ~= "exited"
 						and record.state ~= "error"
 					then
-						answer.next = "after reading the report, inspecting the diff and running checks: orc pane review "
+						answer.next = "after reading the report, inspecting the diff, running checks and no-comments once the worker is idle: orc pane review "
 							.. target
 							.. "; or "
 							.. independent_review_hint(record)
@@ -1361,7 +1361,7 @@ local function unreviewed(rt, record)
 	end
 	return "orc pane close: "
 		.. (last and "the checkout changed after " .. (last.report and "saved review " .. last.report or "self-review run " .. last.runId) or "no done self-review for this implementer")
-		.. "; run orc pane review "
+		.. "; run no-comments on the current diff, then orc pane review "
 		.. record.task
 		.. " --path "
 		.. vim.fn.shellescape(record.path)

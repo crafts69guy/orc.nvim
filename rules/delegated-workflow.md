@@ -28,7 +28,8 @@
   If a native subagent has handed back its report and shows "waiting on
   its own background work", stop it with TaskStop and keep the report.
 - For an implementer pane, get the report, inspect the diff, run deterministic
-  checks, complete the applicable review, then close the pane. The wait result's
+  checks, follow [no-comments](../skills/no-comments/SKILL.md) once the worker is
+  idle, complete the applicable review, then close the pane. The wait result's
   `next` field names the review or close command. Use `orc pane close <task> --path
   <checkout>` or `orc pane prune --path <checkout>` before reporting completion.
   See dispatch's Rex reference for the close gate, `--review` and `--no-review`.
@@ -76,9 +77,9 @@
   and check it before the next attempt. Give a new worker the original brief,
   the follow-ups and the last report. Record kind, level, model/effort and
   escalation reasons in the task log.
-- Recheck fixes with the same worker's `orc pane review --target <paths changed in
-  the round>`. Start a fresh native `orc:reviewer` only if the round touches a new
-  risky area.
+- After no-comments on the paths changed in the round, recheck fixes with the same
+  worker's `orc pane review --target <paths changed in the round>`. Start a fresh
+  native `orc:reviewer` only if the round touches a new risky area.
 - On a usage or rate limit, restart the same brief and worktree with the other
   `--kind` and preserve prior work.
 - Use one task per context and record state in the plan and

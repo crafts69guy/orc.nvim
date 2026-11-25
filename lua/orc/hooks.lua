@@ -1,7 +1,7 @@
 local M = {}
-local restricted = { implementer = true, scoper = true, reviewer = true }
--- Read-only roles hand back a report; a background task they started keeps the agent alive.
-local foreground = { scoper = true, reviewer = true }
+local restricted = { implementer = true, scoper = true, reviewer = true, ["comment-sicko"] = true }
+-- Report-only roles hand back a report; a background task they started keeps the agent alive.
+local foreground = { scoper = true, reviewer = true, ["comment-sicko"] = true }
 
 ---Normalize plugin-qualified roles; an empty role identifies the main agent.
 ---@param value? string

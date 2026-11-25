@@ -655,6 +655,8 @@ Test.test("core workflow guards classify direct, chained, quoted and wrapped wri
 	Test.eq(hooks.decide("main", "git commit -m x"), nil)
 	Test.eq(hooks.decide("main", "rex run -- git push") ~= nil, true)
 	Test.eq(hooks.decide("reviewer", "rex do action") ~= nil, true)
+	Test.eq(hooks.decide("comment-sicko", "git commit -m x") ~= nil, true)
+	Test.eq(hooks.decide(hooks.role("orc:comment-sicko"), "rex run -- ls") ~= nil, true)
 	Test.eq(hooks.decide("main", nil), nil)
 end)
 
@@ -674,7 +676,7 @@ Test.test(
 		Test.eq(rt.decode(denied.out).hookSpecificOutput.permissionDecision, "deny")
 		assert(rt.files["/repo/.orc/signals.jsonl"]:find('"kind":"deny"', 1, true))
 		local background = { command = "npm test", run_in_background = true }
-		for _, agent in ipairs({ "orc:reviewer", "orc:scoper" }) do
+		for _, agent in ipairs({ "orc:reviewer", "orc:scoper", "orc:comment-sicko" }) do
 			local reason = rt.decode(
 				hooks.run(rt, "guard", rt.encode({ agent_type = agent, tool_input = background })).out
 			).hookSpecificOutput.permissionDecisionReason
