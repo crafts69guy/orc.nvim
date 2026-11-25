@@ -50,6 +50,13 @@ local TERMINAL_FLAVOR = TERMINAL_CREATOR .. ".shell"
 ---@field reviewPin? {runId:string,report:string,baseline:string,started:number} Independent review requested before dispatch.
 ---@field reviewed? {runId?:string,report?:string,baseline:string} Last done review run or absolute saved report, kept across runs; close requires its fingerprint.
 
+---Whether the worker record still owns its checkout. A failed worker may have left edits.
+---@param worker orc.Worker
+---@return boolean
+function M.owns_checkout(worker)
+	return worker.role ~= "scoper" and worker.state ~= "closed" and worker.state ~= "exited"
+end
+
 local function main_root(rt, cwd)
 	return assert(require("orc.worktrees").root(rt, cwd), "orc pane: not a git checkout")
 end
@@ -792,14 +799,14 @@ local function start(rt, feature, task, values, file)
 	if values.here and role == "implementer" then
 		assert(rt.env.REX_BLOCK, "orc pane: --here needs REX_BLOCK")
 		for _, worker in ipairs(M.collect(rt, path)) do
-			assert(
-				worker.role == "scoper"
-					or worker.state == "closed"
-					or worker.state == "exited"
-					or worker.state == "error"
-					or worker.path ~= path,
-				"orc pane: close the existing pair worker first"
-			)
+			if worker.path == path and M.owns_checkout(worker) then
+				local command = "orc pane close " .. worker.task .. " --path " .. vim.fn.shellescape(path)
+				if worker.state == "error" then
+					command = command
+						.. " --no-review. If the worker has stopped and its pane is gone, use --force."
+				end
+				error("orc pane: close the existing pair worker first. Run " .. command, 0)
+			end
 		end
 	end
 	save(rt, record, "new")

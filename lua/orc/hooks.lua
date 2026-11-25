@@ -257,13 +257,11 @@ function M.context(rt, cwd)
 		local own_session = rt.env.ORC_PAIR == "1"
 			and (rt.env.REX_SESSION or "") ~= ""
 			and rt.env.REX_SESSION
-		for _, worker in ipairs(require("orc.workers").collect(rt, cwd, { durable_only = true })) do
+		local workers = require("orc.workers")
+		for _, worker in ipairs(workers.collect(rt, cwd, { durable_only = true })) do
 			local own_pair = own_session and worker.sessionId == own_session
-			local active = worker.role ~= "scoper"
-				and worker.state ~= "closed"
-				and worker.state ~= "exited"
 			if
-				active
+				workers.owns_checkout(worker)
 				and worker.path == checkout
 				and worker.blockId ~= rt.env.REX_BLOCK
 				and not own_pair

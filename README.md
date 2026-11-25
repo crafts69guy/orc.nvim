@@ -192,6 +192,10 @@ In pane mode, scopers and implementers use pane workers (Codex by default).
 Independent review follows the vendor preference above and shippers stay native.
 For one task add `--here --path <checkout>` and leave the checkout to its
 implementer. Parallel tasks use dispatch worktrees.
+An implementer owns its checkout until it closes or exits successfully. For a failed
+worker, run `orc pane close <task> --path <checkout> --no-review` before starting another
+implementer there. If the worker has stopped and its pane is gone, use `--force` to mark its
+record closed.
 Start requires the checkout's git toplevel; `--allow-subdir` explicitly permits a
 subdirectory. `--here` also supports a checkout in another repository.
 `--precheck '<cmd>'` runs in `--path` using `sh -c` before creation;

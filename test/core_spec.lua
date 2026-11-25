@@ -335,6 +335,7 @@ Test.test(
 		rt.env.REX_SESSION, rt.env.REX_BLOCK = "own", "main"
 		with_module("orc.workers", {
 			parse_report = require("orc.workers").parse_report,
+			owns_checkout = require("orc.workers").owns_checkout,
 			collect = function()
 				return {
 					{ path = "/repo", task = "T1", blockId = "worker", sessionId = "own", state = "working" },

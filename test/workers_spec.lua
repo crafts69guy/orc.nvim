@@ -335,6 +335,26 @@ Test.test("workers symlink paths share one canonical record for start wait and c
 	Test.eq(#state.closed, 1)
 end)
 
+Test.test("workers here refuses a recorded error until the failed worker is closed", function()
+	local rt, state = fake()
+	Test.eq(state.start().code, 0)
+	state.native = "error"
+	Test.eq(state.run("wait", { "--timeout", "0" }).result.state, "error")
+	Test.eq(state.record().state, "error")
+	local args = { "start", "feature", "other", "--path", rt.cwd, "--brief", "brief.md", "--here" }
+	local refused = workers.run(rt, args)
+	Test.eq(refused.code, 1)
+	Test.eq(state.created, 1)
+	assert(refused.result.stderr:find("close the existing pair worker first", 1, true))
+	local close = "orc pane close task --path " .. vim.fn.shellescape(rt.cwd) .. " --no-review"
+	assert(refused.result.stderr:find(close, 1, true))
+	assert(refused.result.stderr:find("its pane is gone, use --force", 1, true))
+	Test.eq(state.run("close").result.status, "not-reviewed")
+	Test.eq(state.run("close", { "--no-review" }).result.status, "closed")
+	Test.eq(workers.run(rt, args).code, 0)
+	Test.eq(state.created, 2)
+end)
+
 Test.test("workers collection skips stale identities and status warns with their paths", function()
 	for _, mismatch in ipairs({ "root", "path" }) do
 		for _, closed in ipairs({ false, true }) do
@@ -1229,14 +1249,14 @@ Test.test("workers Stop saves only matching missing reports for either worker ro
 	end
 end)
 
-Test.test("workers here ownership counts only active implementers", function()
+Test.test("workers here ownership ends when an implementer closes or exits successfully", function()
 	for _, case in ipairs({
 		{ role = "scoper", native = "working", allowed = true },
 		{ role = "implementer", native = "working", allowed = false },
 		{ native = "working", allowed = false },
 		{ role = "implementer", native = "idle", allowed = false },
 		{ role = "implementer", exit = 0, allowed = true },
-		{ role = "implementer", exit = 1, allowed = true },
+		{ role = "implementer", exit = 1, allowed = false },
 	}) do
 		local rt, state = fake()
 		state.start()
@@ -1244,6 +1264,10 @@ Test.test("workers here ownership counts only active implementers", function()
 		record.role = case.role
 		state.store(record)
 		state.native, state.exitCode = case.native, case.exit
+		if case.exit ~= nil then
+			local waited = state.run("wait", { "--timeout", "0" })
+			Test.eq(waited.result.state, case.exit == 0 and "exited" or "error")
+		end
 		local launched = workers.run(
 			rt,
 			{ "start", "feature", "other", "--path", rt.cwd, "--brief", "brief.md", "--here" }
