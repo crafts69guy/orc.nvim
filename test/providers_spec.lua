@@ -505,8 +505,12 @@ Test.test(
 				options(providers.plan(rt, { kind = "claude", role = "implementer" }).argv, "--model"),
 				"opus"
 			)
-			Test.raises("unknown provider$", providers.plan, rt, { kind = "other", role = "main" })
-			Test.raises("unknown provider role", providers.plan, rt, { kind = "claude", role = "other" })
+			Test.raises("unknown provider$", function()
+				providers.plan(rt, Test.invalid({ kind = "other", role = "main" }))
+			end)
+			Test.raises("unknown provider role", function()
+				providers.plan(rt, Test.invalid({ kind = "claude", role = "other" }))
+			end)
 		end)
 	end
 )

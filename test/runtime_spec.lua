@@ -163,7 +163,9 @@ Test.test(
 		end))
 		Test.eq(assert(completed).code, 127)
 		missing.stop()
-		Test.raises("completion callback", rt.async, { "true" }, {})
+		Test.raises("completion callback", function()
+			rt.async({ "true" }, {}, Test.invalid(nil))
+		end)
 	end
 )
 
@@ -197,7 +199,9 @@ Test.test("runtime stream delivers chunks and cancellation terminates its owned 
 	assert(result.code ~= 0 or result.signal ~= 0)
 	local no_exit = rt.stream({ "true" }, nil, function() end)
 	no_exit.stop()
-	Test.raises("data callback", rt.stream, { "true" }, {})
+	Test.raises("data callback", function()
+		rt.stream({ "true" }, {}, Test.invalid(nil))
+	end)
 end)
 
 Test.test("runtime mkdir rejects null and empty paths without creating entries", function()
@@ -206,7 +210,9 @@ Test.test("runtime mkdir rejects null and empty paths without creating entries",
 	assert(vim.uv.chdir(dir))
 	local ok, err = xpcall(function()
 		for _, path in ipairs({ vim.NIL, "" }) do
-			Test.raises("mkdir needs a path", rt.mkdir, path)
+			Test.raises("mkdir needs a path", function()
+				rt.mkdir(Test.invalid(path))
+			end)
 		end
 		Test.eq(rt.list(dir), {})
 	end, debug.traceback)

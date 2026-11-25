@@ -2381,7 +2381,9 @@ Test.test("workers hook boot ordering validates block identity and ignores stale
 	Test.eq(workers.event(hook_rt, rt.encode({ hook_event_name = "unknown" })).code, 0)
 	Test.eq(workers.event(hook_rt, { hook_event_name = "Stop" }).code, 0)
 	Test.eq(workers.event(hook_rt, { hook_event_name = "UserPromptSubmit" }).code, 0)
-	Test.raises("invalid hook", workers.event, hook_rt, false)
+	Test.raises("invalid hook", function()
+		workers.event(hook_rt, Test.invalid(false))
+	end)
 	hook_rt.env.REX_BLOCK = "other"
 	Test.raises("block identity", function()
 		workers.event(hook_rt, {})

@@ -43,7 +43,7 @@ end
 ---@class orc.Test
 ---@field test fun(name:string,fn:function) Register a test.
 ---@field eq fun(actual:any,expected:any) Assert deep equality.
----@field raises fun(pattern:string,fn:function,...:unknown)
+---@field raises fun(pattern:string,fn:function)
 ---@field temp fun():string Create an automatically cleaned temporary directory.
 Test = {}
 
@@ -59,13 +59,19 @@ function Test.eq(actual, expected)
 	)
 end
 
-function Test.raises(pattern, fn, ...)
-	local ok, err = pcall(fn, ...)
+function Test.raises(pattern, fn)
+	local ok, err = pcall(fn)
 	assert(not ok, "expected an error matching " .. pattern)
 	assert(
 		tostring(err):match(pattern),
 		"expected error matching " .. pattern .. ", got " .. tostring(err)
 	)
+end
+
+---@param value unknown
+---@return unknown
+function Test.invalid(value)
+	return value
 end
 
 function Test.temp()

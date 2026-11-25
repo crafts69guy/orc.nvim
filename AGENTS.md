@@ -20,3 +20,5 @@ Coverage must report lines, branches and functions separately, each >=98%.
 Never replace missing coverage with estimates or exclude production modules.
 Tests must validate behavior, including errors and recovery, using fake adapters
 and temporary repositories. Paid model evals are separate from ordinary checks.
+Pass deliberately wrong-typed values to production code only through `Test.invalid`,
+so every place that bypasses LuaLS type checks is searchable.

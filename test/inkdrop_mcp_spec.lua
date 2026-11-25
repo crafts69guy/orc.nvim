@@ -91,11 +91,9 @@ Test.test(
 		Test.raises("absolute path", function()
 			mcp.paths(rt)
 		end)
-		local malformed = vim.tbl_extend("force", rt, {
-			env = vim.tbl_extend("force", rt.env, { ORC_INKDROP_MCP_CONFIG = 1 }),
-		})
+		rt.env.ORC_INKDROP_MCP_CONFIG = Test.invalid(1)
 		Test.raises("absolute path", function()
-			mcp.paths(malformed)
+			mcp.paths(rt)
 		end)
 	end
 )

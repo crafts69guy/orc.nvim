@@ -279,8 +279,7 @@ Test.test(
 			end)
 			assert(result:find("absolute", 1, true))
 			Test.eq(#state.calls, 0)
-			local invalid_target = rt.decode("{}")
-			client.focus(invalid_target, function(_, err)
+			client.focus(Test.invalid({}), function(_, err)
 				result = err
 			end)
 			assert(result:find("identity and session", 1, true))
