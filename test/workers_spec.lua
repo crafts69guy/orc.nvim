@@ -7,6 +7,7 @@ local function fake()
 		cwd = root,
 		env = {
 			HOME = root,
+			XDG_CACHE_HOME = root .. "/cache",
 			REX_SESSION = "session:fixture",
 			REX_BLOCK = "block:main",
 			ORC_INKDROP_MCP_MODE = false,
@@ -29,6 +30,7 @@ local function fake()
 		stopped = 0,
 		closed = {},
 		writes = {},
+		gridCalls = {},
 	}
 	local function response(value)
 		return { code = 0, signal = 0, stdout = rt.encode(value), stderr = "" }
@@ -187,6 +189,19 @@ local function fake()
 					state.noBlock and {}
 						or { block_ids = { state.returnedBlock or "block:worker" }, window_id = "window:worker" }
 				)
+			elseif
+				method == "session.view"
+				or method == "session.move_block"
+				or method == "session.resize_pane"
+			then
+				state.gridCalls[#state.gridCalls + 1] = { method, input, argv[5] }
+				if state.gridFailure == method then
+					return failure("grid RPC failed")
+				end
+				if method == "session.view" then
+					return response(state.view())
+				end
+				return response({})
 			elseif method == "block.close" then
 				if state.closeFail then
 					return failure("cannot close")
@@ -254,6 +269,32 @@ local function fake()
 			error("unexpected block method " .. tostring(method))
 		end
 		error("unexpected command " .. table.concat(argv, " "))
+	end
+	function state.view()
+		local anchor = { block_id = "block:main", rect = { 0, 0, 1, 1 } }
+		local blocks = { { block_id = anchor.block_id } }
+		local layout = anchor
+		if state.created > 0 and #state.closed == 0 then
+			blocks[2] = { block_id = "block:worker", label = state.layout.block.label }
+			anchor.rect[3] = 0.5
+			layout = {
+				rect = { 0, 0, 1, 1 },
+				split = {
+					direction = "horizontal",
+					ratio = 0.5,
+					before = anchor,
+					after = { block_id = "block:worker", rect = { 0.5, 0, 0.5, 1 } },
+				},
+			}
+		end
+		return {
+			windows = {
+				{
+					window_id = "window:worker",
+					layers = { { kind = "tiled", blocks = blocks, layout = layout } },
+				},
+			},
+		}
 	end
 	rt.stream = function(argv, opts, on_data)
 		state.streams = state.streams + 1
@@ -2125,6 +2166,385 @@ Test.test(
 		assert(rt.exists(rt.cwd))
 	end
 )
+
+Test.test("workers report a grid after starting here", function()
+	local _, state = fake()
+	local started = state.start({ "--here" })
+	Test.eq(started.code, 0)
+	Test.eq(started.result.layout, "grid")
+	Test.eq(
+		state.gridCalls,
+		{ { "session.view", { session_id = "session:fixture" }, "session:fixture" } }
+	)
+end)
+
+Test.test("workers grid start moves the newest worker to the last cell", function()
+	local rt, state = fake()
+	local path = rt.path(rt.root, "test", "fixtures", "rex-grid", "view-before-columns.json")
+	state.view = function()
+		local view = rt.decode((assert(rt.read(path))))
+		view.windows[1].layers[1].blocks[2].label = state.layout.block.label
+		return view
+	end
+	local started = state.start({ "--here" })
+	Test.eq(started.result.layout, "grid")
+	Test.eq(state.creation.focus, false)
+	local observed = {}
+	for _, call in ipairs(state.gridCalls) do
+		local method, args, session = call[1], call[2], call[3]
+		Test.eq({ session, args.session_id }, { "session:fixture", "session:fixture" })
+		observed[#observed + 1] =
+			{ method, args.block_id, args.anchor_block_id, args.direction, args.side, args.ratio }
+	end
+	Test.eq(observed, {
+		{ "session.view" },
+		{ "session.move_block", "block:e", "block:main", "horizontal", "after", 2 / 3 },
+		{ "session.move_block", "block:c", "block:main", "horizontal", "after", 1 / 2 },
+		{ "session.move_block", "block:b", "block:main", "vertical", "after", 1 / 2 },
+		{ "session.move_block", "block:d", "block:c", "vertical", "after", 1 / 2 },
+		{ "session.move_block", "block:worker", "block:e", "vertical", "after", 1 / 2 },
+	})
+end)
+
+Test.test(
+	"workers grid respects foreign panes and persists launches after a layout failure",
+	function()
+		for _, case in ipairs({ "foreign", "failure", "new-window" }) do
+			local _, state = fake()
+			local view = state.view
+			state.view = function()
+				local current = view()
+				local layer = current.windows[1].layers[1]
+				if case == "foreign" then
+					layer.blocks[#layer.blocks + 1] =
+						{ block_id = "block:foreign", label = "orc:feature/task" }
+				else
+					layer.layout.split.ratio, layer.layout.split.before.rect[3] = 0.75, 0.75
+				end
+				return current
+			end
+			if case == "failure" then
+				state.gridFailure = "session.resize_pane"
+			end
+			local here = case ~= "new-window"
+			local started = state.start(here and { "--here" } or {})
+			Test.eq({ started.code, state.record().blockId }, { 0, "block:worker" })
+			Test.eq(state.record().here, here)
+			if here then
+				Test.eq(
+					{ state.created, state.method, #state.gridCalls },
+					{ 1, "session.new_split", case == "foreign" and 1 or 2 }
+				)
+				Test.eq({
+					state.creation.anchor_id,
+					state.creation.direction,
+					state.creation.side,
+					state.creation.focus,
+				}, { "block:main", "horizontal", "after", false })
+				Test.eq(started.result.layout, case == "foreign" and "skipped" or "failed")
+				assert(
+					started.result.layoutReason:find(
+						case == "foreign" and "non-orc block" or "grid RPC failed",
+						1,
+						true
+					)
+				)
+			else
+				Test.eq(state.method, "session.new_window")
+				Test.eq(started.result.layout, nil)
+				Test.eq(state.run("close", { "--no-review" }).result.layout, nil)
+				Test.eq(state.gridCalls, {})
+			end
+		end
+	end
+)
+
+Test.test("workers grid retiles close and prune from a fresh view", function()
+	for _, case in ipairs({ "close", "prune", "failed-prune" }) do
+		local command = case == "close" and "close" or "prune"
+		local rt, state = fake()
+		local path = rt.path(rt.root, "test", "fixtures", "rex-grid", "view-before-columns.json")
+		local before = rt.decode((assert(rt.read(path))))
+		local after = vim.deepcopy(before)
+		local layer = after.windows[1].layers[1]
+		table.remove(layer.blocks, 2)
+		local anchor = layer.layout.split.before.split.before.split.before
+		anchor.block_id, anchor.split = "block:main", nil
+		state.view = function()
+			return #state.closed == 0 and before or after
+		end
+		Test.eq(state.start({ "--here" }).result.layout, "grid")
+		state.gridCalls = {}
+		state.exitCode = 0
+		if command == "prune" then
+			local record = state.record()
+			record.here = nil
+			state.store(record)
+		end
+		if case == "failed-prune" then
+			state.gridFailure = "session.move_block"
+		end
+		local response = command == "close" and state.run("close")
+			or workers.run(rt, { "prune", "--path", rt.cwd })
+		local outcome = command == "close" and response.result or response.result.closed[1]
+		Test.eq({ response.code, state.record().state, outcome.layout }, {
+			0,
+			"closed",
+			case == "failed-prune" and "failed" or "grid",
+		})
+		Test.eq(
+			{ state.gridCalls[1][1], state.gridCalls[2][1], state.gridCalls[3][1] },
+			{ "session.view", "session.view", "session.move_block" }
+		)
+		Test.eq(state.closed, { "block:worker" })
+		if case == "failed-prune" then
+			assert(outcome.layoutReason:find("grid RPC failed", 1, true))
+			Test.eq(#state.gridCalls, 3)
+		end
+	end
+end)
+
+Test.test("workers grid skips close without an anchor in the worker's tiled layer", function()
+	for _, case in ipairs({
+		{ anchor = nil, views = 0, reason = "no anchor in the worker's Rex session" },
+		{ anchor = "", views = 0, reason = "no anchor in the worker's Rex session" },
+		{
+			anchor = "block:main",
+			session = "session:elsewhere",
+			views = 0,
+			reason = "no anchor in the worker's Rex session",
+		},
+		{
+			anchor = "block:elsewhere",
+			views = 1,
+			reason = "anchor is outside the worker's tiled window",
+		},
+		{ anchor = nil, views = 0, legacy = true },
+		{ anchor = "block:elsewhere", views = 1, legacy = true },
+		{
+			anchor = "block:main",
+			views = 1,
+			worker_missing = true,
+			reason = "anchor is outside the worker's tiled window",
+		},
+	}) do
+		local rt, state = fake()
+		Test.eq(state.start({ "--here" }).result.layout, "grid")
+		state.gridCalls = {}
+		if case.anchor then
+			rt.env.REX_BLOCK = case.anchor
+		else
+			rt.env.REX_BLOCK = nil
+		end
+		if case.session then
+			rt.env.REX_SESSION = case.session
+		end
+		if case.legacy then
+			local record = state.record()
+			record.here = nil
+			state.store(record)
+		end
+		if case.worker_missing then
+			state.view = function()
+				return { windows = {} }
+			end
+		end
+		local closed = state.run("close", { "--no-review" })
+		Test.eq(
+			{ closed.code, closed.result.status, closed.result.layout, closed.result.layoutReason },
+			{
+				0,
+				"closed",
+				case.reason and "skipped" or nil,
+				case.reason,
+			}
+		)
+		Test.eq(state.closed, { "block:worker" })
+		Test.eq(#state.gridCalls, case.views)
+	end
+end)
+
+Test.test(
+	"workers grid leaves the layout alone if the anchor changes windows during close",
+	function()
+		for _, case in ipairs({ "missing", "moved" }) do
+			local _, state = fake()
+			Test.eq(state.start({ "--here" }).result.layout, "grid")
+			state.gridCalls = {}
+			local view = state.view
+			state.view = function()
+				local current = view()
+				if #state.closed > 0 then
+					if case == "missing" then
+						return { windows = {} }
+					end
+					current.windows[1].window_id = "window:elsewhere"
+				end
+				return current
+			end
+			local closed = state.run("close", { "--no-review" })
+			Test.eq(
+				{ closed.code, closed.result.status, closed.result.layout, closed.result.layoutReason },
+				{
+					0,
+					"closed",
+					"skipped",
+					"anchor is outside the worker's tiled window",
+				}
+			)
+			Test.eq({ state.gridCalls[1][1], state.gridCalls[2][1], #state.gridCalls }, {
+				"session.view",
+				"session.view",
+				2,
+			})
+		end
+	end
+)
+
+Test.test("workers grid waits for the Rex session lock before reading the layout", function()
+	for _, case in ipairs({
+		"released",
+		"stale",
+		"busy",
+		"stale-reaper",
+		"busy-reaper",
+		"reclaim-failed",
+	}) do
+		local rt, state = fake()
+		local cache = rt.env.XDG_CACHE_HOME
+		if case == "released" then
+			rt.env.XDG_CACHE_HOME = nil
+			cache = rt.path(rt.env.HOME, ".cache")
+		end
+		local lock = rt.path(cache, "orc", "rex-layout", vim.fn.sha256(rt.env.REX_SESSION) .. ".lock")
+		local reaper = lock .. ".reaper"
+		rt.mkdir(lock)
+		if
+			case == "stale"
+			or case == "stale-reaper"
+			or case == "busy-reaper"
+			or case == "reclaim-failed"
+		then
+			local old = os.time() - 120
+			assert(vim.uv.fs_utime(lock, old, old))
+			if case == "stale-reaper" or case == "busy-reaper" then
+				rt.mkdir(reaper)
+				if case == "stale-reaper" then
+					assert(vim.uv.fs_utime(reaper, old, old))
+				end
+			elseif case == "reclaim-failed" then
+				local rmdir = rt.rmdir
+				rt.rmdir = function(path)
+					assert(path ~= lock, "cannot reclaim grid lock")
+					rmdir(path)
+				end
+			end
+		elseif case == "released" then
+			state.on_sleep(function()
+				Test.eq(state.gridCalls, {})
+				Test.eq(state.record().blockId, "block:worker")
+				rt.rmdir(lock)
+				state.on_sleep(nil)
+			end)
+		end
+		local started = state.start({ "--here" })
+		Test.eq({ started.code, state.record().blockId }, { 0, "block:worker" })
+		local failed = case == "busy" or case == "busy-reaper" or case == "reclaim-failed"
+		Test.eq(started.result.layout, failed and "failed" or "grid")
+		Test.eq(rt.exists(lock), failed)
+		Test.eq(rt.exists(reaper), case == "busy-reaper")
+		Test.eq(#state.gridCalls, failed and 0 or 1)
+		if case == "reclaim-failed" then
+			assert(started.result.layoutReason:find("cannot reclaim grid lock", 1, true))
+		end
+	end
+end)
+
+Test.test("workers grid rechecks a stale layout lock before reclaiming it", function()
+	local rt, first = fake()
+	local other_rt, second = fake()
+	other_rt.env.XDG_CACHE_HOME = rt.env.XDG_CACHE_HOME
+	local lock = rt.path(
+		rt.env.XDG_CACHE_HOME,
+		"orc",
+		"rex-layout",
+		vim.fn.sha256(rt.env.REX_SESSION) .. ".lock"
+	)
+	rt.mkdir(lock)
+	local old = os.time() - 120
+	assert(vim.uv.fs_utime(lock, old, old))
+
+	local waiter = coroutine.create(function()
+		return second.start({ "--here" })
+	end)
+	local stat = vim.uv.fs_stat
+	local observed = false
+	Test.replace(vim.uv, "fs_stat", function(path, ...)
+		local result, err, code = stat(path, ...)
+		if path == lock and coroutine.running() == waiter and not observed then
+			observed = true
+			coroutine.yield("saw-stale-lock")
+		end
+		return result, err, code
+	end)
+	second.on_sleep(function()
+		second.on_sleep(nil)
+		coroutine.yield("waiting-for-owner")
+	end)
+
+	Test.eq({ coroutine.resume(waiter) }, { true, "saw-stale-lock" })
+	local view = first.view
+	local saw_wait
+	first.view = function()
+		local ok, phase = coroutine.resume(waiter)
+		assert(ok, phase)
+		saw_wait = phase
+		return view()
+	end
+	Test.eq(first.start({ "--here" }).result.layout, "grid")
+	Test.eq(#second.gridCalls, 0)
+	Test.eq(saw_wait, "waiting-for-owner")
+
+	local ok, started = coroutine.resume(waiter)
+	assert(ok, started)
+	Test.eq({ started.result.layout, #second.gridCalls, rt.exists(lock) }, { "grid", 1, false })
+end)
+
+Test.test("workers grid still closes an owned split when the Rex view fails", function()
+	local _, state = fake()
+	Test.eq(state.start({ "--here" }).result.layout, "grid")
+	state.gridFailure = "session.view"
+	local response = state.run("close", { "--no-review" })
+	Test.eq(
+		{ response.code, state.record().state, response.result.layout },
+		{ 0, "closed", "failed" }
+	)
+	assert(response.result.layoutReason:find("grid RPC failed", 1, true))
+end)
+
+Test.test("workers grid recovers a split after an unconfirmed launch", function()
+	for _, case in ipairs({ "here", "legacy", "elsewhere", "no-anchor" }) do
+		local rt, state = fake()
+		state.lostCreate, state.workerHidden = true, true
+		Test.eq(state.start({ "--here" }).code, 1)
+		Test.eq(state.gridCalls, {})
+		state.workerHidden = false
+		if case == "legacy" then
+			local record = state.record()
+			record.here = nil
+			state.store(record)
+		elseif case == "elsewhere" then
+			rt.env.REX_SESSION = "session:elsewhere"
+		elseif case == "no-anchor" then
+			rt.env.REX_BLOCK = nil
+		end
+		local started = state.start({ "--here" })
+		Test.eq({ started.code, started.result.pane, state.created }, { 0, "block:worker", 1 })
+		local skipped = case == "elsewhere" or case == "no-anchor"
+		Test.eq(started.result.layout, skipped and "skipped" or "grid")
+		Test.eq(#state.gridCalls, skipped and 0 or 1)
+	end
+end)
 
 Test.test("workers pair creates one split and Claude loads only the new Lua plugin", function()
 	local rt, state = fake()

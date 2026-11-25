@@ -116,6 +116,12 @@ Close only panes created for your task. Closing Neovim leaves workers running.
 
 For a single task use `start --here --path <checkout>`; the orchestrator
 does not edit beside its implementer. Scopers never claim checkout ownership.
+Starting, closing, or pruning a `--here` worker tiles the orchestrator and
+its orc workers in an equal grid. Orc skips tiling if another pane occupies the
+tiled layer or if the closing command has no anchor in that layer. Floating
+panes do not affect the grid. JSON reports `layout` as `grid`, `skipped`, or
+`failed` for these operations, with `layoutReason` for skips and failures.
+Prune records the layout outcome on each affected entry in `closed`.
 Pair mode uses one Codex implementer at a time in that checkout. Review the diff
 and rerun validation before closing. The same gates apply when only one task can
 run. Parallel work uses dispatch task worktrees. After integration, use `orc gate`

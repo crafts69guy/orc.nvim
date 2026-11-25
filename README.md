@@ -206,7 +206,10 @@ automatic resume. Workers never answer approvals.
 In pane mode, scopers and implementers use pane workers (Codex by default).
 Independent review follows the vendor preference above and shippers stay native.
 For one task add `--here --path <checkout>` and leave the checkout to its
-implementer. Parallel tasks use dispatch worktrees.
+implementer. Starting, closing, or pruning `--here` workers arranges the
+orchestrator and its tiled orc workers in an equal grid. If the tiled layer
+contains another pane, orc keeps Rex's existing placement. Closing from outside
+the worker's tiled window also skips the grid. Parallel tasks use dispatch worktrees.
 An implementer owns its checkout until it closes or exits successfully. For a failed
 worker, run `orc pane close <task> --path <checkout> --no-review` before starting another
 implementer there. If the worker has stopped and its pane is gone, use `--force` to mark its

@@ -19,6 +19,7 @@ local TERMINAL_FLAVOR = TERMINAL_CREATOR .. ".shell"
 ---@field role 'implementer'|'scoper' Missing roles in older records default to implementer.
 ---@field level 'default'|'high'|'max' ORC_LEVEL at start; missing levels default to default.
 ---@field sessionId string Rex session ID.
+---@field here? boolean Whether launch used a split. Older records infer this from the live tiled layer.
 ---@field blockId? string Rex block created by this run.
 ---@field launchLabel? string Unique Rex label for the original launch, absent on legacy records.
 ---@field windowId? string Rex window returned during creation.
@@ -113,6 +114,47 @@ end
 local function stale_lock(lock)
 	local stat = vim.uv.fs_stat(lock)
 	return stat ~= nil and os.time() - stat.mtime.sec > 60
+end
+
+---@param rt orc.Runtime
+---@param file string
+---@param fn fun():any
+---@param wait? boolean Wait briefly and reclaim an expired lock.
+---@return any
+local function with_task_lock(rt, file, fn, wait)
+	local lock = file .. ".lock"
+	rt.mkdir(vim.fs.dirname(file))
+	local deadline = rt.clock() + 5000
+	while not rt.mkdir_lock(lock) do
+		assert(
+			wait and rt.clock() < deadline,
+			"orc pane: another command holds this lock; remove "
+				.. lock
+				.. " if no orc command is running"
+		)
+		if stale_lock(lock) then
+			local reaper = lock .. ".reaper"
+			if rt.mkdir_lock(reaper) then
+				local ok, err = pcall(function()
+					if stale_lock(lock) then
+						rt.rmdir(lock)
+					end
+				end)
+				rt.rmdir(reaper)
+				assert(ok, err)
+			elseif stale_lock(reaper) then
+				rt.rmdir(reaper)
+			else
+				rt.sleep(25)
+			end
+		else
+			rt.sleep(25)
+		end
+	end
+	local ok, value = xpcall(fn, debug.traceback)
+	rt.remove(lock)
+	assert(ok, value)
+	return value
 end
 
 local function save(rt, record, mode)
@@ -432,7 +474,7 @@ end
 -- Rex-side failures can strand a record; tell the user how to release it locally.
 local function hinted(record, fn, ...)
 	local pending = not record.blockId and record.launchLabel
-	local ok, value = pcall(fn, ...)
+	local ok, value, extra = pcall(fn, ...)
 	if not ok then
 		local recovery = pending
 				and "; retry the same orc pane start to reconcile the pending launch. If the pane is gone, "
@@ -448,7 +490,7 @@ local function hinted(record, fn, ...)
 			0
 		)
 	end
-	return value
+	return value, extra
 end
 
 local function new_run(rt, record)
@@ -691,21 +733,76 @@ local function reconcile_launch(rt, client, record)
 	save(rt, record)
 end
 
-local function start_result(rt, record)
-	return result(rt, 0, {
-		task = record.task,
-		runId = record.runId,
-		status = record.acknowledged and "started" or "unconfirmed",
-		state = record.state,
-		pane = record.blockId or rt.null,
-		path = record.path,
-	})
+---@class orc.WorkerLayout
+---@field layout 'grid'|'skipped'|'failed'
+---@field layoutReason? string
+
+---@param layout? orc.WorkerLayout
+local function start_result(rt, record, layout)
+	return result(
+		rt,
+		0,
+		vim.tbl_extend("force", {
+			task = record.task,
+			runId = record.runId,
+			status = record.acknowledged and "started" or "unconfirmed",
+			state = record.state,
+			pane = record.blockId or rt.null,
+			path = record.path,
+		}, layout or {})
+	)
 end
 
 ---Hooks cannot call Rex, so REX_SESSION is compared only when the terminal sets it.
 local function session_matches(rt, record)
 	local session = rt.env.REX_SESSION
 	return not session or session == "" or session == record.sessionId
+end
+
+---@param client orc.RexClient
+---@param session string
+---@return table
+local function session_view(client, session)
+	return client.call("session.view", { session_id = session }, session)
+end
+
+---@param rt orc.Runtime
+---@param client orc.RexClient
+---@param record orc.Worker
+---@param new_block? string
+---@param window? string Window containing both caller and worker before close.
+---@return orc.WorkerLayout
+local function tile(rt, client, record, new_block, window)
+	local ok, layout = pcall(function()
+		local cache = rt.env.XDG_CACHE_HOME or rt.path(assert(rt.env.HOME, "HOME is not set"), ".cache")
+		local file = rt.path(cache, "orc", "rex-layout", vim.fn.sha256(record.sessionId))
+		return with_task_lock(rt, file, function()
+			local grid = require("orc.rex_grid")
+			local anchor = rt.env.REX_BLOCK
+			local layer, current_window = grid.find_layer(session_view(client, record.sessionId), anchor)
+			if not layer or (window and window ~= current_window) then
+				return { layout = "skipped", layoutReason = "anchor is outside the worker's tiled window" }
+			end
+			local calls, reason = grid.plan(layer, anchor, new_block)
+			if not calls then
+				return { layout = "skipped", layoutReason = reason }
+			end
+			for _, call in ipairs(calls) do
+				local now = os.time()
+				assert(vim.uv.fs_utime(file .. ".lock", now, now))
+				call.arguments.session_id = record.sessionId
+				client.call(call.method, call.arguments, record.sessionId)
+			end
+			return { layout = "grid" }
+		end, true)
+	end)
+	if not ok then
+		return {
+			layout = "failed",
+			layoutReason = tostring(layout):match("^(.-)\nstack traceback:") or tostring(layout),
+		}
+	end
+	return layout
 end
 
 -- Rex's create RPC alone can take ten seconds before reconciliation begins.
@@ -722,16 +819,26 @@ local function start(rt, feature, task, values, file, servers)
 	)
 	local previous = read_record(rt, file)
 	if previous and previous.state ~= "closed" then
+		local layout
 		hinted(previous, function()
 			local client = client_for(rt, previous)
+			local recovered
 			if not previous.blockId and previous.launchLabel then
 				reconcile_launch(rt, client, previous)
+				recovered = previous.blockId
 			end
 			if previous.blockId then
 				snapshot(rt, client, previous)
 			end
+			if recovered and (previous.here or (previous.here == nil and values.here)) then
+				if rt.env.REX_BLOCK and session_matches(rt, previous) then
+					layout = tile(rt, client, previous, recovered)
+				else
+					layout = { layout = "skipped", layoutReason = "no anchor in the worker's Rex session" }
+				end
+			end
 		end)
-		return start_result(rt, previous)
+		return start_result(rt, previous, layout)
 	end
 	local client = require("orc.rex").new(rt)
 	local identity = client.identity()
@@ -767,6 +874,7 @@ local function start(rt, feature, task, values, file, servers)
 		level = rt.env.ORC_LEVEL or "default",
 		mcp = servers or {},
 		sessionId = session,
+		here = values.here == true,
 		hostId = identity.host_id,
 		instanceId = identity.instance_id,
 		brief = brief,
@@ -883,7 +991,8 @@ local function start(rt, feature, task, values, file, servers)
 		end
 		snapshot(rt, client, record)
 	end)
-	return start_result(rt, record)
+	local grid = record.here and tile(rt, client, record, record.blockId) or nil
+	return start_result(rt, record, grid)
 end
 
 ---@param review? {skill:string,target:string,baseline?:string}
@@ -1370,7 +1479,48 @@ local function unreviewed(rt, record)
 		.. "; pass --no-review only for an abandoned, stalled or failed task or an unavailable review skill"
 end
 
+---@param rt orc.Runtime
+---@param client orc.RexClient
+---@param record orc.Worker
+---@return { window?:string, outcome?:orc.WorkerLayout }?
+local function closing_layout(rt, client, record)
+	if record.here == false then
+		return nil
+	end
+	local anchor = rt.env.REX_BLOCK
+	if not anchor or anchor == "" or not session_matches(rt, record) then
+		return record.here
+				and {
+					outcome = { layout = "skipped", layoutReason = "no anchor in the worker's Rex session" },
+				}
+			or nil
+	end
+	local ok, window = pcall(function()
+		local grid = require("orc.rex_grid")
+		local view = session_view(client, record.sessionId)
+		local worker_layer, worker_window = grid.find_layer(view, assert(record.blockId))
+		if worker_layer and grid.find_layer(view, anchor) == worker_layer then
+			return worker_window
+		end
+	end)
+	if not ok then
+		return { outcome = { layout = "failed", layoutReason = tostring(window) } }
+	end
+	if window then
+		return { window = window }
+	end
+	return record.here
+			and {
+				outcome = {
+					layout = "skipped",
+					layoutReason = "anchor is outside the worker's tiled window",
+				},
+			}
+		or nil
+end
+
 ---@return string? refusal Why the worker still needs a review.
+---@return {client:orc.RexClient, window?:string, outcome?:orc.WorkerLayout}? layout
 local function close_owned(rt, record, authorize)
 	local client = client_for(rt, record)
 	assert(record.blockId, "orc pane: run has no confirmed owned block")
@@ -1385,7 +1535,11 @@ local function close_owned(rt, record, authorize)
 	if refusal then
 		return refusal
 	end
+	local layout = closing_layout(rt, client, record)
 	client.call("block.close", { block_id = record.blockId }, record.sessionId)
+	if layout then
+		return nil, { client = client, window = layout.window, outcome = layout.outcome }
+	end
 end
 
 local function close(rt, record, force, no_review, review)
@@ -1411,11 +1565,11 @@ local function close(rt, record, force, no_review, review)
 		end
 	end
 	local already_closed = record.state == "closed"
-	local refusal
+	local refusal, layout
 	if force or already_closed then
 		refusal = authorize(true)
 	else
-		refusal = hinted(record, close_owned, rt, record, authorize)
+		refusal, layout = hinted(record, close_owned, rt, record, authorize)
 	end
 	if refusal then
 		return result(
@@ -1434,7 +1588,16 @@ local function close(rt, record, force, no_review, review)
 		local file = record_path(rt, record.root, record.task, record.path)
 		pcall(rt.remove, (file:gsub("%.json$", "")) .. ".mcp.json")
 	end
-	return result(rt, 0, { status = "closed", task = record.task, pane = record.blockId or rt.null })
+	local outcome = layout and (layout.outcome or tile(rt, layout.client, record, nil, layout.window))
+	return result(
+		rt,
+		0,
+		vim.tbl_extend(
+			"force",
+			{ status = "closed", task = record.task, pane = record.blockId or rt.null },
+			outcome or {}
+		)
+	)
 end
 
 ---Read worker records, including pair-mode workers that have no plan task.
@@ -1549,26 +1712,12 @@ function M.event(rt, input)
 	return { code = 0, out = "", err = "" }
 end
 
-local function with_task_lock(rt, file, fn)
-	local lock = file .. ".lock"
-	rt.mkdir(vim.fs.dirname(file))
-	assert(
-		rt.mkdir_lock(lock),
-		"orc pane: another command holds this task lock; remove "
-			.. lock
-			.. " if no orc command is running"
-	)
-	local ok, value = xpcall(fn, debug.traceback)
-	rt.remove(lock)
-	assert(ok, value)
-	return value
-end
-
 local function prune(rt, path)
 	local closed, skipped = {}, {}
 	for _, worker in ipairs(M.collect(rt, path)) do
 		if worker.state ~= "closed" then
 			local file = record_path(rt, worker.root, worker.task, worker.path)
+			local layout, layout_reason
 			local ok, reason = pcall(with_task_lock, rt, file, function()
 				worker = assert(read_record(rt, file), "orc pane: worker not found")
 				local evidence = snapshot(rt, client_for(rt, worker), worker)
@@ -1582,9 +1731,15 @@ local function prune(rt, path)
 				if closed.code ~= 0 then
 					return closed.result.stderr
 				end
+				layout, layout_reason = closed.result.layout, closed.result.layoutReason
 			end)
 			if ok and not reason then
-				closed[#closed + 1] = { task = worker.task, pane = worker.blockId or rt.null }
+				closed[#closed + 1] = {
+					task = worker.task,
+					pane = worker.blockId or rt.null,
+					layout = layout,
+					layoutReason = layout_reason,
+				}
 			else
 				skipped[#skipped + 1] =
 					{ task = worker.task, state = worker.state, reason = tostring(reason) }
