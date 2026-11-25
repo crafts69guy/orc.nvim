@@ -14,22 +14,99 @@ local function release_file(repo)
 	return rt.path(vim.fs.dirname(repo), "release")
 end
 
-if arg[1] == "--fake-codex" then
+local function fake_hook(event, fields)
+	fields.hook_event_name = event
+	local result = orc(rt, { "hook", "worker-event" }, rt.encode(fields))
+	assert(result.code == 0, result.err)
+end
+
+local function finish_turn(run_id)
+	fake_hook("Stop", {
+		last_assistant_message = "Run: "
+			.. run_id
+			.. "\nStatus: done\n\n## Validation\nFake Codex acknowledged this run.\n",
+	})
+end
+
+local function fake_tui(record, prompt)
+	local tty = assert(vim.uv.new_tty(0, true))
+	assert(tty:set_mode(1))
+	local pending, ended, read_error = "", false, nil
+	assert(tty:read_start(function(err, chunk)
+		if chunk then
+			pending = pending .. chunk
+		else
+			ended, read_error = true, err
+		end
+	end))
+	local function status(state)
+		io.write("\27]7501;state=" .. state .. ":app=codex\27\\")
+		io.stdout:flush()
+	end
+	local function begin_turn(text)
+		local run = assert(text:match("^%[orc%-run:([%w%-]+)%]"), "fake TUI received no run marker")
+		status("working")
+		fake_hook("UserPromptSubmit", { prompt = text })
+		return run
+	end
+	local function receive(key, release)
+		local text
+		assert(
+			vim.wait(25000, function()
+				local at = pending:find("[\t\r]")
+				if not text and at then
+					assert(pending:sub(at, at) == key, "fake TUI received the wrong submit key")
+					-- The smoke sends single-line prompts. Buffer through split paste markers.
+					text = pending:sub(1, at - 1):gsub("\27%[20[01]~", "")
+					pending = pending:sub(at + 1)
+				end
+				return ended or (text and (not release or rt.exists(release)))
+			end, 10),
+			"fake TUI did not receive or release its follow-up"
+		)
+		return not ended and text or nil
+	end
+	local ok, err = pcall(function()
+		io.write("\27[?2004h")
+		local first = begin_turn(prompt)
+		local queued = receive("\t", release_file(record.root))
+		if queued then
+			finish_turn(first)
+			finish_turn(begin_turn(queued))
+			status("idle")
+			local immediate = receive("\r")
+			if immediate then
+				finish_turn(begin_turn(immediate))
+				status("idle")
+				-- Keep the terminal process alive for pane close to verify ownership.
+				vim.wait(25000, function()
+					return ended
+				end, 25)
+			end
+		end
+	end)
+	tty:read_stop()
+	tty:set_mode(0)
+	tty:close()
+	assert(ok, err)
+	assert(not read_error, read_error)
+end
+
+if arg[1] == "--fake-codex" or arg[1] == "--fake-codex-tui" then
 	if arg[2] == "mcp" and arg[3] == "list" and arg[4] == "--json" then
 		io.write("[]\n")
 		return
 	end
-	assert(arg[2] == "--no-daemon" and arg[3] == "exec" and arg[4] == "--json")
+	local tui = arg[1] == "--fake-codex-tui"
+	assert(arg[2] == "--no-daemon" and (tui or (arg[3] == "exec" and arg[4] == "--json")))
 	local worker = assert(rt.env.ORC_WORKER_FILE)
 	local record = rt.decode((assert(rt.read(worker))))
 	local prompt = arg[#arg]
 	assert(prompt:match("^%[orc%-run:([%w%-]+)%]") == record.runId)
-	local function hook(event, fields)
-		fields.hook_event_name = event
-		local result = orc(rt, { "hook", "worker-event" }, rt.encode(fields))
-		assert(result.code == 0, result.err)
+	if tui then
+		return fake_tui(record, prompt)
 	end
-	hook("UserPromptSubmit", { prompt = prompt })
+	fake_hook("UserPromptSubmit", { prompt = prompt })
 	io.write(rt.encode({ type = "thread.started", thread_id = "rex-smoke" }) .. "\n")
 	io.stdout:flush()
 	assert(
@@ -38,20 +115,30 @@ if arg[1] == "--fake-codex" then
 		end, 25),
 		"smoke never released the fake worker"
 	)
-	hook("Stop", {
-		last_assistant_message = "Run: "
-			.. record.runId
-			.. "\nStatus: done\n\n## Validation\nFake Codex acknowledged this run.\n",
-	})
+	finish_turn(record.runId)
 	io.write(
 		rt.encode({ type = "turn.completed", usage = { input_tokens = 0, output_tokens = 0 } }) .. "\n"
 	)
 	return
 end
 
-local offline = arg[1] == "--self-check"
-assert(#arg == 0 or (#arg == 1 and offline), "usage: rex-smoke.lua [--self-check]")
-local rex = require("orc.rex").new(rt)
+local offline, transport, index = false, nil, 1
+local usage = "usage: rex-smoke.lua [--self-check] [--transport exec|tui]"
+while index <= #arg do
+	if arg[index] == "--self-check" and not offline then
+		offline = true
+	else
+		assert(arg[index] == "--transport" and not transport, usage)
+		index = index + 1
+		transport = arg[index]
+		assert(transport == "exec" or transport == "tui", usage)
+	end
+	index = index + 1
+end
+transport = transport or "exec"
+local rex_module = require("orc.rex")
+local rex = rex_module.new(rt)
+local session
 local exec, stream = rt.exec, rt.stream
 local function interrupt_stream(argv, opts, on_data, delay)
 	local first = {}
@@ -78,11 +165,11 @@ local function rex_command(argv)
 	return vim.list_extend({ rex.binary, "--autostart=false" }, vim.list_slice(argv, 2))
 end
 if not offline then
-	assert(rt.env.REX_SESSION and rt.env.REX_BLOCK, "run from a local Rex terminal")
+	assert(rt.env.REX_BLOCK and rt.env.REX_BLOCK ~= "", "run from a local Rex terminal")
 	rt.exec = function(argv, opts)
 		return exec(argv[1] == rex.binary and rex_command(argv) or argv, opts)
 	end
-	rex.identity()
+	session = rex_module.session(rt, rex.identity())
 end
 
 local temp = assert(vim.uv.fs_mkdtemp(rt.path(vim.uv.os_tmpdir(), "orc-rex-smoke-XXXXXX")))
@@ -145,9 +232,25 @@ local function fixture()
 	local function quote(value)
 		return "'" .. value:gsub("'", "'\\''") .. "'"
 	end
+	local launcher, executable, mode = "#!/bin/sh\n", nvim, "--fake-codex"
+	if transport == "tui" then
+		local native = rt.path(parent, "libexec", "codex")
+		rt.mkdir(vim.fs.dirname(native))
+		-- Rex identifies the executable behind exec, so a symlink would report nvim.
+		assert(vim.uv.fs_copyfile(nvim, native))
+		launcher = launcher .. "export VIMRUNTIME=" .. quote(assert(vim.env.VIMRUNTIME)) .. "\n"
+		executable, mode = native, "--fake-codex-tui"
+	end
 	rt.write(
 		codex,
-		"#!/bin/sh\nexec " .. quote(nvim) .. " --clean -l " .. quote(script) .. ' --fake-codex "$@"\n'
+		launcher
+			.. "exec "
+			.. quote(executable)
+			.. " --clean -l "
+			.. quote(script)
+			.. " "
+			.. mode
+			.. ' "$@"\n'
 	)
 	assert(vim.uv.fs_chmod(codex, 448))
 	assert(vim.uv.fs_symlink(nvim, rt.path(bin, "nvim")))
@@ -157,7 +260,7 @@ local function fixture()
 	end
 	-- libuv can resolve executables using the caller's PATH on macOS.
 	vim.env.PATH, rt.env.PATH = bin, bin
-	rex = require("orc.rex").new(rt)
+	rex = rex_module.new(rt)
 	assert(vim.trim(run({ "codex", "mcp", "list", "--json" })) == "[]", "fake Codex lost on PATH")
 end
 
@@ -173,10 +276,10 @@ local function check_server(client, owned)
 	)
 end
 
-local function confirm_absent(client, owned)
+local function confirm_absent(client, owned, session_id)
 	assert(type(owned.blockId) == "string" and owned.blockId ~= "", "no confirmed owned block")
 	check_server(client, owned)
-	local listed = client.call("session.list_blocks", {}, owned.sessionId)
+	local listed = client.call("session.list_blocks", {}, session_id)
 	assert(vim.islist(listed.blocks), "Rex returned no block list")
 	for _, block in ipairs(listed.blocks) do
 		assert(type(block) == "table" and type(block.block_id) == "string", "invalid Rex block list")
@@ -208,6 +311,66 @@ local function observe_replacement(replacement, release)
 	end
 end
 
+local function self_check_tui(env)
+	local output = ""
+	local job = vim.fn.jobstart(
+		{ rt.path(parent, "bin", "codex"), "--no-daemon", "[orc-run:self-check] Start" },
+		{
+			cwd = checkout,
+			clear_env = true,
+			env = vim.tbl_extend("force", env, { ORC = "1", ORC_ROLE = "implementer" }),
+			pty = true,
+			on_stdout = function(_, data)
+				output = output .. table.concat(data, "\n")
+			end,
+		}
+	)
+	assert(job > 0, "could not start the fake TUI in a local PTY")
+	local function await_turn(run_id, state)
+		local osc = "\27]7501;state=" .. state .. ":app=codex\27\\"
+		assert(
+			vim.wait(5000, function()
+				local latest = record()
+				return vim.deep_equal(
+					{ latest.runId, latest.acknowledged, latest.hookState, output:find(osc, 1, true) ~= nil },
+					{ run_id, true, state, true }
+				)
+			end, 10),
+			"fake TUI did not acknowledge " .. run_id .. " in state " .. state .. ": " .. output
+		)
+		output = ""
+	end
+	local function next_prompt(run_id)
+		local latest = record()
+		latest.previousRunId, latest.previousReport = latest.runId, latest.report
+		latest.runId, latest.report = run_id, rt.path(checkout, ".orc", "reports", run_id .. ".md")
+		latest.acknowledged, latest.hookState, latest.reportStatus = false, "pending", nil
+		rt.write(worker, rt.encode(latest))
+		return "[orc-run:" .. run_id .. "] Follow-up"
+	end
+	local ok, err = pcall(function()
+		await_turn("self-check", "working")
+		local prompt = next_prompt("self-check-queued")
+		assert(vim.fn.chansend(job, "\27[20") > 0)
+		assert(vim.fn.chansend(job, "0~" .. prompt .. "\27[201~\t") > 0)
+		rt.write(release_file(repo), "offline\n")
+		await_turn("self-check-queued", "idle")
+		local latest = record()
+		assert(latest.reportStatus == "done", "fake TUI queued report was not done")
+		local previous = assert(rt.read(latest.previousReport))
+		assert(previous:find("Run: self-check\n", 1, true), "fake TUI lost the first turn's report")
+		assert(vim.fn.chansend(job, next_prompt("self-check-enter") .. "\r") > 0)
+		await_turn("self-check-enter", "idle")
+		assert(record().reportStatus == "done")
+	end)
+	vim.fn.jobstop(job)
+	assert(
+		vim.fn.jobwait({ job }, 2000)[1] ~= -1,
+		"fake TUI did not exit after closing the local PTY"
+	)
+	assert(ok, err)
+end
+
 local function self_check()
 	local report = rt.path(checkout, ".orc", "reports", "self-check.md")
 	rt.write(
@@ -221,7 +384,7 @@ local function self_check()
 			sessionId = "fixture-session",
 			blockId = "fixture-block",
 			kind = "codex",
-			transport = "exec",
+			transport = transport,
 			state = "unconfirmed",
 			report = report,
 			hostId = "fixture-host",
@@ -229,7 +392,6 @@ local function self_check()
 			brief = brief,
 		})
 	)
-	rt.write(release_file(repo), "offline\n")
 	local opts = {
 		root = root,
 		cwd = checkout,
@@ -239,6 +401,10 @@ local function self_check()
 			REX_BLOCK = "fixture-block",
 		}),
 	}
+	if transport == "tui" then
+		return self_check_tui(opts.env)
+	end
+	rt.write(release_file(repo), "offline\n")
 	local launch_rt = require("orc.runtime").new(opts)
 	local result = orc(launch_rt, { "worker-run", worker })
 	assert(result.code == 0, result.err)
@@ -295,23 +461,32 @@ local function self_check()
 			return { blocks = blocks }
 		end,
 	}
-	confirm_absent(client, ended)
+	confirm_absent(client, ended, ended.sessionId)
 	blocks[2] = { block_id = ended.blockId }
-	assert(not pcall(confirm_absent, client, ended), "a listed owned block passed cleanup")
+	assert(
+		not pcall(confirm_absent, client, ended, ended.sessionId),
+		"a listed owned block passed cleanup"
+	)
 	blocks = nil
-	assert(not pcall(confirm_absent, client, ended), "a missing block list passed cleanup")
+	assert(
+		not pcall(confirm_absent, client, ended, ended.sessionId),
+		"a missing block list passed cleanup"
+	)
 end
 
-local function live()
-	local started = pane("start", "--brief", brief, "--transport", "exec")
+local function start_owned()
+	local started = pane("start", "--brief", brief, "--transport", transport)
 	assert(type(started.pane) == "string" and started.pane ~= rt.env.REX_BLOCK, "no owned pane")
 	local owned = record()
 	assert(
-		started.runId == owned.runId
-			and started.pane == owned.blockId
-			and owned.sessionId == rt.env.REX_SESSION,
+		started.runId == owned.runId and started.pane == owned.blockId and owned.sessionId == session,
 		"smoke pane ownership changed"
 	)
+	return started, owned
+end
+
+local function live_exec()
+	local started, owned = start_owned()
 	local watches, first = 0, nil
 	local replacement = { probes = 0, failedProbes = 0 }
 	rt.stream = function(argv, opts, on_data)
@@ -355,7 +530,7 @@ local function live()
 					rex.call("session.set_block_label", {
 						block_id = owned.blockId,
 						label = "orc:" .. task .. " reconnect " .. replacement.probes,
-					}, owned.sessionId)
+					}, session)
 				end)
 				if not ok then
 					replacement.failedProbes = replacement.failedProbes + 1
@@ -390,23 +565,96 @@ local function live()
 	assert(record().exitCode == 0 and record().threadId == "rex-smoke")
 end
 
+local function live_tui()
+	rt.stream = function(argv, opts, on_data)
+		return stream(rex_command(argv), opts, on_data)
+	end
+	local started, first = start_owned()
+	local function await_state(run_id, state)
+		local deadline = rt.clock() + 10000
+		repeat
+			local snapshot = pane("start", "--brief", brief, "--transport", transport)
+			local latest = record()
+			assert(snapshot.runId == run_id, "TUI run changed before reaching " .. state)
+			if
+				snapshot.status == "started"
+				and latest.nativeState == state
+				and latest.hookState == state
+			then
+				return
+			end
+			rt.sleep(100)
+		until rt.clock() >= deadline
+		error("TUI run was not acknowledged in state " .. state)
+	end
+	local function assert_report(waited, run_id)
+		local latest = record()
+		assert(
+			waited.runId == run_id
+				and waited.evidence
+				and waited.status == "done"
+				and latest.runId == run_id
+				and latest.acknowledged
+				and waited.report == latest.report,
+			"TUI wait did not return the acknowledged run's done report: " .. vim.inspect(waited)
+		)
+	end
+	await_state(started.runId, "working")
+	local queued
+	local sleep = rt.sleep
+	-- The waiter must hold the first run before the Tab prompt replaces it.
+	rt.sleep = function(ms)
+		rt.sleep = sleep
+		queued = pane("prompt", "--queue", "--text", "Complete the queued follow-up.")
+		assert(
+			vim.deep_equal({ queued.status, queued.sent, queued.queued }, { "queued", true, true }),
+			vim.inspect(queued)
+		)
+		assert(queued.runId ~= started.runId, "TUI queue reused the startup run ID")
+		rt.write(release_file(repo), "queued\n")
+		sleep(ms)
+	end
+	local ok, waited = pcall(pane, "wait", "--until", "report", "--timeout", "20000")
+	rt.sleep = sleep
+	assert(ok, waited)
+	assert(queued, "TUI wait ended before the queue prompt was sent")
+	assert_report(waited, queued.runId)
+	assert(
+		vim.deep_equal(waited.previousRuns, {
+			{ runId = first.runId, report = first.report, status = "done" },
+		}),
+		"TUI wait did not list the replaced run's done report: " .. vim.inspect(waited)
+	)
+
+	await_state(queued.runId, "idle")
+	local immediate = pane("prompt", "--text", "Complete the idle follow-up.")
+	assert(
+		vim.deep_equal({ immediate.sent, immediate.queued }, { true, false }),
+		vim.inspect(immediate)
+	)
+	assert(immediate.runId ~= queued.runId, "TUI Enter reused the queued run ID")
+	assert_report(pane("wait", "--until", "report", "--timeout", "20000"), immediate.runId)
+end
+
 local caller_path = vim.env.PATH
 local ok, err = xpcall(function()
 	fixture()
 	if offline then
 		self_check()
+	elseif transport == "tui" then
+		live_tui()
 	else
-		live()
+		live_exec()
 	end
 end, debug.traceback)
 local cleaned, cleanup_error = true, nil
 if not offline and (ok or rt.exists(worker)) then
 	cleaned, cleanup_error = pcall(function()
 		local owned = record()
-		assert(owned.sessionId == rt.env.REX_SESSION, "refusing to close a pane in another Rex session")
+		assert(owned.sessionId == session, "refusing to close a pane in another Rex session")
 		assert(owned.blockId ~= rt.env.REX_BLOCK, "refusing to close the caller's Rex pane")
-		local closed, result = pcall(pane, "close")
-		confirm_absent(rex, owned)
+		local closed, result = pcall(pane, "close", transport == "tui" and "--no-review" or nil)
+		confirm_absent(rex, owned, session)
 		assert(closed, result)
 		assert(
 			result.status == "closed" and result.pane == owned.blockId,
@@ -429,5 +677,6 @@ rt.remove(parent)
 assert(ok, err)
 print(
 	offline and "Rex smoke self-check passed"
+		or transport == "tui" and "Rex smoke passed (tui start, ack, queued follow-up, newest run, prompt, close)"
 		or "Rex smoke passed (start, ack, reconnect, wait, close)"
 )

@@ -132,25 +132,40 @@ Run the offline self-check with Neovim and Git on PATH:
 
 ```fish
 nvim --clean -l evals/rex-smoke.lua --self-check
+nvim --clean -l evals/rex-smoke.lua --self-check --transport tui
 ```
 
-To exercise real Rex, run the next command from this checkout in an existing
-local Rex terminal with `REX_SESSION` and `REX_BLOCK` set. It requires an already
+The TUI self-check runs fake Codex in a local PTY and exercises paste, Tab,
+Enter, and report hooks.
+
+To exercise real Rex, run either command from this checkout in an existing
+local Rex terminal with `REX_BLOCK` set. The smoke uses `REX_SESSION` when set and
+queries `rex whoami --json` for the session otherwise. It requires an already
 running local Rex server and a compatible Rex CLI on PATH or in the app bundle.
 Run without a model account or paid eval budget:
 
 ```fish
 nvim --clean -l evals/rex-smoke.lua
+nvim --clean -l evals/rex-smoke.lua --transport tui
 ```
 
 The smoke creates a private Git repository and checkout in the temp directory.
-It starts one unfocused exec worker in the existing session with only the fake
-Codex on its PATH. The smoke verifies acknowledgment, matching report and close.
+By default it starts one unfocused exec worker in the existing session with only
+the fake Codex on its PATH. The smoke verifies acknowledgment, matching report
+and close.
 It deliberately stops the first event client and observes its exit. It can
 relabel its own pane to generate an event and releases the fake worker after
-decoding an event from the replacement watch. In both success and failure paths,
-the smoke checks Rex for the owned pane after close. If the pane is still listed
-or the check fails, the script prints and retains its temp root and ownership record.
+decoding an event from the replacement watch.
+
+The TUI smoke verifies that the worker acknowledges its startup prompt. While
+the worker is working, it queues a follow-up with `pane prompt --queue` and
+checks that `pane wait --until report` returns that follow-up's done report and
+lists the replaced run in `previousRuns`. It then sends an Enter-submitted
+`pane prompt` to the idle worker and checks for acknowledgment and a done report.
+
+In both transports the smoke checks Rex for the owned pane after close. If the
+pane is still listed or the check fails, the script prints and retains its temp
+root and ownership record.
 
 ## Scaffold adapter
 
