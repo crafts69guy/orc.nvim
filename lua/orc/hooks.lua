@@ -228,6 +228,7 @@ end
 ---Build the common orchestration context for both harnesses with runtime provenance.
 ---Includes only the active ORC_LEVEL routing paragraph (default: Single).
 ---Resolves the delegated guide path without reading the guide.
+---Uses recorded worker ownership without querying Rex.
 ---@param rt orc.Runtime
 ---@param cwd? string
 ---@return string
@@ -256,12 +257,11 @@ function M.context(rt, cwd)
 		local own_session = rt.env.ORC_PAIR == "1"
 			and (rt.env.REX_SESSION or "") ~= ""
 			and rt.env.REX_SESSION
-		for _, worker in ipairs(require("orc.workers").collect(rt, cwd)) do
+		for _, worker in ipairs(require("orc.workers").collect(rt, cwd, { durable_only = true })) do
 			local own_pair = own_session and worker.sessionId == own_session
 			local active = worker.role ~= "scoper"
 				and worker.state ~= "closed"
 				and worker.state ~= "exited"
-				and worker.state ~= "error"
 			if
 				active
 				and worker.path == checkout

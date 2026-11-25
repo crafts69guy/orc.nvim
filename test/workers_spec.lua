@@ -536,7 +536,9 @@ Test.test(
 		}) do
 			local rt, state = fake()
 			state.start()
-			if outcome ~= "unacknowledged" then
+			if outcome == "unacknowledged" then
+				state.native = "done"
+			else
 				state.hook("UserPromptSubmit")
 				state.hook("Stop")
 				state.native = "idle"
@@ -566,11 +568,22 @@ Test.test(
 				permission = "blocked",
 				exit = "exited",
 				error = "error",
+				unacknowledged = "unacknowledged",
 			})[outcome] or "timeout"
 			Test.eq(response.result.state, expected)
 			Test.eq(response.result.evidence, outcome == "report")
 			if outcome == "unacknowledged" then
+				Test.eq(response.result.report, rt.null)
+				assert(state.clock >= 60000 and state.clock < 61000)
 				assert(response.result.hint:find("trust orc hooks", 1, true))
+				assert(response.result.hint:find("Hook failed", 1, true))
+				assert(
+					response.result.hint:find(
+						"Answer any dialog in the pane, then run orc pane wait again",
+						1,
+						true
+					)
+				)
 			else
 				Test.eq(response.result.hint, nil)
 			end
@@ -1849,19 +1862,21 @@ Test.test("workers wait stops early when the prompt is never acknowledged", func
 	assert(state.clock > 60000 and state.clock < 70000)
 end)
 
-Test.test("workers wait ignores the unacknowledged limit for acknowledged workers", function()
+Test.test("workers wait timeout omits the acknowledgment hint for acknowledged workers", function()
 	local _, state = fake()
 	state.ack = true
 	state.start()
-	Test.eq(state.run("wait", { "--timeout", "120000" }).result.state, "timeout")
+	local result = state.run("wait", { "--timeout", "120000" }).result
+	Test.eq(result.state, "timeout")
+	Test.eq(result.hint, nil)
 end)
 
-Test.test("workers wait timeout below the unacknowledged limit stays a timeout", function()
+Test.test("workers wait timeout below the unacknowledged limit includes a hint", function()
 	local _, state = fake()
 	state.start()
 	local result = state.run("wait", { "--timeout", "1000" }).result
 	Test.eq(result.state, "timeout")
-	Test.eq(result.hint, nil)
+	assert(result.hint and result.hint:find("Hook failed", 1, true), "missing acknowledgment hint")
 end)
 
 Test.test(
@@ -3231,6 +3246,35 @@ Test.test("workers wait follows a run replaced during its own snapshot", functio
 	Test.eq(response.result.previousRuns[1].runId, first)
 end)
 
+Test.test(
+	"workers report wait resets the acknowledgment window for a follow-up during a snapshot",
+	function()
+		local _, state = fake()
+		state.start()
+		state.hook("UserPromptSubmit")
+		state.hook("Stop")
+		state.native = "idle"
+		local first = state.record().runId
+		local followup_at = 65000
+		local followup
+		state.onSleep = function()
+			if state.clock == followup_at then
+				state.onLock = function()
+					followup = state.run("prompt", { "--text", "later" }).result
+					Test.eq(followup.status, "unconfirmed")
+					Test.eq(followup.sent, true)
+				end
+				state.onEvent('{"type":"block_event"}\n')
+			end
+		end
+		local response = state.run("wait", { "--until", "report", "--timeout", "130000" }).result
+		Test.eq(response.state, "unacknowledged")
+		Test.eq(response.runId, followup.runId)
+		Test.eq(response.previousRuns[1].runId, first)
+		assert(state.clock - followup_at >= 60000 and state.clock < 130000)
+	end
+)
+
 Test.test("workers plain wait does not call a queued prompt unacknowledged", function()
 	local _, state = fake()
 	state.start()
@@ -3239,7 +3283,7 @@ Test.test("workers plain wait does not call a queued prompt unacknowledged", fun
 	Test.eq(state.record().queued, true)
 	Test.eq(state.run("wait", { "--timeout", "120000" }).result.state, "timeout")
 	-- The first turn ends but the queued prompt never starts (removed from the queue).
-	state.native = "idle"
+	state.native = "done"
 	local started = state.clock
 	local dropped = state.run("wait", { "--timeout", "120000" }).result
 	Test.eq(dropped.state, "unacknowledged")
@@ -3247,6 +3291,81 @@ Test.test("workers plain wait does not call a queued prompt unacknowledged", fun
 	state.hook("UserPromptSubmit")
 	Test.eq(state.record().acknowledged, true)
 end)
+
+Test.test(
+	"workers report wait starts the queued acknowledgment window after the running turn",
+	function()
+		local rt, state = fake()
+		state.start()
+		state.hook("UserPromptSubmit")
+		local queued = state.run("prompt", { "--queue", "--text", "later" }).result
+		Test.eq(queued.status, "queued")
+		local turn_end = 75000
+		state.onSleep = function()
+			if state.clock == turn_end then
+				state.hook("Stop")
+				state.native = "idle"
+				state.onEvent('{"type":"block_event"}\n')
+			end
+		end
+		local response = state.run("wait", { "--until", "report", "--timeout", "150000" }).result
+		Test.eq(response.state, "unacknowledged")
+		Test.eq(response.runId, queued.runId)
+		Test.eq(response.report, rt.null)
+		Test.eq(response.evidence, false)
+		assert(state.clock - turn_end >= 60000 and state.clock < 150000)
+	end
+)
+
+for _, failure in ipairs({ "statusFail", "processFail" }) do
+	Test.test("workers report wait defers queued acknowledgment on " .. failure, function()
+		local _, state = fake()
+		state.start()
+		state.hook("UserPromptSubmit")
+		Test.eq(state.run("prompt", { "--queue", "--text", "later" }).result.status, "queued")
+		state.onSleep = function()
+			if state.clock == 10000 then
+				state[failure] = true
+				state.onEvent('{"type":"block_event"}\n')
+			end
+		end
+		local response = state.run("wait", { "--until", "report", "--timeout", "120000" })
+		Test.eq(response.result.state, "timeout")
+		Test.eq(state.clock, 120000)
+	end)
+end
+
+for _, mode in ipairs({ "plain", "report" }) do
+	Test.test(
+		"workers wait timeout includes a queued acknowledgment hint in " .. mode .. " mode",
+		function()
+			local _, state = fake()
+			state.start()
+			state.hook("UserPromptSubmit")
+			local queued = state.run("prompt", { "--queue", "--text", "later" }).result
+			Test.eq(queued.status, "queued")
+			state.onSleep = function()
+				if state.clock == 10000 then
+					state.hook("Stop")
+					state.noRecords = true
+					state.onEvent('{"type":"block_event"}\n')
+				end
+			end
+			local args = { "--timeout", "600000" }
+			if mode == "report" then
+				vim.list_extend(args, { "--until", "report" })
+			end
+			local result = state.run("wait", args).result
+			Test.eq(result.state, "timeout")
+			Test.eq(result.runId, queued.runId)
+			Test.eq(state.clock, 600000)
+			assert(
+				result.hint and result.hint:find("Hook failed", 1, true),
+				"missing acknowledgment hint"
+			)
+		end
+	)
+end
 
 Test.test("workers keep the previous run's final-message report during a queued run", function()
 	local rt, state = fake()

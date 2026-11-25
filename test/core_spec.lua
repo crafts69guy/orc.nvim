@@ -350,6 +350,37 @@ Test.test(
 	end
 )
 
+Test.test("core hooks context warns from durable worker records without calling Rex", function()
+	local rt = fake()
+	rt.env.REX_BLOCK = "block:main"
+	local name = vim.fn.sha256("/repo\0T1") .. ".json"
+	local file = rt.path("/repo", ".orc", "workers", name)
+	local record = {
+		runId = "current",
+		path = "/repo",
+		root = "/repo",
+		feature = "feature",
+		task = "T1",
+		sessionId = "session:fixture",
+		blockId = "block:worker",
+		kind = "codex",
+		report = "/repo/.orc/reports/current.md",
+		hostId = "host",
+		instanceId = "instance",
+	}
+	for _, state in ipairs({ "working", "error", "closed", "exited" }) do
+		record.state = state
+		rt.files[file] = rt.encode(record)
+		local context = hooks.context(rt)
+		local warns = context:find("Another worker owns this checkout (T1, block:worker)", 1, true)
+		Test.eq(warns ~= nil, state == "working" or state == "error")
+	end
+	local rex = require("orc.rex").resolve(rt)
+	Test.eq(#vim.tbl_filter(function(command)
+		return command.argv[1] == rex
+	end, rt.commands), 0)
+end)
+
 Test.test(
 	"core Codex launcher injects context and generated roles without persisted config",
 	function()

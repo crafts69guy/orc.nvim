@@ -123,7 +123,7 @@ from the same Orc runtime and loads on demand.
 | `orc pane prompt ... --queue` | Queue follow-ups on acknowledged working TUI workers; await hook acknowledgment |
 | `orc pane review <task> --path <dir> [--skill ponytail-review\|ponytail-audit] [--target <range\|paths>]` | Send an idle TUI worker a read-only review of its uncommitted diff (else `<base>...HEAD`). `pane wait` reports whether the checkout changed. Recheck fix-round paths with `--target` unless a new risky area requires independent review. |
 | `orc pane review-begin <task> --path <dir> --review <new-file>` | Pin the current run and checkout before independent review. Save the review output at that path, read its verdict, then pass the same path to `pane close --review`. |
-| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, five idle minutes without a report, or timeout; returns `stalled` with a recovery hint when a working TUI transcript is unchanged for 30+ minutes; a done report adds `next`: `pane review` after a TUI implementer's work run, else the close command; follows follow-up runs and lists replaced ones in `previousRuns`; failures return `state: "wait-failed"` with a `hint` |
+| `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, 60 seconds without prompt acknowledgment, five idle minutes without a report, or timeout. Returns `stalled` with a recovery hint when a working TUI transcript is unchanged for 30+ minutes. A done report adds `next` with `pane review` for a TUI implementer's work run or the close command in other cases. Follows new runs and lists replaced ones in `previousRuns`. Failures return `state: "wait-failed"` with a `hint`. |
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
@@ -204,21 +204,21 @@ continues through missing-evidence stops until the current run has a report with
 Status and Validation, a native user-action block, process exit/error or timeout.
 A worker that stays idle without that report for five minutes returns
 `turn-ended-no-report` with a hint, because pane workers never resume on their own.
-Plain wait reports `turn-ended-no-report` for a turn without evidence. If the prompt
-is still unacknowledged after 60 s (for example untrusted hooks in Codex), plain wait
-returns `unacknowledged` with a hint instead of running to timeout. `--until report`
-keeps waiting and includes the same hint if it times out without acknowledgment.
+Plain wait reports `turn-ended-no-report` as soon as a turn ends without evidence.
+Both wait modes return `unacknowledged` after 60 seconds without prompt
+acknowledgment, with `evidence: false`, `report: null` and a hint. Check hook trust
+in Codex (`/hooks`) or Claude and look for "Hook failed" messages in the pane.
 Prune uses the same ownership/process checks as non-force close and a lock per task
 across the repository.
 A follow-up (`pane prompt`, with or without `--queue`, or `pane review`) makes its
-run current at once. A running wait follows it to the newest run instead of failing
-and adds `previousRuns`: each replaced run's `runId`, its `report` (or null) and
-`status`; do not start a second wait while one is running. Wait failures return `status: "error"`,
-`state: "wait-failed"`, `stderr` and a `hint`, never a stack trace.
+run current at once. A running wait follows the newest run and restarts the
+acknowledgment window. The `previousRuns` array lists each replaced run's `runId`,
+`report` (or null) and `status`. Keep one wait running per worker. Wait failures
+return `status: "error"`, `state: "wait-failed"`, `stderr` and a `hint`.
 `pane prompt --queue` uses Codex Tab or Claude Enter on acknowledged working TUI
 workers; `queued` awaits the same UserPromptSubmit acknowledgment as other delivery.
 Until then the first turn's Stop keeps only that turn's final-message report, and
-plain wait counts its 60 s `unacknowledged` limit only after the running turn ends.
+both wait modes count the 60-second acknowledgment window only after the running turn ends.
 Without `--queue`, busy workers still return `not-sent`. `sent: true` means the
 terminal write completed; `status` stays `unconfirmed` until the hook acknowledges it.
 

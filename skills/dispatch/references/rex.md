@@ -47,8 +47,10 @@ outputs and verdicts in that report and accept both before closing.
   When the active level requires independent review, use `pane review-begin`
   followed by a saved report and `close --review <file>`.
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
-  Plain wait can return `turn-ended-no-report` or, after 60 s without acknowledgment,
-  `unacknowledged`; inspect the pane and trust the hooks before retrying.
+  Plain wait can return `turn-ended-no-report` as soon as a turn ends without evidence.
+  Both wait modes return `unacknowledged` after 60 seconds without acknowledgment.
+  For a queued prompt, the window starts when Rex reports `idle` or `done`.
+  Answer any pane dialog, check hook trust and "Hook failed" messages, then rerun `orc pane wait`.
   A running wait follows follow-ups (`prompt`, with or without `--queue`, and `review`)
   to the newest run; `previousRuns` lists each replaced run's `runId`, `report` (or
   null) and `status`. Do not start a second wait while one is running; after a wait

@@ -100,7 +100,9 @@ Runs on one worker record form a single compare-and-swap chain, so `pane wait`
 follows a follow-up to the newest run and reports replaced runs in `previousRuns`.
 `wait --until report` ignores missing-evidence stops; plain wait exposes them as
 `turn-ended-no-report`. Native user-action blocks remain distinct from turn endings.
-An unacknowledged report wait keeps waiting until timeout, then includes the hook-trust hint.
+Both wait modes return `unacknowledged` with a recovery hint after 60 seconds
+without prompt acknowledgment. For queued prompts, the window starts when Rex
+reports the running turn as `idle` or `done`.
 Native `working` clears an observed hook block after an auto-resolved permission.
 
 The shared main checkout's `.orc/validation.md` is optional project memory and is

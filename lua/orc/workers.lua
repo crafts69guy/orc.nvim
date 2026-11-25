@@ -1116,10 +1116,12 @@ function M.worker_run(rt, file)
 	return response
 end
 
--- Untrusted Codex hooks never acknowledge the prompt; stop waiting after this long.
+-- Missing or failing hooks can leave a prompt unacknowledged.
 local UNACKNOWLEDGED_WAIT_MS = 60000
-local UNACKNOWLEDGED_HINT =
-	"worker prompt was not acknowledged; trust orc hooks in Codex (/hooks) or Claude, then inspect the pane"
+local UNACKNOWLEDGED_HINT = "Worker prompt was not acknowledged."
+	.. " If needed, trust orc hooks in Codex (/hooks) or Claude."
+	.. " Check the pane for 'Hook failed' messages."
+	.. " Answer any dialog in the pane, then run orc pane wait again to restart the acknowledgment window."
 -- Pane workers never resume on their own after a turn ends without a report.
 local NO_REPORT_GRACE_MS = 300000
 local STALLED_TRANSCRIPT_SECONDS = 30 * 60
@@ -1284,11 +1286,11 @@ local function wait_for(rt, record, timeout, until_report)
 					connect()
 				end
 			end
-			if record.queued and record.nativeState == "working" then
-				started = rt.clock() -- a queued prompt starts only after the running turn ends
+			if record.queued and record.nativeState ~= "idle" and record.nativeState ~= "done" then
+				started = rt.clock() -- a queued prompt needs evidence that the running turn ended
 			end
 			if
-				not until_report
+				record.runId == run.runId
 				and not record.acknowledged
 				and rt.clock() - started > UNACKNOWLEDGED_WAIT_MS
 			then
@@ -1312,10 +1314,7 @@ local function wait_for(rt, record, timeout, until_report)
 			state = "timeout",
 			report = rt.null,
 			evidence = false,
-			hint = not record.acknowledged
-					and rt.clock() - started > UNACKNOWLEDGED_WAIT_MS
-					and UNACKNOWLEDGED_HINT
-				or nil,
+			hint = not record.acknowledged and UNACKNOWLEDGED_HINT or nil,
 		}
 	end)
 	if stream then
@@ -1431,14 +1430,16 @@ local function close(rt, record, force, no_review, review)
 	return result(rt, 0, { status = "closed", task = record.task, pane = record.blockId or rt.null })
 end
 
----Read durable workers, including pair-mode workers that have no plan task.
+---Read worker records, including pair-mode workers that have no plan task.
 ---@param rt orc.Runtime
 ---@param cwd? string
+---@param opts? {durable_only?: boolean} Set durable_only to read recorded states without querying Rex.
 ---@return orc.Worker[]
 ---@return string[] skipped Paths with mismatched or missing record identities.
-function M.collect(rt, cwd)
+function M.collect(rt, cwd, opts)
 	local root = main_root(rt, cwd or rt.cwd)
 	local dir, workers, skipped = rt.path(root, ".orc", "workers"), {}, {}
+	local refresh = not (opts and opts.durable_only)
 	for _, name in ipairs(rt.list(dir)) do
 		if name:match("^[%x]+%.json$") then
 			local file = rt.path(dir, name)
@@ -1448,7 +1449,7 @@ function M.collect(rt, cwd)
 				and record.root == root
 				and record_path(rt, root, record.task, record.path) == file
 			then
-				if record.state ~= "closed" and record.blockId then
+				if refresh and record.state ~= "closed" and record.blockId then
 					local ok, err = pcall(function()
 						snapshot(rt, client_for(rt, record), record)
 					end)
