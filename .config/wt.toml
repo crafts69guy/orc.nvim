@@ -1,0 +1,13 @@
+[pre-merge]
+validate = '''
+orc gate --label orc-pre-merge -- sh -c '
+nvim --clean -l test/run.lua --coverage &&
+nvim --clean -l scripts/gen-agents.lua --check &&
+stylua --check lua test scripts bin/orc plugin evals &&
+lua_ls_dir=$(mktemp -d "${TMPDIR:-/tmp}/orc-luals.XXXXXX") &&
+trap "rm -rf -- \"\$lua_ls_dir\"" EXIT &&
+VIMRUNTIME=$(env -u VIMRUNTIME nvim --clean --headless +"lua io.write(vim.env.VIMRUNTIME)" +qa) &&
+VIMRUNTIME="$VIMRUNTIME" lua-language-server --check . --checklevel=Warning \
+  --metapath="$lua_ls_dir/meta" --logpath="$lua_ls_dir/log"
+'
+'''
