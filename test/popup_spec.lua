@@ -1,9 +1,7 @@
 local popup_module = require("orc.popup")
 
--- Capture notifications and deferred callbacks; restore globals and extra windows/buffers.
 local function fixture(exercise)
 	local state = { notices = {}, scheduled = {}, quit = 0 }
-	local old_notify, old_schedule, old_cmd = vim.notify, vim.schedule, vim.cmd
 	local windows, buffers = {}, {}
 	for _, window in ipairs(vim.api.nvim_list_wins()) do
 		windows[window] = true
@@ -11,12 +9,12 @@ local function fixture(exercise)
 	for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
 		buffers[buffer] = true
 	end
-	vim.notify = function(message, level, opts)
+	Test.replace(vim, "notify", function(message, level, opts)
 		state.notices[#state.notices + 1] = { message = message, level = level, opts = opts }
-	end
-	vim.schedule = function(fn)
+	end)
+	Test.replace(vim, "schedule", function(fn)
 		state.scheduled[#state.scheduled + 1] = fn
-	end
+	end)
 	function state.run_scheduled()
 		for _, fn in ipairs(state.scheduled) do
 			fn()
@@ -53,7 +51,6 @@ local function fixture(exercise)
 	for _, buffer in ipairs(state.extra().buffers) do
 		pcall(vim.api.nvim_buf_delete, buffer, { force = true })
 	end
-	vim.notify, vim.schedule, vim.cmd = old_notify, old_schedule, old_cmd
 	assert(ok, err)
 end
 
@@ -182,13 +179,13 @@ end)
 Test.test("popup quit_on_close schedules qa and keeps Neovim open when it fails", function()
 	for _, blocked in ipairs({ false, true }) do
 		fixture(function(state)
-			vim.cmd = function(command)
+			Test.replace(vim, "cmd", function(command)
 				Test.eq(command, "qa")
 				if blocked then
 					error("E37: No write since last change")
 				end
 				state.quit = state.quit + 1
-			end
+			end)
 			local popup = popup_module.new({ title = "Orc", quit_on_close = true })
 			popup.close()
 			Test.eq({ #state.scheduled, state.quit }, { 1, 0 })

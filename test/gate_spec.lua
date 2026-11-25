@@ -45,11 +45,10 @@ Test.test("gate malformed or incomplete owners recover safely and wait only once
 end)
 
 Test.test("gate signal cancellation preserves another owner and stops its own child", function()
-	local original = vim.uv.new_signal
 	for _, waiting in ipairs({ true, false }) do
 		local rt, lock = fixture()
 		local interrupt, finished, stopped
-		vim.uv.new_signal = function()
+		Test.replace(vim.uv, "new_signal", function()
 			return {
 				start = function(_, _, callback)
 					interrupt = callback
@@ -58,7 +57,7 @@ Test.test("gate signal cancellation preserves another owner and stops its own ch
 				stop = function() end,
 				close = function() end,
 			}
-		end
+		end)
 		local ok, err = xpcall(function()
 			if waiting then
 				rt.write(lock, rt.encode({ pid = vim.uv.os_getpid() }))
@@ -68,7 +67,7 @@ Test.test("gate signal cancellation preserves another owner and stops its own ch
 					return {
 						stop = function()
 							stopped = true
-							finished({ code = 0, signal = 15 })
+							assert(finished)({ code = 0, signal = 15, stdout = "", stderr = "" })
 						end,
 					}
 				end
@@ -80,7 +79,6 @@ Test.test("gate signal cancellation preserves another owner and stops its own ch
 			Test.eq(rt.exists(lock), waiting)
 			Test.eq(stopped == true, not waiting)
 		end, debug.traceback)
-		vim.uv.new_signal = original
 		assert(ok, err)
 	end
 end)
@@ -93,24 +91,23 @@ Test.test("gate output failures stop the child and release the lock", function()
 		return {
 			stop = function()
 				stopped = true
-				complete({ code = 0, signal = 15 })
+				assert(complete)({ code = 0, signal = 15, stdout = "", stderr = "" })
 			end,
 		}
 	end
-	local open = io.open
-	io.open = function()
+	local restore_open = Test.replace(io, "open", function()
 		return {
 			write = function()
 				error("disk full")
 			end,
 			close = function() end,
 		}
-	end
+	end)
 	rt.sleep = function()
 		output("fixture output\n")
 	end
 	local ok, err = pcall(gate.run, rt, { "--log", "output.log", "--", "true" })
-	io.open = open
+	restore_open()
 	assert(not ok and tostring(err):find("disk full", 1, true))
 	assert(stopped)
 	Test.eq(rt.exists(lock), false)
@@ -184,16 +181,15 @@ Test.test("gate waits without spinning and recovers a dead owner", function()
 end)
 
 Test.test("gate recovers pre-boot pids with slack and an unavailable uptime", function()
-	local uptime = vim.uv.uptime
 	local ok, err = xpcall(function()
 		for _, case in ipairs({ "previous-boot", "slack", "unavailable" }) do
 			local rt, lock = fixture()
-			vim.uv.uptime = function()
+			Test.replace(vim.uv, "uptime", function()
 				if case ~= "unavailable" then
 					return 1000
 				end
 				return nil, "EPERM: operation not permitted"
-			end
+			end)
 			rt.write(
 				lock,
 				rt.encode({
@@ -219,7 +215,6 @@ Test.test("gate recovers pre-boot pids with slack and an unavailable uptime", fu
 			Test.eq(rt.exists(lock), false)
 		end
 	end, debug.traceback)
-	vim.uv.uptime = uptime
 	assert(ok, err)
 end)
 
@@ -255,7 +250,7 @@ Test.test("gate stale cleanup serializes reapers and recovers abandoned cleanup"
 	end
 	local sleep = rt.sleep
 	rt.sleep = function(ms)
-		if rt.exists(lock) and rt.decode((rt.read(lock))).label == nil then
+		if rt.exists(lock) and rt.decode((assert(rt.read(lock)))).label == nil then
 			rt.remove(lock)
 		else
 			sleep(ms)
@@ -283,7 +278,7 @@ Test.test("gate releases on spawn log and streaming errors and uses cache defaul
 	Test.raises("stream failed", function()
 		gate.run(rt, { "--", "true" })
 	end)
-	Test.eq(rt.exists(rt.path(rt.env.XDG_CACHE_HOME, "orc", "gate.lock")), false)
+	Test.eq(rt.exists(rt.path(assert(rt.env.XDG_CACHE_HOME), "orc", "gate.lock")), false)
 	rt.env.XDG_CACHE_HOME = nil
 	Test.raises("stream failed", function()
 		gate.run(rt, { "--", "true" })

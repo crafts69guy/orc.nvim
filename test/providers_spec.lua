@@ -505,12 +505,8 @@ Test.test(
 				options(providers.plan(rt, { kind = "claude", role = "implementer" }).argv, "--model"),
 				"opus"
 			)
-			Test.raises("unknown provider$", function()
-				providers.plan(rt, { kind = "other", role = "main" })
-			end)
-			Test.raises("unknown provider role", function()
-				providers.plan(rt, { kind = "claude", role = "other" })
-			end)
+			Test.raises("unknown provider$", providers.plan, rt, { kind = "other", role = "main" })
+			Test.raises("unknown provider role", providers.plan, rt, { kind = "claude", role = "other" })
 		end)
 	end
 )
@@ -793,15 +789,13 @@ Test.test(
 			rt.env.ORC_INKDROP_MCP_MODE = "shared"
 			Test.eq(cli.run(rt, { "claude", "--inkdrop-mcp=inherit" }).code, 0)
 			Test.eq(state.launched[2].opts.env.ORC_INKDROP_MCP_MODE, "inherit")
-			local old = package.loaded["orc.inkdrop_service"]
-			package.loaded["orc.inkdrop_service"] = {
+			Test.replace(package.loaded, "orc.inkdrop_service", {
 				run = function(_, args)
 					Test.eq(args, { "status", "--json" })
 					return { code = 0, out = "service status" }
 				end,
-			}
+			})
 			local result = cli.run(rt, { "inkdrop-mcp", "status", "--json" })
-			package.loaded["orc.inkdrop_service"] = old
 			Test.eq(result.out, "service status")
 		end)
 	end

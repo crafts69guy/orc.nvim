@@ -25,7 +25,7 @@ if not vim.env.NVIM_LOG_FILE or vim.env.NVIM_LOG_FILE == "nvim.log" then
 	vim.env.NVIM_LOG_FILE = vim.fn.tempname() .. "-nvim.log"
 end
 
-local tests, temporary = {}, {}
+local tests, temporary, restorations = {}, {}, {}
 local filter, coverage, coverage_session
 local index = 1
 while index <= #arg do
@@ -43,7 +43,7 @@ end
 ---@class orc.Test
 ---@field test fun(name:string,fn:function) Register a test.
 ---@field eq fun(actual:any,expected:any) Assert deep equality.
----@field raises fun(pattern:string,fn:function) Assert an error matching a Lua pattern.
+---@field raises fun(pattern:string,fn:function,...:unknown)
 ---@field temp fun():string Create an automatically cleaned temporary directory.
 Test = {}
 
@@ -59,8 +59,8 @@ function Test.eq(actual, expected)
 	)
 end
 
-function Test.raises(pattern, fn)
-	local ok, err = pcall(fn)
+function Test.raises(pattern, fn, ...)
+	local ok, err = pcall(fn, ...)
 	assert(not ok, "expected an error matching " .. pattern)
 	assert(
 		tostring(err):match(pattern),
@@ -72,6 +72,39 @@ function Test.temp()
 	local path = assert(uv.fs_mkdtemp(vim.fn.tempname() .. "-XXXXXX"))
 	temporary[#temporary + 1] = path
 	return path
+end
+
+---@param depth integer
+local function unwind(depth)
+	for index = #restorations, depth + 1, -1 do
+		local entry = restorations[index]
+		entry.target[entry.key] = entry.original
+		restorations[index] = nil
+	end
+end
+
+---@generic T
+---@param target table
+---@param key string
+---@param value T
+---@param exercise? fun()
+---@return fun() restore
+function Test.replace(target, key, value, exercise)
+	local depth = #restorations
+	local entry = { target = target, key = key, original = target[key] }
+	restorations[depth + 1] = entry
+	target[key] = value
+	local function restore()
+		if restorations[depth + 1] == entry then
+			unwind(depth)
+		end
+	end
+	if exercise then
+		local ok, err = xpcall(exercise, debug.traceback)
+		restore()
+		assert(ok, err)
+	end
+	return restore
 end
 
 local function cleanup()
@@ -114,6 +147,7 @@ local function run()
 		if not filter or test.name:find(filter, 1, true) then
 			current = test.name
 			local ok, err = xpcall(test.run, debug.traceback)
+			unwind(0)
 			if ok then
 				passed = passed + 1
 				io.stdout:write("ok " .. test.name .. "\n")

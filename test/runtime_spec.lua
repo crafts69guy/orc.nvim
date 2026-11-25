@@ -13,10 +13,10 @@ Test.test("runtime tail bounds reads and discards truncated first records", func
 	Test.eq(rt.tail(path, 8), "")
 	local data, err = rt.tail(dir .. "/missing", 8)
 	Test.eq(data, nil)
-	assert(err:find("ENOENT", 1, true))
+	assert(assert(err):find("ENOENT", 1, true))
 	data, err = rt.tail(dir, 8)
 	Test.eq(data, nil)
-	assert(err:find("EISDIR", 1, true))
+	assert(assert(err):find("EISDIR", 1, true))
 end)
 
 Test.test("runtime root, paths and environment do not depend on cwd", function()
@@ -86,10 +86,10 @@ Test.test(
 		Test.eq(rt.list(rt.path(dir, "missing")), {})
 		Test.eq(rt.read(rt.path(dir, "missing")), nil)
 		local _, read_error = rt.read(rt.path(dir, "missing"))
-		assert(read_error:find("ENOENT", 1, true))
+		assert(assert(read_error):find("ENOENT", 1, true))
 		local data, directory_error = rt.read(rt.path(dir, "nested"))
 		Test.eq(data, nil)
-		assert(directory_error:find("EISDIR", 1, true))
+		assert(assert(directory_error):find("EISDIR", 1, true))
 		Test.raises("ENOTDIR", function()
 			rt.list(target)
 		end)
@@ -139,7 +139,9 @@ end)
 Test.test(
 	"runtime async captures output without blocking and reports missing executables",
 	function()
-		local rt, completed = runtime.new(), nil
+		local rt = runtime.new()
+		---@type orc.ProcessResult?
+		local completed
 		local handle = rt.async({ "cat" }, { stdin = "async input" }, function(value)
 			completed = value
 		end)
@@ -147,8 +149,9 @@ Test.test(
 		assert(vim.wait(3000, function()
 			return completed ~= nil
 		end))
-		Test.eq(completed.code, 0)
-		Test.eq(completed.stdout, "async input")
+		local result = assert(completed)
+		Test.eq(result.code, 0)
+		Test.eq(result.stdout, "async input")
 		handle.stop()
 		handle.stop()
 		completed = nil
@@ -158,16 +161,16 @@ Test.test(
 		assert(vim.wait(1000, function()
 			return completed ~= nil
 		end))
-		Test.eq(completed.code, 127)
+		Test.eq(assert(completed).code, 127)
 		missing.stop()
-		Test.raises("completion callback", function()
-			rt.async({ "true" }, {})
-		end)
+		Test.raises("completion callback", rt.async, { "true" }, {})
 	end
 )
 
 Test.test("runtime stream delivers chunks and cancellation terminates its owned process", function()
-	local rt, output, completed = runtime.new(), "", nil
+	local rt, output = runtime.new(), ""
+	---@type orc.ProcessResult?
+	local completed
 	local stream = rt.stream({ "printf", "%s", "event\n" }, {
 		on_exit = function(value)
 			completed = value
@@ -179,7 +182,7 @@ Test.test("runtime stream delivers chunks and cancellation terminates its owned 
 		return completed ~= nil
 	end))
 	Test.eq(output, "event\n")
-	Test.eq(completed.code, 0)
+	Test.eq(assert(completed).code, 0)
 	stream.stop()
 	completed = nil
 	local sleeper = rt.async({ "sleep", "30" }, {}, function(value)
@@ -190,21 +193,12 @@ Test.test("runtime stream delivers chunks and cancellation terminates its owned 
 	assert(vim.wait(3000, function()
 		return completed ~= nil
 	end))
-	assert(completed.code ~= 0 or completed.signal ~= 0)
+	local result = assert(completed)
+	assert(result.code ~= 0 or result.signal ~= 0)
 	local no_exit = rt.stream({ "true" }, nil, function() end)
 	no_exit.stop()
-	Test.raises("data callback", function()
-		rt.stream({ "true" }, {})
-	end)
+	Test.raises("data callback", rt.stream, { "true" }, {})
 end)
-
-local function replacing(object, key, replacement, fn)
-	local previous = object[key]
-	object[key] = replacement
-	local ok, err = xpcall(fn, debug.traceback)
-	object[key] = previous
-	assert(ok, err)
-end
 
 Test.test("runtime mkdir rejects null and empty paths without creating entries", function()
 	local rt, dir = runtime.new(), Test.temp()
@@ -212,9 +206,7 @@ Test.test("runtime mkdir rejects null and empty paths without creating entries",
 	assert(vim.uv.chdir(dir))
 	local ok, err = xpcall(function()
 		for _, path in ipairs({ vim.NIL, "" }) do
-			Test.raises("mkdir needs a path", function()
-				rt.mkdir(path)
-			end)
+			Test.raises("mkdir needs a path", rt.mkdir, path)
 		end
 		Test.eq(rt.list(dir), {})
 	end, debug.traceback)
@@ -240,7 +232,7 @@ Test.test(
 		Test.raises("ENOENT", function()
 			rt.mkdir_lock(rt.path(dir, "missing", "lock"))
 		end)
-		replacing(vim.uv, "fs_mkdir", function()
+		Test.replace(vim.uv, "fs_mkdir", function()
 			return nil, "EACCES: denied", "EACCES"
 		end, function()
 			Test.raises("EACCES: denied", function()
@@ -256,7 +248,7 @@ Test.test(
 		local rt, dir = runtime.new(), Test.temp()
 		local file = rt.path(dir, "report")
 		rt.write(file, "retained")
-		replacing(vim.uv, "fs_fstat", function()
+		Test.replace(vim.uv, "fs_fstat", function()
 			return nil, "fstat failed"
 		end, function()
 			local data, err = rt.read(file)
@@ -267,7 +259,7 @@ Test.test(
 			Test.eq(err, "fstat failed")
 		end)
 		local close = vim.uv.fs_close
-		replacing(vim.uv, "fs_close", function(fd)
+		Test.replace(vim.uv, "fs_close", function(fd)
 			close(fd)
 			return nil, "close failed"
 		end, function()
@@ -278,7 +270,7 @@ Test.test(
 			Test.eq(data, nil)
 			Test.eq(err, "close failed")
 		end)
-		replacing(vim.uv, "fs_write", function()
+		Test.replace(vim.uv, "fs_write", function()
 			return nil, "write failed"
 		end, function()
 			Test.raises("write failed", function()
@@ -287,14 +279,14 @@ Test.test(
 		end)
 		Test.eq(rt.read(file), "retained")
 		Test.eq(rt.list(dir), { "report" })
-		replacing(vim.fn, "mkdir", function()
+		Test.replace(vim.fn, "mkdir", function()
 			return 0
 		end, function()
 			Test.raises("cannot create directory", function()
 				rt.mkdir(rt.path(dir, "missing"))
 			end)
 		end)
-		replacing(vim.uv, "fs_lstat", function()
+		Test.replace(vim.uv, "fs_lstat", function()
 			return nil, "EACCES: denied"
 		end, function()
 			Test.raises("EACCES", function()
@@ -310,7 +302,7 @@ Test.test(
 	"runtime interactive forwards cancellation and never kills after child completion",
 	function()
 		local rt, callbacks = runtime.new(), {}
-		replacing(vim.uv, "new_signal", function()
+		Test.replace(vim.uv, "new_signal", function()
 			return {
 				start = function(_, name, callback)
 					callbacks[name] = callback
@@ -326,7 +318,7 @@ Test.test(
 			callbacks.sigterm()
 		end)
 		local wait, interrupted = vim.wait, false
-		replacing(vim, "wait", function(...)
+		Test.replace(vim, "wait", function(...)
 			if not interrupted then
 				interrupted = true
 				return false, -2
@@ -341,8 +333,10 @@ Test.test(
 Test.test(
 	"runtime streaming errors terminate its owned child and completion normalizes absent output",
 	function()
-		local rt, completed, killed = runtime.new(), nil, false
-		replacing(vim, "system", function(_, settings, on_exit)
+		local rt, killed = runtime.new(), false
+		---@type orc.ProcessResult?
+		local completed
+		Test.replace(vim, "system", function(_, settings, on_exit)
 			local handle = {
 				kill = function()
 					killed = true
@@ -365,10 +359,11 @@ Test.test(
 				return completed ~= nil
 			end))
 			assert(killed)
-			Test.eq(completed.stdout, "")
-			Test.eq(completed.stderr, "")
+			local result = assert(completed)
+			Test.eq(result.stdout, "")
+			Test.eq(result.stderr, "")
 		end)
-		replacing(vim, "system", function()
+		Test.replace(vim, "system", function()
 			return {
 				wait = function()
 					return { code = 0, signal = 0 }
@@ -403,7 +398,7 @@ Test.test("runtime append keeps interleaved records with one O_APPEND write per 
 	local file = rt.path(dir, "signals.jsonl")
 	rt.write(file, '{"before":true}\n')
 	local write, interleaved, writes = vim.uv.fs_write, false, 0
-	replacing(vim.uv, "fs_write", function(fd, text, offset)
+	Test.replace(vim.uv, "fs_write", function(fd, text, offset)
 		writes = writes + 1
 		if not interleaved then
 			interleaved = true
@@ -434,7 +429,7 @@ Test.test(
 				rt.append(file, value)
 			end)
 		end
-		replacing(vim.uv, "fs_write", function()
+		Test.replace(vim.uv, "fs_write", function()
 			return nil, "append failed"
 		end, function()
 			Test.raises("append failed", function()

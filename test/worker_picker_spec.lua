@@ -42,11 +42,6 @@ local function fixture(exercise)
 		state.reply({ schemaVersion = 1, workers = workers or { state.worker } })
 		return handle
 	end
-	local old_snacks, old_preload, old_rex, old_notify =
-		package.loaded["snacks.picker"],
-		package.preload["snacks.picker"],
-		package.loaded["orc.rex"],
-		vim.notify
 	local windows, buffers = {}, {}
 	for _, window in ipairs(vim.api.nvim_list_wins()) do
 		windows[window] = true
@@ -54,7 +49,7 @@ local function fixture(exercise)
 	for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
 		buffers[buffer] = true
 	end
-	package.loaded["orc.rex"] = {
+	Test.replace(package.loaded, "orc.rex", {
 		new = function(actual_rt)
 			Test.eq(actual_rt, rt)
 			return {
@@ -69,8 +64,8 @@ local function fixture(exercise)
 				end,
 			}
 		end,
-	}
-	package.loaded["snacks.picker"] = {
+	})
+	Test.replace(package.loaded, "snacks.picker", {
 		pick = function(opts)
 			state.options = opts
 			state.buffer = vim.api.nvim_create_buf(false, true)
@@ -92,16 +87,13 @@ local function fixture(exercise)
 			state.picker = picker
 			return picker
 		end,
-	}
-	vim.notify = function(message)
+	})
+	Test.replace(vim, "notify", function(message)
 		state.notices[#state.notices + 1] = message
-	end
+	end)
 	local ok, err = xpcall(function()
 		exercise(rt, state)
 	end, debug.traceback)
-	vim.notify = old_notify
-	package.loaded["snacks.picker"], package.preload["snacks.picker"], package.loaded["orc.rex"] =
-		old_snacks, old_preload, old_rex
 	for _, window in ipairs(vim.api.nvim_list_wins()) do
 		if not windows[window] then
 			vim.api.nvim_win_close(window, true)
@@ -116,9 +108,9 @@ local function fixture(exercise)
 end
 
 local function with_quit(blocked, exercise)
-	local old_cmd, old_schedule = vim.cmd, vim.schedule
+	local old_cmd = vim.cmd
 	local quits = 0
-	vim.cmd = function(command)
+	local restore_cmd = Test.replace(vim, "cmd", function(command)
 		if command ~= "qa" then
 			return old_cmd(command)
 		end
@@ -126,16 +118,17 @@ local function with_quit(blocked, exercise)
 			error("modified buffers")
 		end
 		quits = quits + 1
-	end
-	vim.schedule = function(fn)
+	end)
+	local restore_schedule = Test.replace(vim, "schedule", function(fn)
 		fn()
-	end
+	end)
 	local ok, err = xpcall(function()
 		exercise(function()
 			return quits
 		end)
 	end, debug.traceback)
-	vim.cmd, vim.schedule = old_cmd, old_schedule
+	restore_schedule()
+	restore_cmd()
 	assert(ok, err)
 end
 
@@ -254,7 +247,7 @@ Test.test(
 	"worker picker uses Rex adapter to focus the block and select the originating client",
 	function()
 		fixture(function(rt, state)
-			package.loaded["orc.rex"] = rex
+			Test.replace(package.loaded, "orc.rex", rex)
 			state.open({ client_id = "client:origin" })
 			state.options.confirm(state.picker, state.options.items[1])
 			local identity = { host_id = "host", instance_id = "instance", endpoint = "unix:///fixture" }
@@ -276,10 +269,10 @@ Test.test(
 	"worker picker reports missing Snacks, process failures and empty lists without opening a picker",
 	function()
 		fixture(function(rt, state)
-			package.loaded["snacks.picker"] = nil
-			package.preload["snacks.picker"] = function()
+			Test.replace(package.loaded, "snacks.picker", nil)
+			Test.replace(package.preload, "snacks.picker", function()
 				error("missing")
-			end
+			end)
 			local handle = worker_picker.open(rt)
 			assert(state.notices[1]:find("Snacks.nvim is required", 1, true))
 			Test.eq(#state.calls, 0)
@@ -358,23 +351,23 @@ Test.test(
 					vim.api.nvim_open_win(user, true, { split = "below" })
 					local partial_buffer, partial_window
 					if scenario == "missing" then
-						package.loaded["snacks.picker"] = nil
-						package.preload["snacks.picker"] = function()
+						Test.replace(package.loaded, "snacks.picker", nil)
+						Test.replace(package.preload, "snacks.picker", function()
 							error("missing")
-						end
+						end)
 					elseif scenario == "spawn" then
 						rt.async = function()
 							error("spawn failed")
 						end
 					elseif scenario == "partial" or scenario == "user-buffer" then
-						package.loaded["snacks.picker"].pick = function()
+						Test.replace(package.loaded["snacks.picker"], "pick", function()
 							partial_buffer = user
 							if scenario == "partial" then
 								partial_buffer = vim.api.nvim_create_buf(false, true)
 							end
 							partial_window = vim.api.nvim_open_win(partial_buffer, true, { split = "below" })
 							error("partially opened picker")
-						end
+						end)
 					end
 					local handle = worker_picker.open(rt, { quit_on_close = true })
 					if scenario == "failure" then

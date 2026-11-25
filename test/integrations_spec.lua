@@ -107,7 +107,7 @@ local function fake(options)
 				body = config["data-binary"] and vim.json.decode(config["data-binary"]) or nil,
 			}
 			requests[#requests + 1] = request
-			local doc, status, code = (options.respond or function()
+			local doc, status, code = (options.respond or function(_request, _requests)
 				return {}
 			end)(request, requests)
 			result.code = code or 0

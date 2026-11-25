@@ -54,11 +54,13 @@ local function source_copy(path)
 	return runtime.new({ root = path })
 end
 local function entry(path, target, args)
-	local saved_arg, saved_cwd, saved_path = arg, vim.uv.cwd(), package.path
-	arg = { [0] = path, unpack(args or {}) }
+	local saved_cwd = assert(vim.uv.cwd())
+	local restore_arg = Test.replace(_G, "arg", { [0] = path, unpack(args or {}) })
+	local restore_path = Test.replace(package, "path", package.path)
 	assert(vim.uv.chdir(target))
 	local ok, value = pcall(dofile, path)
-	arg, package.path = saved_arg, saved_path
+	restore_path()
+	restore_arg()
 	assert(vim.uv.chdir(saved_cwd))
 	return ok, value
 end
@@ -81,9 +83,8 @@ Test.test("evals reviewer CLI grades historical parser fixtures without model ca
 	}
 	local root, script = Test.temp(), rt.path(rt.root, "evals", "reviewer", "check.lua")
 	local findings = rt.path(root, "findings.json")
-	local original_system, original_write, original_print = vim.system, io.write, print
 	local output, git_unavailable
-	vim.system = function(argv)
+	Test.replace(vim, "system", function(argv)
 		assert(argv[1] == "git" and argv[4] == "show")
 		local revision = assert(argv[5]:match("^([^:]+):lua/orc/workers%.lua$"))
 		return {
@@ -94,11 +95,11 @@ Test.test("evals reviewer CLI grades historical parser fixtures without model ca
 				return { code = 0, stdout = assert(sources[revision]) }
 			end,
 		}
-	end
-	io.write = function(...)
+	end)
+	Test.replace(io, "write", function(...)
 		output[#output + 1] = table.concat({ ... })
-	end
-	_G.print = io.write
+	end)
+	Test.replace(_G, "print", io.write)
 	local function invoke(args, expected_error)
 		output = {}
 		local result, detail = entry(script, root, args)
@@ -139,7 +140,6 @@ Test.test("evals reviewer CLI grades historical parser fixtures without model ca
 		git_unavailable = true
 		invoke({ "prompt", "buggy" }, "fixture history unavailable")
 	end)
-	vim.system, io.write, _G.print = original_system, original_write, original_print
 	assert(ok, err)
 end)
 
@@ -263,21 +263,20 @@ Test.test("evals Lua fixtures execute standalone and refuse existing source dire
 		Test.raises("refuses existing", function()
 			fixture.run(target)
 		end)
-		local saved = arg
-		arg = nil
-		Test.eq(type(dofile(path).run), "function")
-		arg = {}
-		Test.eq(type(dofile(path).run), "function")
-		arg = saved
+		Test.replace(_G, "arg", nil, function()
+			Test.eq(type(dofile(path).run), "function")
+		end)
+		Test.replace(_G, "arg", {}, function()
+			Test.eq(type(dofile(path).run), "function")
+		end)
 	end
-	local saved = arg
-	arg = nil
-	Test.eq(type(dofile(rt.path(rt.root, "evals", "inline-small", "fixture.lua")).run), "function")
-	arg = {}
-	Test.eq(type(dofile(rt.path(rt.root, "evals", "support", "runner.lua")).run), "function")
-	arg = nil
-	Test.eq(type(dofile(rt.path(rt.root, "evals", "support", "runner.lua")).run), "function")
-	arg = saved
+	Test.replace(_G, "arg", nil, function()
+		Test.eq(type(dofile(rt.path(rt.root, "evals", "inline-small", "fixture.lua")).run), "function")
+		Test.eq(type(dofile(rt.path(rt.root, "evals", "support", "runner.lua")).run), "function")
+	end)
+	Test.replace(_G, "arg", {}, function()
+		Test.eq(type(dofile(rt.path(rt.root, "evals", "support", "runner.lua")).run), "function")
+	end)
 	Test.raises("unknown case", function()
 		eval.scaffold(rt, "unknown", Test.temp())
 	end)
@@ -561,7 +560,7 @@ Test.test("evals plugin builder preserves sources and shell-quotes generated lau
 		assert(result.stdout:find(expected, 1, true))
 		Test.eq(copy.read(copy.path(target, "check.out")), result.stdout)
 	end
-	local built = copy.decode((copy.read(copy.path(stage, "hooks", "hooks.json"))))
+	local built = copy.decode((assert(copy.read(copy.path(stage, "hooks", "hooks.json")))))
 	for _, list in pairs(built.hooks) do
 		for _, group in ipairs(list) do
 			for _, item in ipairs(group.hooks) do
@@ -570,7 +569,7 @@ Test.test("evals plugin builder preserves sources and shell-quotes generated lau
 		end
 	end
 	Test.eq(
-		copy.decode((copy.read(copy.path(stage, ".claude-plugin", "plugin.json")))).dependencies,
+		copy.decode((assert(copy.read(copy.path(stage, ".claude-plugin", "plugin.json"))))).dependencies,
 		nil
 	)
 	copy.write(copy.path(path, "evals", "inline-small", "case.yaml"), "scaffold_script: wrong\n")
@@ -773,8 +772,11 @@ Test.test(
 	"evals capped execution only invokes a fake harness and respects tags output and benchmarks",
 	function()
 		local localrt = source_copy(rt.path(Test.temp(), "plugin"))
-		local calls = {}
+		local calls, exit_code = {}, 0
 		localrt.interactive = function(command, options)
+			if exit_code ~= 0 then
+				return exit_code
+			end
 			calls[#calls + 1] = { command = command, options = options }
 			local output
 			for index, word in ipairs(command) do
@@ -806,9 +808,7 @@ Test.test(
 		Test.eq(bench.code, 0)
 		assert(bench.out:find("Lua benchmark series", 1, true))
 		assert(table.concat(calls[3].command, " "):find("--max-cost-usd 20", 1, true))
-		localrt.interactive = function()
-			return 127
-		end
+		exit_code = 127
 		Test.eq(eval.run(localrt, {}).code, 127)
 		for _, value in ipairs({ "0", "bad", "-1", "inf" }) do
 			localrt.env.ORC_EVAL_MAX_COST = value

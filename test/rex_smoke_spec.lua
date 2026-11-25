@@ -269,19 +269,19 @@ Test.test("Rex smoke self-check rejects inconsistent worker state and interrupti
 		end)
 	end
 
-	local rt = runtime.new()
-	rt.stream = function(_, opts)
+	local exiting = runtime.new()
+	exiting.stream = function(_, opts)
 		vim.schedule(function()
-			opts.on_exit({ code = 1, signal = 0 })
+			assert(opts.on_exit)({ code = 1, signal = 0, stdout = "", stderr = "" })
 		end)
 		return { stop = function() end }
 	end
 	Test.raises("exit = ", function()
-		smoke({ "--self-check" }, rt)
+		smoke({ "--self-check" }, exiting)
 	end)
 
 	local stopped = false
-	rt = runtime.new()
+	local rt = runtime.new()
 	rt.stream = function()
 		return {
 			stop = function()
@@ -528,12 +528,12 @@ local function fake_rex(options)
 			error("initial watch refused")
 		elseif watch == 1 and options.early_exit then
 			defer(function()
-				opts.on_exit({ code = 1, signal = 0 })
+				assert(opts.on_exit)({ code = 1, signal = 0, stdout = "", stderr = "" })
 			end, 1)
 		elseif watch == 2 then
 			if options.failed_replacement then
 				defer(function()
-					opts.on_exit({ code = 1, signal = 0 })
+					assert(opts.on_exit)({ code = 1, signal = 0, stdout = "", stderr = "" })
 					on_data('{"type":"late"}\n')
 				end, 1)
 			elseif not options.early_exit then
@@ -556,7 +556,7 @@ local function fake_rex(options)
 					stopped = true
 					state.stops = state.stops + 1
 					defer(function()
-						opts.on_exit({ code = 0, signal = 15 })
+						assert(opts.on_exit)({ code = 0, signal = 15, stdout = "", stderr = "" })
 					end, 0)
 				end
 			end,
@@ -564,7 +564,7 @@ local function fake_rex(options)
 	end
 
 	local path = vim.env.PATH
-	vim.env.PATH = temp .. ":" .. path
+	local restore_path = Test.replace(vim.env, "PATH", temp .. ":" .. path)
 	local ok, err = pcall(smoke, options.tui and { "--transport", "tui" } or {}, rt, {
 		vim = setmetatable({ defer_fn = defer }, { __index = vim }),
 		require = options.reply and intercept_cli(function(active_rt, args, result)
@@ -577,7 +577,7 @@ local function fake_rex(options)
 		end,
 	})
 	local restored_path = vim.env.PATH
-	vim.env.PATH = path
+	restore_path()
 	Test.eq(restored_path, temp .. ":" .. path)
 	state.retained = parent ~= nil and rt.exists(parent)
 	if state.retained then

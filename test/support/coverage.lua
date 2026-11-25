@@ -397,7 +397,7 @@ function M.start(root, paths)
 		package.loaded[name] = nil
 	end
 	local old_loadfile, old_dofile = _G.loadfile, _G.dofile
-	local loaders = package.loaders or package.searchers
+	local loaders = package.loaders
 	local old_loader = loaders[2]
 	local function load(path)
 		local absolute = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))

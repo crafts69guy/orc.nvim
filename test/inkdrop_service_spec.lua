@@ -27,6 +27,9 @@ local function fake()
 		state.calls[#state.calls + 1] = { argv = vim.deepcopy(argv), opts = vim.deepcopy(opts) }
 		local result = { code = 0, stdout = "", stderr = "", signal = 0 }
 		if argv[1] == "uname" then
+			if state.uname_error then
+				error({ secret = "fixture-secret<&" })
+			end
 			result.stdout = state.platform or "Darwin"
 		elseif argv[1] == state.proxy then
 			result.stdout = state.version or "mcp-proxy 0.13.3\n"
@@ -35,6 +38,8 @@ local function fake()
 		elseif argv[1] == "codex" then
 			if state.invalid_codex then
 				result.code, result.stderr = 1, "fixture-secret<&"
+			elseif state.codex_reply then
+				result.stdout = state.codex_reply
 			elseif state.bad_codex_json then
 				result.stdout = "not JSON"
 			else
@@ -197,7 +202,7 @@ Test.test(
 			})
 		)
 		Test.eq(install(rt, state, { "--credentials", credential }).code, 0)
-		local env = rt.decode((rt.read(state.paths.backend))).mcpServers.inkdrop.env
+		local env = rt.decode((assert(rt.read(state.paths.backend)))).mcpServers.inkdrop.env
 		Test.eq(env.INKDROP_LOCAL_USERNAME, "private-user")
 		Test.eq(env.INKDROP_LOCAL_SERVER_URL, "http://127.0.0.1:19840")
 		Test.eq(env.OTHER, nil)
@@ -414,7 +419,7 @@ Test.test(
 		Test.eq(rt.read(file), source)
 		args[#args + 1] = "--apply"
 		Test.eq(run(rt, state, args).code, 0)
-		local migrated = rt.decode((rt.read(file)))
+		local migrated = rt.decode((assert(rt.read(file))))
 		Test.eq(migrated.permissions, original.permissions)
 		Test.eq(migrated.mcpServers.unrelated, original.mcpServers.unrelated)
 		Test.eq(migrated.mcpServers.inkdrop.timeout, 17000)
@@ -441,11 +446,11 @@ Test.test(
 			)
 		end
 		Test.eq(command("migrate", { "--apply" }).code, 0)
-		local live = rt.decode((rt.read(file)))
+		local live = rt.decode((assert(rt.read(file))))
 		live.numStartups = 2
 		rt.write(file, rt.encode(live))
 		Test.eq(command("rollback").code, 0)
-		local restored = rt.decode((rt.read(file)))
+		local restored = rt.decode((assert(rt.read(file))))
 		Test.eq(restored.mcpServers.inkdrop, { command = "old" })
 		Test.eq(restored.numStartups, 2)
 		Test.eq(#rt.list(state.paths.backups), 0)
@@ -453,19 +458,19 @@ Test.test(
 		file = provider(rt, "claude", '{"mcpServers":{}}')
 		args[4] = file
 		Test.eq(command("migrate", { "--apply" }).code, 0)
-		live = rt.decode((rt.read(file)))
+		live = rt.decode((assert(rt.read(file))))
 		live.other = true
 		rt.write(file, rt.encode(live))
 		Test.eq(command("rollback").code, 0)
-		Test.eq(rt.decode((rt.read(file))), { mcpServers = {}, other = true })
+		Test.eq(rt.decode((assert(rt.read(file)))), { mcpServers = {}, other = true })
 		assert(rt.read(file):find('"mcpServers":{}', 1, true), "empty servers must stay an object")
 
 		Test.eq(command("migrate", { "--apply" }).code, 0)
-		live = rt.decode((rt.read(file)))
+		live = rt.decode((assert(rt.read(file))))
 		live.mcpServers.inkdrop.url = "http://edited.example/mcp"
 		rt.write(file, rt.encode(live))
 		assert_error(command("rollback"), "later user edits")
-		Test.eq(rt.decode((rt.read(file))).mcpServers.inkdrop.url, "http://edited.example/mcp")
+		Test.eq(rt.decode((assert(rt.read(file)))).mcpServers.inkdrop.url, "http://edited.example/mcp")
 	end
 )
 
@@ -505,7 +510,7 @@ Test.test(
 			run(rt, state, { "migrate", "--provider", "claude", "--file", file, "--apply" }).code,
 			0
 		)
-		local migrated = rt.read(file)
+		local migrated = assert(rt.read(file))
 		rt.write(file, "later user edit")
 		assert_error(
 			run(rt, state, { "rollback", "--provider", "claude", "--file", file }),
@@ -703,7 +708,7 @@ Test.test(
 
 Test.test("inkdrop_service installed metadata and missing private files fail closed", function()
 	local rt, state = installed()
-	local original = rt.decode((rt.read(state.paths.config)))
+	local original = rt.decode((assert(rt.read(state.paths.config))))
 	for _, update in ipairs({
 		{ schemaVersion = 2 },
 		{ service = {} },
@@ -779,7 +784,7 @@ Test.test(
 			Test.eq(run(rt, state, { "migrate", "--provider", "codex", "--file", file }).code, 1)
 		end
 		file = provider(rt, "claude", '{"mcpServers":{}}')
-		local original = rt.read(file)
+		local original = assert(rt.read(file))
 		Test.eq(
 			run(rt, state, { "migrate", "--provider", "claude", "--file", file, "--apply" }).code,
 			0
@@ -799,7 +804,8 @@ Test.test("inkdrop_service receipt identity and provider ownership protect rollb
 			receipt = state.paths.backups .. "/" .. name
 		end
 	end
-	local original = rt.decode((rt.read(receipt)))
+	assert(receipt)
+	local original = rt.decode((assert(rt.read(receipt))))
 	for _, update in ipairs({
 		{ schemaVersion = 2 },
 		{ provider = "codex" },
@@ -863,7 +869,7 @@ Test.test(
 			run(rt, state, { "migrate", "--provider", "claude", "--file", file, "--apply" }).code,
 			0
 		)
-		Test.eq(rt.decode((rt.read(file))).mcpServers.inkdrop.headers, nil)
+		Test.eq(rt.decode((assert(rt.read(file)))).mcpServers.inkdrop.headers, nil)
 	end
 )
 
@@ -896,45 +902,26 @@ Test.test(
 Test.test("inkdrop_service owner metadata and validation error objects remain redacted", function()
 	local rt, state = installed()
 	local original_lstat = uv.fs_lstat
-	uv.fs_lstat = function(path, ...)
-		local stat, err = original_lstat(path, ...)
+	Test.replace(uv, "fs_lstat", function(path)
+		local stat, err = original_lstat(path)
 		if stat and path == state.paths.config then
 			stat = vim.deepcopy(stat)
 			stat.uid = uv.getuid() + 1
 		end
 		return stat, err
-	end
-	local ok, err = pcall(function()
+	end, function()
 		assert_error(run(rt, state, { "status" }), "unsafe ownership")
 	end)
-	uv.fs_lstat = original_lstat
-	assert(ok, err)
-	local exec = rt.exec
-	rt.exec = function(argv, opts)
-		if argv[1] == "uname" then
-			error({ secret = "fixture-secret<&" })
-		end
-		return exec(argv, opts)
-	end
+	state.uname_error = true
 	assert_error(run(rt, state, { "status" }), "operation failed")
-	rt.exec = exec
+	state.uname_error = false
 	local file = provider(rt, "codex", CODEX)
-	rt.exec = function(argv, opts)
-		if argv[1] == "codex" then
-			return { code = 0, stdout = '{"name":"wrong","transport":{}}', stderr = "" }
-		end
-		return exec(argv, opts)
-	end
+	state.codex_reply = '{"name":"wrong","transport":{}}'
 	assert_error(
 		run(rt, state, { "migrate", "--provider", "codex", "--file", file }),
 		"transport did not match"
 	)
-	rt.exec = function(argv, opts)
-		if argv[1] == "codex" then
-			return { code = 0, stdout = '{"name":"inkdrop"}', stderr = "" }
-		end
-		return exec(argv, opts)
-	end
+	state.codex_reply = '{"name":"inkdrop"}'
 	assert_error(
 		run(rt, state, { "migrate", "--provider", "codex", "--file", file }),
 		"transport did not match"

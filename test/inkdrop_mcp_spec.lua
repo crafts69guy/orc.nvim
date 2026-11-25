@@ -36,13 +36,13 @@ local function backend(rt)
 end
 
 local function with_uv(overrides, fn)
-	local old = {}
+	local restore = {}
 	for key, value in pairs(overrides) do
-		old[key], uv[key] = uv[key], value
+		restore[#restore + 1] = Test.replace(uv, key, value)
 	end
 	local ok, err = xpcall(fn, debug.traceback)
-	for key, value in pairs(old) do
-		uv[key] = value
+	for index = #restore, 1, -1 do
+		restore[index]()
 	end
 	assert(ok, err)
 end
@@ -91,9 +91,11 @@ Test.test(
 		Test.raises("absolute path", function()
 			mcp.paths(rt)
 		end)
-		rt.env.ORC_INKDROP_MCP_CONFIG = 1
+		local malformed = vim.tbl_extend("force", rt, {
+			env = vim.tbl_extend("force", rt.env, { ORC_INKDROP_MCP_CONFIG = 1 }),
+		})
 		Test.raises("absolute path", function()
-			mcp.paths(rt)
+			mcp.paths(malformed)
 		end)
 	end
 )
@@ -102,6 +104,16 @@ Test.test(
 	"inkdrop_mcp resolves mode precedence and rejects malformed settings without echoing contents",
 	function()
 		local rt = fixture()
+		local read = rt.read
+		local read_failure
+		rt.read = function(path)
+			if read_failure == "throw" then
+				error("fixture-secret")
+			elseif read_failure then
+				return nil, read_failure
+			end
+			return read(path)
+		end
 		Test.eq(mcp.resolve(rt).mode, "inherit")
 		settings(
 			rt,
@@ -132,21 +144,15 @@ Test.test(
 				mcp.resolve(rt)
 			end):find("configuration is invalid", 1, true))
 		end
-		rt.read = function()
-			error("fixture-secret")
-		end
+		read_failure = "throw"
 		assert(redacted(function()
 			mcp.resolve(rt)
 		end):find("could not be read", 1, true))
-		rt.read = function()
-			return nil, "EACCES fixture-secret"
-		end
+		read_failure = "EACCES fixture-secret"
 		assert(redacted(function()
 			mcp.resolve(rt)
 		end):find("could not be read", 1, true))
-		rt.read = function()
-			return nil, "ENOENT missing"
-		end
+		read_failure = "ENOENT missing"
 		Test.eq(mcp.resolve(rt).mode, "inherit")
 	end
 )
@@ -211,6 +217,7 @@ Test.test(
 			fs_lstat = function(path)
 				local result, err = stat(path)
 				if path == paths.backend then
+					assert(result)
 					result.uid = result.uid + 1
 				end
 				return result, err
@@ -267,7 +274,7 @@ Test.test(
 			local closed = 0
 			with_uv({
 				fs_fstat = function(fd)
-					local result = fstat(fd)
+					local result = assert(fstat(fd))
 					if changed == "ino" then
 						result.ino = result.ino + 1
 					elseif changed == "size" then
@@ -542,20 +549,16 @@ Test.test(
 			result = probe(rt, { { code = code, stdout = "", stderr = "" } })()
 			Test.eq(result, { ok = false, error = message })
 		end
-		rt.exec = function()
-			error("fixture-secret")
+		for _, failure in ipairs({ "fixture-secret", { secret = "fixture-secret" } }) do
+			local failing = fixture()
+			failing.exec = function()
+				error(failure)
+			end
+			Test.eq(
+				mcp.check(failing, { mode = "shared", url = "http://127.0.0.1:19841/mcp" }),
+				{ ok = false, error = "endpoint health check failed" }
+			)
 		end
-		Test.eq(
-			mcp.check(rt, { mode = "shared", url = "http://127.0.0.1:19841/mcp" }),
-			{ ok = false, error = "endpoint health check failed" }
-		)
-		rt.exec = function()
-			error({ secret = "fixture-secret" })
-		end
-		Test.eq(
-			mcp.check(rt, { mode = "shared", url = "http://127.0.0.1:19841/mcp" }),
-			{ ok = false, error = "endpoint health check failed" }
-		)
 	end
 )
 

@@ -56,13 +56,12 @@ local function fixture(exercise)
 			stderr = err or "",
 		})
 	end
-	local old_notify, old_input = vim.notify, vim.ui.input
-	vim.notify = function(message)
+	Test.replace(vim, "notify", function(message)
 		state.notices[#state.notices + 1] = message
-	end
-	vim.ui.input = function(_, callback)
+	end)
+	Test.replace(vim.ui, "input", function(_, callback)
 		state.input = callback
-	end
+	end)
 	local previous_windows = {}
 	for _, window in ipairs(vim.api.nvim_list_wins()) do
 		previous_windows[window] = true
@@ -76,7 +75,6 @@ local function fixture(exercise)
 			pcall(vim.api.nvim_win_close, window, true)
 		end
 	end
-	vim.notify, vim.ui.input = old_notify, old_input
 	assert(ok, err)
 end
 
@@ -400,7 +398,7 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 		Test.eq(actions, { "status" })
 		assert(vim.tbl_contains(vim.fn.getcompletion("Orc ", "cmdline"), "report"))
 		assert(vim.tbl_contains(vim.fn.getcompletion("Orc ", "cmdline"), "workers"))
-		vim.g.loaded_orc = nil
+		Test.replace(vim.g, "loaded_orc", nil)
 		dofile(actual_runtime.new().root .. "/plugin/orc.lua")
 		dofile(actual_runtime.new().root .. "/plugin/orc.lua")
 		Test.eq(vim.g.loaded_orc, true)
@@ -408,25 +406,24 @@ Test.test("ui setup and plugin register only Orc and are idempotent", function()
 	package.loaded["orc.ui"], package.loaded["orc.runtime"] = actual_ui, actual_runtime
 	package.loaded["orc.projects"] = actual_projects
 	package.loaded["orc.worker_picker"] = actual_workers
-	vim.g.loaded_orc = nil
 	pcall(vim.api.nvim_del_user_command, "Orc")
 	assert(ok, err)
 end)
 
 Test.test("ui popup closes only its view and focuses the explicitly originating Rex app", function()
 	fixture(function(rt, state)
-		local old_cmd, old_schedule = vim.cmd, vim.schedule
+		local old_cmd = vim.cmd
 		local quit, scheduled = 0, {}
-		vim.cmd = function(command)
+		local restore_cmd = Test.replace(vim, "cmd", function(command)
 			if command == "qa" then
 				quit = quit + 1
 			else
 				old_cmd(command)
 			end
-		end
-		vim.schedule = function(fn)
+		end)
+		local restore_schedule = Test.replace(vim, "schedule", function(fn)
 			scheduled[#scheduled + 1] = fn
-		end
+		end)
 		local ok, err = xpcall(function()
 			ui.open(rt, { client_id = "client:origin", quit_on_close = true })
 			state.reply(1)
@@ -445,51 +442,51 @@ Test.test("ui popup closes only its view and focuses the explicitly originating 
 			end
 			Test.eq(quit, 1)
 		end, debug.traceback)
-		vim.cmd, vim.schedule = old_cmd, old_schedule
+		restore_schedule()
+		restore_cmd()
 		assert(ok, err)
 	end)
 end)
 
 Test.test("ui popup preserves modified buffers when non-forced quit is refused", function()
 	fixture(function(rt, state)
-		local old_cmd, old_schedule = vim.cmd, vim.schedule
-		vim.cmd = function(command)
+		local old_cmd = vim.cmd
+		local restore_cmd = Test.replace(vim, "cmd", function(command)
 			if command == "qa" then
 				error("modified buffers")
 			else
 				old_cmd(command)
 			end
-		end
-		vim.schedule = function(fn)
+		end)
+		local restore_schedule = Test.replace(vim, "schedule", function(fn)
 			fn()
-		end
+		end)
 		local ok, err = xpcall(function()
 			ui.open(rt, { quit_on_close = true })
 			ui.close()
 			assert(state.notices[1]:find("save modified buffers", 1, true))
 		end, debug.traceback)
-		vim.cmd, vim.schedule = old_cmd, old_schedule
+		restore_schedule()
+		restore_cmd()
 		assert(ok, err)
 	end)
 end)
 
 Test.test("ui health checks dependencies local Rex and failures without model calls", function()
-	local old_health, old_rex, old_has, old_executable =
-		vim.health, package.loaded["orc.rex"], vim.fn.has, vim.fn.executable
-	local calls, success = {}, true
-	vim.health = {}
+	local calls, success, health = {}, true, {}
+	Test.replace(vim, "health", health)
 	for _, kind in ipairs({ "start", "ok", "warn", "error", "info" }) do
-		vim.health[kind] = function(message)
+		health[kind] = function(message)
 			calls[#calls + 1] = kind .. ":" .. message
 		end
 	end
-	vim.fn.has = function()
+	Test.replace(vim.fn, "has", function()
 		return success and 1 or 0
-	end
-	vim.fn.executable = function()
+	end)
+	Test.replace(vim.fn, "executable", function()
 		return success and 1 or 0
-	end
-	package.loaded["orc.rex"] = {
+	end)
+	Test.replace(package.loaded, "orc.rex", {
 		new = function()
 			return {
 				identity = function()
@@ -498,7 +495,7 @@ Test.test("ui health checks dependencies local Rex and failures without model ca
 				end,
 			}
 		end,
-	}
+	})
 	local ok, err = xpcall(function()
 		require("orc.health").check()
 		success = false
@@ -506,7 +503,5 @@ Test.test("ui health checks dependencies local Rex and failures without model ca
 		assert(table.concat(calls, " "):find("offline", 1, true))
 		assert(table.concat(calls, " "):find("git missing", 1, true))
 	end, debug.traceback)
-	vim.health, package.loaded["orc.rex"], vim.fn.has, vim.fn.executable =
-		old_health, old_rex, old_has, old_executable
 	assert(ok, err)
 end)

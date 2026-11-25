@@ -43,17 +43,15 @@ local function fixture(fn)
 			state.fields = vim.tbl_extend("force", state.fields, fields)
 		end)
 	end
-	local stdout = io.stdout
-	io.stdout = {
+	Test.replace(io, "stdout", {
 		write = function(_, text)
 			state.output = state.output .. text
 		end,
 		flush = function() end,
-	}
+	})
 	local ok, err = xpcall(function()
 		fn(rt, state)
 	end, debug.traceback)
-	io.stdout = stdout
 	assert(ok, err)
 end
 

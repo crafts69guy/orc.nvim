@@ -72,14 +72,27 @@ Test.test(
 
 Test.test("shared_integrations doctor distinguishes MCP from private REST credentials", function()
 	local rt = fake()
+	local resolution, unavailable, rejected = "shared", false, false
 	local module = {
 		resolve = function()
-			return { mode = "shared", url = "http://127.0.0.1:19841/mcp" }
+			if resolution == "invalid" then
+				error("invalid shared settings", 0)
+			end
+			return {
+				mode = resolution,
+				url = resolution == "shared" and "http://127.0.0.1:19841/mcp" or nil,
+			}
 		end,
 		credentials = function()
+			if rejected then
+				error("private credential file rejected", 0)
+			end
 			return credentials
 		end,
 		check = function()
+			if unavailable then
+				return { ok = false, error = "endpoint unavailable" }
+			end
 			return { ok = true }
 		end,
 	}
@@ -93,20 +106,11 @@ Test.test("shared_integrations doctor distinguishes MCP from private REST creden
 		Test.eq(found["inkdrop-mcp"], "pass")
 		Test.eq(found.inkdrop, "pass")
 		assert(not rt.encode(document):find("private-password", 1, true))
-		module.check = function()
-			return { ok = false, error = "endpoint unavailable" }
-		end
+		unavailable = true
 		Test.eq(doctor.run(rt, {}).code, 1)
-		module.resolve = function()
-			error("invalid shared settings", 0)
-		end
+		resolution = "invalid"
 		Test.eq(doctor.run(rt, {}).code, 1)
-		module.resolve = function()
-			return { mode = "inherit" }
-		end
-		module.credentials = function()
-			error("private credential file rejected", 0)
-		end
+		resolution, rejected = "inherit", true
 		local function inkdrop_status()
 			for _, check in ipairs(doctor.collect(rt).checks) do
 				if check.name == "inkdrop" then
@@ -124,8 +128,12 @@ Test.test(
 	"shared_integrations context describes requested transport without probing or reading secrets",
 	function()
 		local rt = fake()
+		local invalid = false
 		local module = {
 			resolve = function()
+				if invalid then
+					error("invalid shared settings", 0)
+				end
 				return { mode = "shared", url = "http://127.0.0.1:19841/mcp" }
 			end,
 			credentials = function()
@@ -147,9 +155,7 @@ Test.test(
 			end
 			Test.eq(providers, { claude = "info", codex = "info" })
 			Test.eq(context.run(rt, { "--scope", "project", "--json" }).code, 0)
-			module.resolve = function()
-				error("invalid shared settings", 0)
-			end
+			invalid = true
 			Test.eq(context.run(rt, { "--json" }).code, 1)
 		end)
 	end

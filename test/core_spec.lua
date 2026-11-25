@@ -25,16 +25,36 @@ local function trees(...)
 	return result(0, table.concat(fields))
 end
 
-local function fake()
+---@class orc.TestCoreCommand
+---@field argv string[]
+---@field options? orc.ProcessOptions
+
+---@class orc.TestCoreHandlers
+---@field read_error? fun(path:string):string?
+---@field before_append? fun(rt:orc.Runtime)
+
+---@param handlers? orc.TestCoreHandlers
+local function fake(handlers)
+	---@class orc.TestCoreRuntime: orc.Runtime
+	---@field files table<string,string>
+	---@field commands orc.TestCoreCommand[]
+	---@field launched orc.TestCoreCommand[]
 	local rt = runtime.new({ root = "/plugin", cwd = "/repo" })
 	rt.env, rt.files, rt.commands, rt.launched = {}, {}, {}, {}
 	rt.read = function(path)
+		local err = handlers and handlers.read_error and handlers.read_error(path)
+		if err then
+			return nil, err
+		end
 		return rt.files[path]
 	end
 	rt.write = function(path, text)
 		rt.files[path] = text
 	end
 	rt.append = function(path, line)
+		if handlers and handlers.before_append then
+			handlers.before_append(rt)
+		end
 		rt.files[path] = (rt.files[path] or "") .. line
 	end
 	rt.rmdir = function(path)
@@ -97,11 +117,7 @@ local function route(rt, routes)
 end
 
 local function with_module(name, value, fn)
-	local previous = package.loaded[name]
-	package.loaded[name] = value
-	local ok, err = xpcall(fn, debug.traceback)
-	package.loaded[name] = previous
-	assert(ok, err)
+	Test.replace(package.loaded, name, value, fn)
 end
 
 Test.test("core CLI help, version, errors and lazy routing", function()
@@ -477,15 +493,18 @@ Test.test("core context resolves rule and guide paths from the invoking root", f
 end)
 
 Test.test("core context reports unavailable rule provenance through warnings", function()
-	local rt = fake()
 	local path = "/plugin/rules/orchestrator.md"
-	local read = rt.read
-	rt.read = function(file)
-		if file == path then
-			return nil, "permission denied"
-		end
-		return read(file)
-	end
+	local throw = false
+	local rt = fake({
+		read_error = function(file)
+			if file == path then
+				if throw then
+					error("rule read failed")
+				end
+				return "permission denied"
+			end
+		end,
+	})
 	rt.files["/repo/CLAUDE.md"] = "@missing.md"
 	local result = cli.run(rt, { "context", "--scope=user", "--json" })
 	Test.eq(result.code, 0)
@@ -506,12 +525,7 @@ Test.test("core context reports unavailable rule provenance through warnings", f
 	Test.eq(result.code, 1)
 	assert(result.err:find(item.detail, 1, true))
 
-	rt.read = function(file)
-		if file == path then
-			error("rule read failed")
-		end
-		return read(file)
-	end
+	throw = true
 	result = cli.run(rt, { "context", "--scope=user" })
 	Test.eq(result.code, 0)
 	assert(result.out:find("rule read failed", 1, true))
@@ -1372,61 +1386,52 @@ end)
 
 Test.test("core CLI entrypoints emit clean machine output and propagate failures", function()
 	local rt = runtime.new()
-	local previous = {
-		argv = arg,
-		stdout = io.stdout,
-		stderr = io.stderr,
-		stdin = io.stdin,
-		exit = os.exit,
-		path = package.path,
-	}
+	Test.replace(package, "path", package.path)
 	local out, err, exit = "", "", nil
-	io.stdout = {
+	Test.replace(io, "stdout", {
 		write = function(_, text)
 			out = out .. text
 		end,
 		flush = function() end,
-	}
-	io.stderr = {
+	})
+	Test.replace(io, "stderr", {
 		write = function(_, text)
 			err = err .. text
 		end,
 		flush = function() end,
-	}
-	io.stdin = {
+	})
+	Test.replace(io, "stdin", {
 		read = function()
 			return "{}"
 		end,
-	}
-	os.exit = function(code)
+	})
+	Test.replace(os, "exit", function(code)
 		exit = code
-	end
+	end)
 	local ok, failure = xpcall(function()
-		arg = { [0] = rt.path(rt.root, "bin", "orc"), "--version" }
+		Test.replace(_G, "arg", { [0] = rt.path(rt.root, "bin", "orc"), "--version" })
 		dofile(arg[0])
 		Test.eq(out, "0.1.5\n")
 		Test.eq(err, "")
 		Test.eq(exit, 0)
-		arg = { [0] = rt.path(rt.root, "bin", "orc"), "unknown" }
+		Test.replace(_G, "arg", { [0] = rt.path(rt.root, "bin", "orc"), "unknown" })
 		dofile(arg[0])
 		Test.eq(exit, 1)
 		assert(err:find("unknown command", 1, true))
-		arg = { [0] = rt.path(rt.root, "bin", "orc"), "hook", "guard" }
+		Test.replace(_G, "arg", { [0] = rt.path(rt.root, "bin", "orc"), "hook", "guard" })
 		dofile(arg[0])
 		Test.eq(exit, 0)
-		arg = { [0] = rt.path(rt.root, "scripts", "gen-agents.lua"), "--check" }
+		Test.replace(_G, "arg", { [0] = rt.path(rt.root, "scripts", "gen-agents.lua"), "--check" })
 		dofile(arg[0])
 		Test.eq(exit, 0)
-		arg = { [0] = rt.path(rt.root, "scripts", "gen-agents.lua") }
+		Test.replace(_G, "arg", { [0] = rt.path(rt.root, "scripts", "gen-agents.lua") })
 		dofile(arg[0])
 		Test.eq(exit, 0)
-		arg = { [0] = rt.path(rt.root, "scripts", "gen-agents.lua"), "--unknown" }
+		Test.replace(_G, "arg", { [0] = rt.path(rt.root, "scripts", "gen-agents.lua"), "--unknown" })
 		Test.raises("usage", function()
 			dofile(arg[0])
 		end)
 	end, debug.traceback)
-	arg, io.stdout, io.stderr, io.stdin, os.exit, package.path =
-		previous.argv, previous.stdout, previous.stderr, previous.stdin, previous.exit, previous.path
 	assert(ok, failure)
 end)
 
@@ -1693,10 +1698,15 @@ Test.test("core doctor probes connected Rex and Inkdrop without exposing credent
 	rt.env.ORC_PAIR, rt.env.INKDROP_LOCAL_USERNAME, rt.env.INKDROP_LOCAL_PASSWORD =
 		"1", "user", "private"
 	local rex = require("orc.rex")
-	local resolve = rex.resolve
-	rex.resolve = function()
-		return "rex"
-	end
+	Test.replace(
+		package.loaded,
+		"orc.rex",
+		vim.tbl_extend("force", rex, {
+			resolve = function()
+				return "rex"
+			end,
+		})
+	)
 	with_module("orc.inkdrop", {
 		probe = function()
 			return { version = "6" }
@@ -1709,7 +1719,6 @@ Test.test("core doctor probes connected Rex and Inkdrop without exposing credent
 		route(rt, { ["rex whoami --json"] = result(1) })
 		Test.eq(require("orc.doctor").run(rt, {}).code, 1)
 	end)
-	rex.resolve = resolve
 end)
 
 Test.test("core update tolerates unavailable or malformed marketplace inventories", function()
@@ -1898,9 +1907,7 @@ Test.test(
 		Test.eq(#wt.run(rt, { "list", "base" }).result, 0)
 		Test.eq(wt.session(rt, "existing", nil, false, "/explicit").path, "/session")
 		Test.eq(wt.list(rt, "/explicit")[1].path, "/orphan")
-		Test.raises("needs a branch", function()
-			wt.session(rt, nil)
-		end)
+		Test.raises("needs a branch", wt.session, rt, nil)
 		route(rt, { [LIST] = result(1, "quiet error", "") })
 		Test.raises("quiet error", function()
 			wt.list(rt)
@@ -1916,49 +1923,41 @@ Test.test(
 Test.test(
 	"core doctor enforces minimum Neovim version and accepts future major releases",
 	function()
-		local rt, original = fake(), vim.version
-		local ok, err = xpcall(function()
-			vim.version = function()
-				return setmetatable({ major = 0, minor = 10 }, {
+		local rt = fake()
+		local doctor = require("orc.doctor")
+		for _, case in ipairs({
+			{ major = 0, minor = 10, status = "fail" },
+			{ major = 1, minor = 0, status = "pass" },
+		}) do
+			Test.replace(vim, "version", function()
+				return setmetatable({ major = case.major, minor = case.minor }, {
 					__tostring = function()
-						return "0.10"
+						return case.major .. "." .. case.minor
 					end,
 				})
-			end
-			Test.eq(require("orc.doctor").collect(rt).checks[1].status, "fail")
-			vim.version = function()
-				return setmetatable({ major = 1, minor = 0 }, {
-					__tostring = function()
-						return "1.0"
-					end,
-				})
-			end
-			Test.eq(require("orc.doctor").collect(rt).checks[1].status, "pass")
-		end, debug.traceback)
-		vim.version = original
-		assert(ok, err)
+			end)
+			Test.eq(doctor.collect(rt).checks[1].status, case.status)
+		end
 	end
 )
 
 Test.test("core entrypoints handle absent output and reject extra generator arguments", function()
 	local root = runtime.new().root
-	local previous = { argv = arg, exit = os.exit }
-	os.exit = function() end
+	Test.replace(os, "exit", function() end)
 	local ok, err = xpcall(function()
 		with_module("orc.cli", {
 			run = function()
 				return { code = 0 }
 			end,
 		}, function()
-			arg = { [0] = root .. "/bin/orc" }
+			Test.replace(_G, "arg", { [0] = root .. "/bin/orc" })
 			dofile(arg[0])
 		end)
-		arg = { [0] = root .. "/scripts/gen-agents.lua", "--check", "extra" }
+		Test.replace(_G, "arg", { [0] = root .. "/scripts/gen-agents.lua", "--check", "extra" })
 		Test.raises("usage", function()
 			dofile(arg[0])
 		end)
 	end, debug.traceback)
-	arg, os.exit = previous.argv, previous.exit
 	assert(ok, err)
 end)
 
@@ -1993,25 +1992,27 @@ end)
 Test.test(
 	"core hook signals append interleaved events without replacing earlier records",
 	function()
-		local rt, interleaved = fake(), false
+		local interleaved, fail_append = false, false
+		local rt = fake({
+			read_error = function(path)
+				assert(path ~= "/repo/.orc/signals.jsonl", "signal writes must not read-modify-replace")
+			end,
+			before_append = function(active_rt)
+				if fail_append then
+					error("disk full")
+				end
+				if not interleaved then
+					interleaved = true
+					hooks.run(
+						active_rt,
+						"guard",
+						'{"agent_type":"implementer","tool_input":{"command":"git commit -m x"}}'
+					)
+				end
+			end,
+		})
 		rt.env.ORC = "1"
 		rt.files["/repo/.orc/signals.jsonl"] = '{"existing":true}\n'
-		local read = rt.read
-		rt.read = function(path)
-			assert(path ~= "/repo/.orc/signals.jsonl", "signal writes must not read-modify-replace")
-			return read(path)
-		end
-		rt.append = function(path, line)
-			if not interleaved then
-				interleaved = true
-				hooks.run(
-					rt,
-					"guard",
-					'{"agent_type":"implementer","tool_input":{"command":"git commit -m x"}}'
-				)
-			end
-			rt.files[path] = (rt.files[path] or "") .. line
-		end
 		local denied = hooks.run(rt, "guard", '{"tool_input":{"command":"git push"}}')
 		Test.eq(rt.decode(denied.out).hookSpecificOutput.permissionDecision, "deny")
 		local records = {}
@@ -2022,9 +2023,7 @@ Test.test(
 		Test.eq(records[1], { existing = true })
 		Test.eq(records[2].role, "implementer")
 		Test.eq(records[3].role, "main")
-		rt.append = function()
-			error("disk full")
-		end
+		fail_append = true
 		Test.eq(
 			rt.decode(hooks.run(rt, "guard", '{"tool_input":{"command":"git push"}}').out).hookSpecificOutput.permissionDecision,
 			"deny"
@@ -2048,9 +2047,9 @@ Test.test(
 			end
 			return previous(argv, options)
 		end
-		vim.fn.exepath = function(name)
+		Test.replace(vim.fn, "exepath", function(name)
 			return name == "rex" and "" or exepath(name)
-		end
+		end)
 		local ok, err = xpcall(function()
 			local document = require("orc.doctor").collect(rt)
 			Test.eq(probes, { { bundled, "version" }, { bundled, "whoami", "--json" } })
@@ -2061,7 +2060,6 @@ Test.test(
 			Test.eq(checks.rex.status, "pass")
 			Test.eq(checks["rex-session"].status, "pass")
 		end, debug.traceback)
-		vim.fn.exepath = exepath
 		assert(ok, err)
 	end
 )
@@ -2069,11 +2067,11 @@ Test.test(
 Test.test(
 	"core Rex resolves its bundled executable, preferring Rex.app over Rex Beta.app",
 	function()
-		local rt, exepath = fake(), vim.fn.exepath
+		local rt = fake()
 		local tail = ".app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
-		vim.fn.exepath = function()
+		Test.replace(vim.fn, "exepath", function()
 			return ""
-		end
+		end)
 		local ok, err = xpcall(function()
 			Test.eq(require("orc.rex").resolve(rt), "rex")
 			rt.files["/Applications/Rex Beta" .. tail] = "exists"
@@ -2081,7 +2079,6 @@ Test.test(
 			rt.files["/Applications/Rex" .. tail] = "exists"
 			Test.eq(require("orc.rex").resolve(rt), "/Applications/Rex" .. tail)
 		end, debug.traceback)
-		vim.fn.exepath = exepath
 		assert(ok, err)
 	end
 )
@@ -2107,9 +2104,9 @@ Test.test(
 			end,
 		})
 		local exepath = vim.fn.exepath
-		vim.fn.exepath = function(name)
+		Test.replace(vim.fn, "exepath", function(name)
 			return name == "rex" and "rex" or exepath(name)
-		end
+		end)
 		local ok, err = xpcall(function()
 			Test.eq(cli.run(rt, { "claude", "--pair", "prompt" }).code, 0)
 			Test.eq(rt.launched[#rt.launched].options.env.REX_SESSION, "session:resolved")
@@ -2118,7 +2115,6 @@ Test.test(
 			hooks.context(rt)
 			Test.eq(whoami, 1)
 		end, debug.traceback)
-		vim.fn.exepath = exepath
 		assert(ok, err)
 	end
 )

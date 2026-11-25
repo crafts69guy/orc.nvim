@@ -46,6 +46,42 @@ Test.test("runner exits 1 for a failing test", function()
 	assert(result.stderr:find("not ok bad", 1, true), result.stderr)
 end)
 
+Test.test("runner restores Test.replace values in stack order after every test", function()
+	local result = run_specs({
+		[[_G.orc_probe = "orig"
+		Test.test("nested exercise", function()
+			Test.replace(_G, "orc_probe", "A", function()
+				Test.replace(_G, "orc_probe", "B")
+			end)
+			Test.eq(_G.orc_probe, "orig")
+		end)
+		Test.test("early restore", function()
+			local restore = Test.replace(_G, "orc_probe", "A")
+			Test.replace(_G, "orc_probe", "B")
+			restore()
+			restore()
+			Test.eq(_G.orc_probe, "orig")
+			Test.replace(_G, "orc_probe", "C")
+			restore()
+			Test.eq(_G.orc_probe, "C")
+		end)
+		Test.test("failing", function()
+			Test.replace(_G, "orc_probe", "A")
+			Test.replace(_G, "orc_probe", "B")
+			error("boom")
+		end)
+		Test.test("after failure", function()
+			Test.eq(_G.orc_probe, "orig")
+		end)]],
+	})
+	Test.eq(result.code, 1)
+	for _, name in ipairs({ "nested exercise", "early restore", "after failure" }) do
+		assert(result.stdout:find("ok " .. name .. "\n", 1, true), result.stdout .. result.stderr)
+	end
+	assert(result.stderr:find("not ok failing", 1, true), result.stderr)
+	assert(result.stdout:find("# pass 3", 1, true), result.stdout)
+end)
+
 Test.test("runner fails when Neovim quits before the run finishes", function()
 	local result = run_specs({
 		'Test.test("quitter", function() vim.cmd("qa") end)',

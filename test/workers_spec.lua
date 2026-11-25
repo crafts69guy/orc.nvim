@@ -54,7 +54,7 @@ local function fake()
 	function state.store(record)
 		rt.write(assert(state.file()), rt.encode(record))
 	end
-	function state.hook(event, extra)
+	function state.hook(event, extra, env)
 		local record = assert(state.record())
 		local worker_rt = vim.tbl_extend("force", {}, rt, {
 			env = vim.tbl_extend("force", {}, rt.env, {
@@ -66,7 +66,7 @@ local function fake()
 					vim.fn.sha256(record.path .. "\0" .. record.task) .. ".json"
 				),
 				REX_BLOCK = record.blockId,
-			}),
+			}, env or {}),
 		})
 		return workers.event(
 			worker_rt,
@@ -80,16 +80,28 @@ local function fake()
 	rt.clock = function()
 		return state.clock
 	end
+	---@type (fun())?
+	local on_lock
+	---@type (fun(ms:integer))?
+	local on_sleep
+	---@param callback fun()
+	function state.on_lock(callback)
+		on_lock = callback
+	end
+	---@param callback? fun(ms:integer)
+	function state.on_sleep(callback)
+		on_sleep = callback
+	end
 	rt.sleep = function(ms)
 		state.clock = state.clock + ms
-		if state.onSleep then
-			state.onSleep(ms)
+		if on_sleep then
+			on_sleep(ms)
 		end
 	end
 	rt.mkdir_lock = function(path)
-		if state.onLock and path:match("%.state%.lock$") then
-			local callback = state.onLock
-			state.onLock = nil
+		if on_lock and path:match("%.state%.lock$") then
+			local callback = on_lock
+			on_lock = nil
 			callback()
 		end
 		if state.locked then
@@ -98,6 +110,9 @@ local function fake()
 		return mkdir_lock(path)
 	end
 	rt.exec = function(argv, opts)
+		if state.exec_result then
+			return state.exec_result
+		end
 		opts = opts or {}
 		state.calls[#state.calls + 1] = { argv = argv, opts = opts }
 		if argv[1] == "codex" and argv[2] == "mcp" then
@@ -564,7 +579,7 @@ Test.test(
 				state.native = "idle"
 				Test.eq(state.run("wait", { "--timeout", "0" }).result.state, "turn-ended-no-report")
 			end
-			state.onSleep = function()
+			state.on_sleep(function()
 				if state.clock >= 500 then
 					if outcome == "report" then
 						state.report()
@@ -577,7 +592,7 @@ Test.test(
 					end
 					state.onEvent('{"type":"block_event"}\n')
 				end
-			end
+			end)
 			local response = state.run(
 				"wait",
 				{ "--until", "report", "--timeout", outcome == "unacknowledged" and "61000" or "1000" }
@@ -639,7 +654,7 @@ Test.test(
 		Test.eq(missing.run("wait", { "--timeout", "0" }).result.state, "turn-ended-no-report")
 		Test.eq(missing.run("wait", { "--until", "report", "--timeout", "0" }).result.state, "timeout")
 		for _, kind in ipairs({ rt.null, "" }) do
-			missing.entries[1].kind = kind
+			missing.entries = { { app = "codex", state = "blocked", kind = kind } }
 			Test.eq(
 				missing.run("wait", { "--until", "report", "--timeout", "0" }).result.state,
 				"timeout"
@@ -905,14 +920,15 @@ Test.test("workers retry a lost create without replay while the exec runner wait
 	Test.eq(pending.blockId, nil)
 	Test.eq(state.createAttempts, 1)
 	rt.env.ORC_WORKER_FILE, rt.env.REX_BLOCK = state.file(), "block:worker"
-	state.onSleep = function()
+	state.on_sleep(function()
 		if state.clock > 10000 then
-			state.workerHidden, state.onSleep = false, nil
+			state.workerHidden = false
+			state.on_sleep(nil)
 			local retried = state.start(args)
 			Test.eq(retried.code, 0)
 			Test.eq({ retried.result.pane, retried.result.runId }, { "block:worker", pending.runId })
 		end
-	end
+	end)
 	with_exec_runner(function(_, _, _, update)
 		Test.eq(state.record().process.pid, state.pid)
 		update({ threadId = "recovered" })
@@ -949,15 +965,16 @@ Test.test("workers TUI submit hook survives delayed launch recovery in both harn
 			}),
 		})
 		local deadline = rt.clock() + submit.timeout * 1000
-		state.onSleep = function()
+		state.on_sleep(function()
 			assert(rt.clock() < deadline, kind .. " canceled its submit hook before recovery")
 			if rt.clock() >= 59000 then
-				state.onSleep, state.workerHidden = nil, false
+				state.on_sleep(nil)
+				state.workerHidden = false
 				local recovered = state.start(args)
 				Test.eq({ recovered.code, recovered.result.runId }, { 0, pending.runId })
 				Test.eq(recovered.result.status, "unconfirmed")
 			end
-		end
+		end)
 		local hook = require("orc.hooks").run(
 			hook_rt,
 			"worker-event",
@@ -977,7 +994,7 @@ Test.test(
 	function()
 		for _, failure in ipairs({ "lostCreate", "noBlock" }) do
 			local rt, state = fake()
-			state[failure] = true
+			state.lostCreate, state.noBlock = failure == "lostCreate", failure == "noBlock"
 			state.workerBlock = { window_id = rt.null }
 			local started = state.start()
 			Test.eq({ started.code, started.result.pane }, { 0, "block:worker" })
@@ -1095,13 +1112,13 @@ Test.test(
 	function()
 		local rt, state = fake()
 		state.start({ "--transport", "exec" })
-		state.onLock = function()
+		state.on_lock(function()
 			local record = state.record()
 			record.threadId, record.usage = "concurrent", { output_tokens = 7 }
 			record.rateLimited, record.execFinished, record.exitCode = true, true, 1
 			record.eventRevision = record.revision + 1
 			state.store(record)
-		end
+		end)
 		Test.eq(workers.collect(rt)[1].state, "rate-limited")
 		Test.eq(state.record().threadId, "concurrent")
 		Test.eq(state.record().usage, { output_tokens = 7 })
@@ -1147,10 +1164,10 @@ Test.test(
 		local block = record.blockId
 		record.blockId = nil
 		state.store(record)
-		state.onSleep = function()
+		state.on_sleep(function()
 			record.blockId = block
 			state.store(record)
-		end
+		end)
 		with_exec_runner(function(_, _, _, update)
 			record.runId = "replacement"
 			state.store(record)
@@ -1182,10 +1199,10 @@ Test.test(
 		end)
 		record.blockId = nil
 		state.store(record)
-		state.onSleep = function()
+		state.on_sleep(function()
 			record.runId = "changed-during-launch"
 			state.store(record)
-		end
+		end)
 		Test.raises("current run changed during launch", function()
 			workers.worker_run(rt, state.file())
 		end)
@@ -1791,14 +1808,14 @@ Test.test("workers transcript survives snapshots stale events and follow-up runs
 	state.start()
 	local transcript = rt.path(rt.cwd, "transcript.jsonl")
 	rt.write(transcript, "working\n")
-	state.onLock = function()
+	state.on_lock(function()
 		state.hook("UserPromptSubmit", { transcript_path = transcript })
-	end
+	end)
 	workers.collect(rt)
 	Test.eq(state.record().transcript, transcript)
-	state.onLock = function()
+	state.on_lock(function()
 		state.hook("UserPromptSubmit", { transcript_path = transcript .. ".new" })
-	end
+	end)
 	state.hook("UserPromptSubmit", { transcript_path = transcript .. ".stale" })
 	transcript = transcript .. ".new"
 	Test.eq(state.record().transcript, transcript)
@@ -1821,17 +1838,17 @@ Test.test("workers wait reconnects resnapshots and cleans streams", function()
 	state.ack = true
 	state.start()
 	local ticks = 0
-	state.onSleep = function()
+	state.on_sleep(function()
 		ticks = ticks + 1
 		if ticks == 1 then
-			state.onExit({ code = 1 })
+			assert(state.onExit)({ code = 1, signal = 0, stdout = "", stderr = "" })
 		elseif ticks == 2 then
 			state.native = "idle"
 			state.report()
 			state.hook("Stop")
 			state.onEvent('{"type":"block_event"}\n')
 		end
-	end
+	end)
 	local result = state.run("wait", { "--timeout", "2000" })
 	Test.eq(result.result.evidence, true)
 	assert(state.streams >= 2)
@@ -1852,12 +1869,12 @@ Test.test(
 				end
 				return exec(argv, opts)
 			end
-			state.onSleep = function(ms)
+			state.on_sleep(function(ms)
 				assert(ms <= 250)
 				if state.clock == event_at then
 					state.onEvent('{"type":"block_event"}\n')
 				end
-			end
+			end)
 			Test.eq(state.run("wait", { "--timeout", "11000" }).result.state, "timeout")
 			if event_at then
 				Test.eq(snapshots, { 0, 750, 5750, 10750 })
@@ -1873,10 +1890,10 @@ Test.test("workers wait returns immediately on a Rex event before the heartbeat"
 	local _, state = fake()
 	state.ack = true
 	state.start()
-	state.onSleep = function()
+	state.on_sleep(function()
 		state.native = "blocked"
 		state.onEvent('{"type":"block_event"}\n')
-	end
+	end)
 	Test.eq(state.run("wait", { "--timeout", "1000" }).result.state, "blocked")
 	Test.eq(state.clock, 250)
 	Test.eq(state.stopped, 1)
@@ -1924,7 +1941,7 @@ Test.test(
 		Test.eq(state.record().state, "disconnected")
 		state.processFail = false
 		local original = state.record()
-		state.onSleep = function()
+		state.on_sleep(function()
 			local record = state.record()
 			record.runId = "changed"
 			local file = rt.path(
@@ -1934,7 +1951,7 @@ Test.test(
 				vim.fn.sha256(record.path .. "\0" .. record.task) .. ".json"
 			)
 			rt.write(file, rt.encode(record))
-		end
+		end)
 		local followed = state.run("wait", { "--timeout", "500" })
 		Test.eq(followed.result.state, "timeout")
 		Test.eq(followed.result.runId, "changed")
@@ -1981,15 +1998,15 @@ Test.test(
 	function()
 		local rt, state = fake()
 		state.start()
-		state.onLock = function()
+		state.on_lock(function()
 			state.hook("UserPromptSubmit")
-		end
+		end)
 		local observed = workers.collect(rt)[1]
 		Test.eq(observed.acknowledged, true)
 		Test.eq(state.record().acknowledged, true)
-		state.onLock = function()
+		state.on_lock(function()
 			Test.eq(state.run("close", { "--no-review" }).code, 0)
-		end
+		end)
 		state.hook("UserPromptSubmit")
 		Test.eq(state.record().state, "closed")
 		Test.eq(#state.closed, 1)
@@ -2004,7 +2021,7 @@ Test.test(
 		state.exitCode = 0
 		Test.eq(workers.collect(rt)[1].state, "exited")
 		state.exitCode = nil
-		state.onLock = function()
+		state.on_lock(function()
 			local record = state.record()
 			record.runId, record.acknowledged, record.state = "replacement", false, "unconfirmed"
 			rt.write(
@@ -2016,7 +2033,7 @@ Test.test(
 				),
 				rt.encode(record)
 			)
-		end
+		end)
 		-- The stale snapshot is dropped and the newer run's durable state is shown.
 		Test.eq(workers.collect(rt)[1].state, "unconfirmed")
 		Test.eq(state.record().runId, "replacement")
@@ -2185,16 +2202,12 @@ Test.test(
 		state.onEvent('{"type":')
 		state.onEvent('"one"}\nnot JSON\n\n{"type":"two"}\n')
 		Test.eq(events, { { type = "one" }, { type = "two" } })
-		state.onExit()
+		assert(state.onExit)({ code = 0, signal = 0, stdout = "", stderr = "" })
 		Test.eq(ended, true)
 		stream.stop()
-		rt.exec = function()
-			return { code = 0, stdout = "bad", stderr = "" }
-		end
+		state.exec_result = { code = 0, signal = 0, stdout = "bad", stderr = "" }
 		Test.raises("invalid JSON", client.identity)
-		rt.exec = function()
-			return { code = 0, stdout = "{}", stderr = "" }
-		end
+		state.exec_result.stdout = "{}"
 		Test.raises("remote server", client.identity)
 	end
 )
@@ -2232,24 +2245,19 @@ end)
 Test.test("workers Rex resolution schema errors and bounded event frames", function()
 	local rt, state = fake()
 	local rex = require("orc.rex")
-	local old_path = vim.fn.exepath
-	local ok, err = xpcall(function()
-		vim.fn.exepath = function()
-			return "/fixture/rex"
-		end
+	local executable = "/fixture/rex"
+	Test.replace(vim.fn, "exepath", function()
+		return executable
+	end, function()
 		Test.eq(rex.resolve(rt), "/fixture/rex")
-		vim.fn.exepath = function()
-			return ""
-		end
+		executable = ""
 		local old_exists = rt.exists
 		rt.exists = function()
 			return false
 		end
 		Test.eq(rex.resolve(rt), "rex")
 		rt.exists = old_exists
-	end, debug.traceback)
-	vim.fn.exepath = old_path
-	assert(ok, err)
+	end)
 	local client = rex.new(rt)
 	local exit
 	client.watch("s", function() end, function(result)
@@ -2274,18 +2282,12 @@ Test.test("workers Rex resolution schema errors and bounded event frames", funct
 		'{"endpoint":"unix:///x"}',
 		'{"endpoint":"unix:///x","host_id":"h"}',
 	}) do
-		rt.exec = function()
-			return { code = 0, stdout = response, stderr = "" }
-		end
+		state.exec_result = { code = 0, signal = 0, stdout = response, stderr = "" }
 		Test.raises("rex:", client.identity)
 	end
-	rt.exec = function()
-		return { code = 127, stdout = "", stderr = "" }
-	end
+	state.exec_result = { code = 127, signal = 0, stdout = "", stderr = "" }
 	Test.raises("command failed", client.identity)
-	rt.exec = function()
-		return { code = 0, stdout = "{}", stderr = "" }
-	end
+	state.exec_result = { code = 0, signal = 0, stdout = "{}", stderr = "" }
 	Test.eq(client.call("example"), vim.empty_dict())
 	Test.eq(client.block("s", "b", "example", {}), vim.empty_dict())
 end)
@@ -2379,9 +2381,7 @@ Test.test("workers hook boot ordering validates block identity and ignores stale
 	Test.eq(workers.event(hook_rt, rt.encode({ hook_event_name = "unknown" })).code, 0)
 	Test.eq(workers.event(hook_rt, { hook_event_name = "Stop" }).code, 0)
 	Test.eq(workers.event(hook_rt, { hook_event_name = "UserPromptSubmit" }).code, 0)
-	Test.raises("invalid hook", function()
-		workers.event(hook_rt, false)
-	end)
+	Test.raises("invalid hook", workers.event, hook_rt, false)
 	hook_rt.env.REX_BLOCK = "other"
 	Test.raises("block identity", function()
 		workers.event(hook_rt, {})
@@ -2389,13 +2389,13 @@ Test.test("workers hook boot ordering validates block identity and ignores stale
 	hook_rt.env.REX_BLOCK = "block:worker"
 	record.blockId = nil
 	state.store(record)
-	state.onSleep = function()
+	state.on_sleep(function()
 		if state.clock > 10000 then
 			record.blockId = "block:worker"
 			state.store(record)
-			state.onSleep = nil
+			state.on_sleep(nil)
 		end
-	end
+	end)
 	Test.eq(
 		workers.event(
 			hook_rt,
@@ -2540,20 +2540,21 @@ Test.test(
 	function()
 		local rt, state = fake()
 		state.start()
-		local tick, previous_event, previous_exit = 0
-		state.onSleep = function()
+		local tick = 0
+		local previous_event, previous_exit
+		state.on_sleep(function()
 			tick = tick + 1
 			if tick == 1 then
 				previous_event, previous_exit = state.onEvent, state.onExit
-				previous_exit()
+				assert(previous_exit)({ code = 0, signal = 0, stdout = "", stderr = "" })
 			elseif tick == 2 then
 				previous_event('{"type":"old"}\n')
-				previous_exit()
+				assert(previous_exit)({ code = 0, signal = 0, stdout = "", stderr = "" })
 				local record = state.record()
 				record.state = "closed"
 				state.store(record)
 			end
-		end
+		end)
 		Test.eq(state.run("wait", { "--timeout", "1000" }).result.state, "closed")
 		Test.eq(state.streams, 2)
 		Test.eq(state.stopped, 2)
@@ -2563,9 +2564,9 @@ Test.test(
 		Test.eq(other.run("wait", { "--timeout", "0" }).code, 1)
 		local missing_rt, missing = fake()
 		missing.start()
-		missing.onSleep = function()
+		missing.on_sleep(function()
 			missing_rt.remove(missing.file())
-		end
+		end)
 		Test.eq(missing.run("wait", { "--timeout", "500" }).code, 1)
 		assert(rt.exists(rt.cwd))
 	end
@@ -2677,16 +2678,16 @@ Test.test("workers older permission event cannot overwrite a newer Stop event", 
 	local _, state = fake()
 	state.ack = true
 	state.start()
-	state.onLock = function()
+	state.on_lock(function()
 		state.hook("Stop")
 		Test.eq(state.record().state, "idle")
-	end
+	end)
 	state.hook("PermissionRequest")
 	Test.eq(state.record().state, "idle")
 	Test.eq(state.record().acknowledged, true)
-	state.onLock = function()
+	state.on_lock(function()
 		state.hook("UserPromptSubmit", { prompt = "manual newer work" })
-	end
+	end)
 	state.hook("Stop")
 	Test.eq(state.record().state, "working")
 end)
@@ -2807,8 +2808,8 @@ Test.test(
 			state.start()
 			state.hook("Stop")
 			state.native = "idle"
-			state.onLock = function()
-				state.onLock = function()
+			state.on_lock(function()
+				state.on_lock(function()
 					if change == "permission" then
 						state.hook("PermissionRequest")
 					elseif change == "missing" then
@@ -2826,8 +2827,8 @@ Test.test(
 						end
 						state.store(record)
 					end
-				end
-			end
+				end)
+			end)
 			local result = state.run("prompt", { "--text", "must fail before paste" })
 			Test.eq(result.code, 1)
 			assert(result.result.stderr:find("authorization changed before paste", 1, true))
@@ -3115,11 +3116,11 @@ Test.test("workers pause interrupts with Esc so prompt can resume the ended turn
 	local _, state = fake()
 	state.start()
 	state.hook("UserPromptSubmit")
-	state.onSleep = function()
+	state.on_sleep(function()
 		if state.enter == "\27" then
 			state.native = "idle"
 		end
-	end
+	end)
 	local paused = state.run("pause")
 	Test.eq(paused.result.status, "paused")
 	Test.eq(paused.result.state, "turn-ended-no-report")
@@ -3156,10 +3157,10 @@ Test.test("workers pause records a manual Esc and refuses dialogs or a busy prog
 	local _, permission = fake()
 	permission.start()
 	permission.hook("UserPromptSubmit")
-	permission.onSleep = function()
-		permission.onSleep = nil
+	permission.on_sleep(function()
+		permission.on_sleep(nil)
 		permission.hook("PermissionRequest")
-	end
+	end)
 	Test.eq(permission.run("pause").result.status, "not-paused")
 	Test.eq(permission.record().hookState, "blocked")
 	local _, exec = fake()
@@ -3187,7 +3188,7 @@ Test.test("workers report wait follows a queued run and returns every run's repo
 		local first = state.record()
 		rt.write(rt.cwd .. "/addendum.md", "Also cover the edge case")
 		local queued, step = nil, 0
-		state.onSleep = function()
+		state.on_sleep(function()
 			step = step + 1
 			if step == 1 then
 				queued = state.run("prompt", { "--queue", "--file", rt.cwd .. "/addendum.md" }).result
@@ -3210,10 +3211,10 @@ Test.test("workers report wait follows a queued run and returns every run's repo
 				state.native = "idle"
 			end
 			state.onEvent('{"type":"block_event"}\n')
-		end
+		end)
 		local response = state.run("wait", { "--until", "report", "--timeout", "10000" })
 		Test.eq(response.code, 0)
-		Test.eq(response.result.runId, queued.runId)
+		Test.eq(response.result.runId, assert(queued).runId)
 		Test.eq(response.result.state, "idle")
 		Test.eq(response.result.evidence, true)
 		Test.eq(response.result.status, "done")
@@ -3235,7 +3236,7 @@ Test.test("workers report wait follows a plain prompt and restarts the no-report
 	state.native = "idle"
 	local first = state.record().runId
 	local prompted, reported = nil, false
-	state.onSleep = function()
+	state.on_sleep(function()
 		if not prompted and state.clock >= 290000 then
 			prompted = state.run("prompt", { "--text", "write the report" }).result
 			Test.eq(prompted.status, "unconfirmed")
@@ -3248,9 +3249,9 @@ Test.test("workers report wait follows a plain prompt and restarts the no-report
 			state.report()
 			state.onEvent('{"type":"block_event"}\n')
 		end
-	end
+	end)
 	local response = state.run("wait", { "--until", "report", "--timeout", "900000" })
-	Test.eq(response.result.runId, prompted.runId)
+	Test.eq(response.result.runId, assert(prompted).runId)
 	Test.eq(response.result.evidence, true)
 	Test.eq(response.result.previousRuns[1].runId, first)
 	assert(state.clock >= 400000 and state.clock < 590000)
@@ -3261,14 +3262,14 @@ Test.test("workers wait follows a run replaced during its own snapshot", functio
 	state.start()
 	state.hook("UserPromptSubmit")
 	local first = state.record().runId
-	state.onSleep = function()
-		state.onSleep = nil
+	state.on_sleep(function()
+		state.on_sleep(nil)
 		-- The queued prompt lands while the waiter holds a stale snapshot of the first run.
-		state.onLock = function()
+		state.on_lock(function()
 			Test.eq(state.run("prompt", { "--queue", "--text", "later" }).result.status, "queued")
-		end
+		end)
 		state.onEvent('{"type":"block_event"}\n')
-	end
+	end)
 	local response = state.run("wait", { "--until", "report", "--timeout", "1000" })
 	Test.eq(response.code, 0)
 	Test.eq(response.result.state, "timeout")
@@ -3287,16 +3288,16 @@ Test.test(
 		local first = state.record().runId
 		local followup_at = 65000
 		local followup
-		state.onSleep = function()
+		state.on_sleep(function()
 			if state.clock == followup_at then
-				state.onLock = function()
+				state.on_lock(function()
 					followup = state.run("prompt", { "--text", "later" }).result
 					Test.eq(followup.status, "unconfirmed")
 					Test.eq(followup.sent, true)
-				end
+				end)
 				state.onEvent('{"type":"block_event"}\n')
 			end
-		end
+		end)
 		local response = state.run("wait", { "--until", "report", "--timeout", "130000" }).result
 		Test.eq(response.state, "unacknowledged")
 		Test.eq(response.runId, followup.runId)
@@ -3331,13 +3332,13 @@ Test.test(
 		local queued = state.run("prompt", { "--queue", "--text", "later" }).result
 		Test.eq(queued.status, "queued")
 		local turn_end = 75000
-		state.onSleep = function()
+		state.on_sleep(function()
 			if state.clock == turn_end then
 				state.hook("Stop")
 				state.native = "idle"
 				state.onEvent('{"type":"block_event"}\n')
 			end
-		end
+		end)
 		local response = state.run("wait", { "--until", "report", "--timeout", "150000" }).result
 		Test.eq(response.state, "unacknowledged")
 		Test.eq(response.runId, queued.runId)
@@ -3353,12 +3354,12 @@ for _, failure in ipairs({ "statusFail", "processFail" }) do
 		state.start()
 		state.hook("UserPromptSubmit")
 		Test.eq(state.run("prompt", { "--queue", "--text", "later" }).result.status, "queued")
-		state.onSleep = function()
+		state.on_sleep(function()
 			if state.clock == 10000 then
-				state[failure] = true
+				state.statusFail, state.processFail = failure == "statusFail", failure == "processFail"
 				state.onEvent('{"type":"block_event"}\n')
 			end
-		end
+		end)
 		local response = state.run("wait", { "--until", "report", "--timeout", "120000" })
 		Test.eq(response.result.state, "timeout")
 		Test.eq(state.clock, 120000)
@@ -3374,13 +3375,13 @@ for _, mode in ipairs({ "plain", "report" }) do
 			state.hook("UserPromptSubmit")
 			local queued = state.run("prompt", { "--queue", "--text", "later" }).result
 			Test.eq(queued.status, "queued")
-			state.onSleep = function()
+			state.on_sleep(function()
 				if state.clock == 10000 then
 					state.hook("Stop")
 					state.noRecords = true
 					state.onEvent('{"type":"block_event"}\n')
 				end
-			end
+			end)
 			local args = { "--timeout", "600000" }
 			if mode == "report" then
 				vim.list_extend(args, { "--until", "report" })
@@ -3426,19 +3427,19 @@ Test.test("workers wait failures are JSON with a state and hint, never a traceba
 		Test.eq(response.result.stderr:find("stack traceback", 1, true), nil)
 		return response.result.stderr
 	end
-	state.onSleep = function()
-		state.onSleep = nil
+	state.on_sleep(function()
+		state.on_sleep(nil)
 		state.instance = "restarted"
 		state.onEvent('{"type":"block_event"}\n')
-	end
+	end)
 	local restarted = failed(state.run("wait", { "--until", "report", "--timeout", "1000" }))
 	assert(restarted:find("Rex server identity changed", 1, true))
 	state.instance = "instance"
 	local file = state.file()
-	state.onSleep = function()
-		state.onSleep = nil
+	state.on_sleep(function()
+		state.on_sleep(nil)
 		rt.remove(file)
-	end
+	end)
 	assert(failed(state.run("wait", { "--timeout", "1000" })):find("record disappeared", 1, true))
 	assert(failed(state.run("wait")):find("worker not found", 1, true))
 	Test.eq(state.run("close").result.state, nil)
@@ -3688,21 +3689,21 @@ Test.test("workers review pin and hook or snapshot writes preserve each other's 
 	local first = { "--review", ".scratch/first.md" }
 	local second = { "--review", ".scratch/second.md" }
 	local third = { "--review", ".scratch/third.md" }
-	state.onLock = function()
+	state.on_lock(function()
 		state.hook("PermissionRequest")
-	end
+	end)
 	Test.eq(state.run("review-begin", first).code, 0)
 	Test.eq(state.record().hookState, "blocked")
 	Test.eq(state.record().reviewPin.report, rt.abspath(first[2]))
-	state.onLock = function()
+	state.on_lock(function()
 		Test.eq(state.run("review-begin", second).code, 0)
-	end
+	end)
 	state.hook("Stop")
 	Test.eq(state.record().hookState, "idle")
 	Test.eq(state.record().reviewPin.report, rt.abspath(second[2]))
-	state.onLock = function()
+	state.on_lock(function()
 		Test.eq(state.run("review-begin", third).code, 0)
-	end
+	end)
 	workers.collect(rt)
 	Test.eq(state.record().reviewPin.report, rt.abspath(third[2]))
 end)
@@ -3919,11 +3920,11 @@ Test.test("workers accept Rex terminals that set REX_BLOCK without REX_SESSION",
 	Test.eq(record.sessionId, "session:resolved")
 	local launched = false
 	for _, call in ipairs(state.calls) do
-		launched = launched or (call.opts.stdin or ""):find("REX_SESSION=session:resolved", 1, true)
+		launched = launched
+			or (call.opts.stdin or ""):find("REX_SESSION=session:resolved", 1, true) ~= nil
 	end
 	assert(launched, "worker launch env must carry the resolved REX_SESSION")
-	rt.env.REX_SESSION = false
-	local ok = state.hook("UserPromptSubmit")
+	local ok = state.hook("UserPromptSubmit", nil, { REX_SESSION = false })
 	Test.eq(ok.code, 0)
 	Test.eq(state.record().acknowledged, true)
 	local function hook_env(env)

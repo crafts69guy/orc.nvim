@@ -38,7 +38,6 @@ local function fixture(exercise)
 			state.reply(first + 2, "null")
 		end
 	end
-	local previous, preload = {}, {}
 	local modules = {
 		["snacks.picker"] = {
 			pick = function(opts)
@@ -81,13 +80,11 @@ local function fixture(exercise)
 		},
 	}
 	for key, module in pairs(modules) do
-		previous[key], preload[key] = package.loaded[key], package.preload[key]
-		package.loaded[key] = module
+		Test.replace(package.loaded, key, module)
 	end
-	local notify = vim.notify
-	vim.notify = function(message)
+	Test.replace(vim, "notify", function(message)
 		state.notices[#state.notices + 1] = message
-	end
+	end)
 	function state.open(opts)
 		local handle = require("orc.projects").open(rt, opts)
 		state.reply(1, path .. "\n")
@@ -99,10 +96,6 @@ local function fixture(exercise)
 	end, debug.traceback)
 	if state.buffer and vim.api.nvim_buf_is_valid(state.buffer) then
 		vim.api.nvim_buf_delete(state.buffer, { force = true })
-	end
-	vim.notify = notify
-	for key, value in pairs(modules) do
-		package.loaded[key], package.preload[key] = previous[key], preload[key]
 	end
 	assert(ok, err)
 end
@@ -196,10 +189,10 @@ Test.test(
 	"projects reports missing dependencies listing failures and empty GHQ without creating sessions",
 	function()
 		fixture(function(rt, state)
-			package.loaded["snacks.picker"] = nil
-			package.preload["snacks.picker"] = function()
+			Test.replace(package.loaded, "snacks.picker", nil)
+			Test.replace(package.preload, "snacks.picker", function()
 				error("missing")
-			end
+			end)
 			require("orc.projects").open(rt)
 			assert(state.notices[1]:find("Snacks.nvim is required", 1, true))
 			Test.eq(#state.calls, 0)
@@ -286,7 +279,8 @@ Test.test(
 			end)
 			assert(result:find("absolute", 1, true))
 			Test.eq(#state.calls, 0)
-			client.focus({}, function(_, err)
+			local invalid_target = rt.decode("{}")
+			client.focus(invalid_target, function(_, err)
 				result = err
 			end)
 			assert(result:find("identity and session", 1, true))
@@ -334,18 +328,17 @@ Test.test(
 	function()
 		for _, blocked in ipairs({ false, true }) do
 			fixture(function(rt, state)
-				local old_cmd, old_schedule = vim.cmd, vim.schedule
 				local quit, scheduled = 0, {}
-				vim.cmd = function(command)
+				local restore_cmd = Test.replace(vim, "cmd", function(command)
 					assert(command == "qa")
 					if blocked then
 						error("E37: No write since last change")
 					end
 					quit = quit + 1
-				end
-				vim.schedule = function(fn)
+				end)
+				local restore_schedule = Test.replace(vim, "schedule", function(fn)
 					scheduled[#scheduled + 1] = fn
-				end
+				end)
 				local ok, err = xpcall(function()
 					require("orc.projects").open(rt, { quit_on_close = true })
 					state.reply(1, "", 1, "ghq offline")
@@ -364,14 +357,15 @@ Test.test(
 						assert(state.notices[2]:find("save modified buffers", 1, true))
 					end
 				end, debug.traceback)
-				vim.cmd, vim.schedule = old_cmd, old_schedule
+				restore_schedule()
+				restore_cmd()
 				assert(ok, err)
 			end)
 		end
 		fixture(function(rt, state)
-			package.loaded["snacks.picker"].pick = function()
+			Test.replace(package.loaded["snacks.picker"], "pick", function()
 				error("picker failure")
-			end
+			end)
 			require("orc.projects").open(rt)
 			state.reply(1, state.path .. "\n")
 			assert(state.notices[1]:find("Snacks picker failed", 1, true))
@@ -379,10 +373,10 @@ Test.test(
 		fixture(function(rt, state)
 			local user = vim.api.nvim_create_buf(true, false)
 			local window
-			package.loaded["snacks.picker"].pick = function()
+			Test.replace(package.loaded["snacks.picker"], "pick", function()
 				window = vim.api.nvim_open_win(user, false, { split = "below" })
 				error("partial picker")
-			end
+			end)
 			require("orc.projects").open(rt)
 			state.reply(1, state.path .. "\n")
 			assert(not vim.api.nvim_win_is_valid(window) and vim.api.nvim_buf_is_valid(user))
@@ -425,21 +419,20 @@ Test.test(
 					return buffer
 				end
 				local before = modified("unsaved user text")
-				local old_cmd, old_schedule = vim.cmd, vim.schedule
-				vim.cmd = function(command)
+				local restore_cmd = Test.replace(vim, "cmd", function(command)
 					assert(command == "qa")
 					error("modified buffers")
-				end
-				vim.schedule = function(fn)
+				end)
+				local restore_schedule = Test.replace(vim, "schedule", function(fn)
 					fn()
-				end
+				end)
 				local handle
 				local ok, err = xpcall(function()
 					if scenario == "missing" then
-						package.loaded["snacks.picker"] = nil
-						package.preload["snacks.picker"] = function()
+						Test.replace(package.loaded, "snacks.picker", nil)
+						Test.replace(package.preload, "snacks.picker", function()
 							error("missing")
-						end
+						end)
 					end
 					state.show, state.partialFailure = scenario == "partial", scenario == "partial"
 					handle = require("orc.projects").open(rt, { quit_on_close = true })
@@ -483,7 +476,8 @@ Test.test(
 				if handle then
 					handle.stop()
 				end
-				vim.cmd, vim.schedule = old_cmd, old_schedule
+				restore_schedule()
+				restore_cmd()
 				for _, window in ipairs(windows) do
 					if vim.api.nvim_win_is_valid(window) then
 						vim.api.nvim_win_close(window, true)
@@ -503,18 +497,18 @@ Test.test(
 
 Test.test("projects popup diagnostic closes cleanly with :q instead of mappings", function()
 	fixture(function(rt, state)
-		local old_cmd, old_schedule = vim.cmd, vim.schedule
+		local old_cmd = vim.cmd
 		local quit = 0
-		vim.cmd = function(command)
+		local restore_cmd = Test.replace(vim, "cmd", function(command)
 			if command == "qa" then
 				quit = quit + 1
 				return
 			end
 			return old_cmd(command)
-		end
-		vim.schedule = function(fn)
+		end)
+		local restore_schedule = Test.replace(vim, "schedule", function(fn)
 			fn()
-		end
+		end)
 		local ok, err = xpcall(function()
 			require("orc.projects").open(rt, { quit_on_close = true })
 			state.reply(1, "", 1, "ghq offline")
@@ -523,7 +517,8 @@ Test.test("projects popup diagnostic closes cleanly with :q instead of mappings"
 			assert(not vim.api.nvim_buf_is_valid(diagnostic))
 			Test.eq(quit, 1)
 		end, debug.traceback)
-		vim.cmd, vim.schedule = old_cmd, old_schedule
+		restore_schedule()
+		restore_cmd()
 		assert(ok, err)
 	end)
 end)

@@ -60,7 +60,9 @@ Details: [architecture](docs/architecture.md) · [Rex integration](docs/rex-inte
 - Optional: [ghq](https://github.com/x-motemen/ghq) and
   [snacks.nvim](https://github.com/folke/snacks.nvim) for `:Orc projects`;
   curl for the Inkdrop local-server integration.
-- Development: StyLua 2.6 and Neovim's Lua Tree-sitter parser.
+- Development: StyLua 2.6, lua-language-server 3.19.2 and Neovim's Lua Tree-sitter parser.
+  The LuaLS check is verified with LuaLS 3.19.2 and Neovim 0.12.6. Neovim's runtime
+  supplies the `vim` types, so upgrading either can add diagnostics without a code change.
 
 ## Installation
 
@@ -326,6 +328,13 @@ nvim --clean -l test/run.lua
 nvim --clean -l test/run.lua --coverage
 nvim --clean -l scripts/gen-agents.lua --check
 stylua --check lua test scripts bin/orc plugin evals
+env -u VIMRUNTIME sh -c '
+lua_ls_dir=$(mktemp -d "${TMPDIR:-/tmp}/orc-luals.XXXXXX") &&
+trap "rm -rf -- \"\$lua_ls_dir\"" EXIT &&
+VIMRUNTIME=$(env -u VIMRUNTIME nvim --clean --headless +"lua io.write(vim.env.VIMRUNTIME)" +qa) &&
+VIMRUNTIME="$VIMRUNTIME" lua-language-server --check . --checklevel=Warning \
+  --metapath="$lua_ls_dir/meta" --logpath="$lua_ls_dir/log"
+'
 ```
 
 Tests use fake process/network adapters and temporary repositories; they never
@@ -342,12 +351,18 @@ review. For this project's validation, the recommended configuration is:
 
 ```toml
 [pre-merge]
-validate = """
+validate = '''
 orc gate --label orc-pre-merge -- sh -c '
 nvim --clean -l test/run.lua --coverage &&
 nvim --clean -l scripts/gen-agents.lua --check &&
-stylua --check lua test scripts bin/orc plugin evals'
-"""
+stylua --check lua test scripts bin/orc plugin evals &&
+lua_ls_dir=$(mktemp -d "${TMPDIR:-/tmp}/orc-luals.XXXXXX") &&
+trap "rm -rf -- \"\$lua_ls_dir\"" EXIT &&
+VIMRUNTIME=$(env -u VIMRUNTIME nvim --clean --headless +"lua io.write(vim.env.VIMRUNTIME)" +qa) &&
+VIMRUNTIME="$VIMRUNTIME" lua-language-server --check . --checklevel=Warning \
+  --metapath="$lua_ls_dir/meta" --logpath="$lua_ls_dir/log"
+'
+'''
 
 [pre-start]
 copy = "wt step copy-ignored"
