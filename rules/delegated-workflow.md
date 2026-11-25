@@ -51,9 +51,13 @@
   Save the reviewer's output there and read the verdict before passing that same
   path to `orc pane close --review`. See dispatch's Rex reference for details.
 - For cross-vendor review of Codex implementation from a Claude orchestrator, use
-  a native `orc:reviewer`. For Claude implementation or a second opinion, run
-  `codex --no-daemon review --uncommitted` in the task checkout using the harness's
-  background execution. Save stdout and stderr under `.scratch/<feature>/`.
+  a native `orc:reviewer`. For Claude implementation or a second opinion, write the
+  brief, acceptance criteria and "review `git diff`, end with a verdict" to a prompt
+  file, then run `codex --no-daemon -a never exec --ephemeral --sandbox read-only
+  --ignore-rules -o <report> - < <prompt-file>` in the task checkout using the
+  harness's background execution. `codex review --uncommitted` rejects a custom
+  prompt, so it cannot carry the brief. Save stdout and stderr under
+  `.scratch/<feature>/`.
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex
   reference for the Claude review command. Give reviewers the fresh diff, brief
   and acceptance criteria. Rerun safe, reviewer-bounded `proven` commands and treat

@@ -81,7 +81,9 @@ reports with a plain `Run:` and `Status:` header, validation evidence, and a
 later plain or Markdown-quoted pair with a different run or status. It counts
 `missedKnownBugs` and `incorrectActionableBlockers` independently. Findings
 outside that quoted-header case count as `ungradedFindings`. Missing or malformed
-reviewer output is a failed or unavailable run.
+reviewer output is a failed or unavailable run. The prompt forbids Markdown
+fences, and fenced output stays malformed: in a 2026-11-25 Opus A/B under the
+earlier wording, 15 of 20 replies wrapped the array in a fence.
 
 For an opt-in comparison, use an explicitly approved model budget and
 authenticated Claude and Codex CLIs. Treat the candidate as Claude-authored.

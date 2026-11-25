@@ -127,11 +127,11 @@ header and its non-empty Validation section. Supported statuses are done,
 partial and blocked. The parser returns run, status and validation, which
 the worker uses to decide whether its current run has acceptable evidence.
 
-Return only a JSON array of actionable blockers, or [] if none. For each blocker
-provide four string fields: description (the concrete consequence), report
-(a complete example input with non-empty Validation), expectedRun and
-expectedStatus (the values that report should produce). Use only the supplied
-diff and contract.
+Return only a JSON array of actionable blockers, or [] if none, with no Markdown
+code fence or other text around it. For each blocker provide four string
+fields: description (the concrete consequence), report (a complete example
+input with non-empty Validation), expectedRun and expectedStatus (the values
+that report should produce). Use only the supplied diff and contract.
 
 --- a/lua/orc/workers.lua
 +++ b/lua/orc/workers.lua
