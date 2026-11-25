@@ -81,7 +81,7 @@ local function panes_enabled(rt, flags)
 	if flags.pair then
 		return false
 	end
-	return (rt.env.REX_SESSION or "") ~= "" and (rt.env.REX_BLOCK or "") ~= ""
+	return (rt.env.REX_BLOCK or "") ~= ""
 end
 
 local function launch(rt, kind, argv)
@@ -97,7 +97,7 @@ local function launch(rt, kind, argv)
 	)
 	assert(not flags.pair or kind == "claude", "--pair requires a Claude orchestrator")
 	if flags.pair or flags.panes then
-		assert(rt.env.REX_SESSION and rt.env.REX_BLOCK, "orc: pair/pane mode needs a Rex terminal")
+		assert((rt.env.REX_BLOCK or "") ~= "", "orc: pair/pane mode needs a Rex terminal")
 	end
 	local cwd = rt.cwd
 	if flags.wt then
@@ -110,6 +110,10 @@ local function launch(rt, kind, argv)
 		flags = flags,
 		args = rest,
 	})
+	if flags.pair then
+		-- The SessionStart hook cannot call Rex, so resolve the session here.
+		launch.env.REX_SESSION = require("orc.rex").session(rt)
+	end
 	return { code = rt.interactive(launch.argv, { cwd = launch.cwd, env = launch.env }), out = "" }
 end
 

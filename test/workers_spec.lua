@@ -121,6 +121,7 @@ local function fake()
 				endpoint = state.endpoint or "unix:///fixture",
 				host_id = state.host or "host",
 				instance_id = state.instance or "instance",
+				session_id = state.whoamiSession,
 			})
 		elseif argv[2] == "api" then
 			local method = argv[4] == "-s" and argv[6] or argv[4]
@@ -3758,4 +3759,49 @@ Test.test("workers review gate skips scopers exec workers and blocked reviews", 
 	Test.eq(state.run("close").result.status, "not-reviewed")
 	Test.eq(state.run("prompt", { "--text", "retry" }).result.sent, true)
 	Test.eq(state.record().reviewed, nil)
+end)
+
+Test.test("workers accept Rex terminals that set REX_BLOCK without REX_SESSION", function()
+	local rt, state = fake()
+	rt.env.REX_SESSION = nil
+	state.whoamiSession = "session:resolved"
+	Test.eq(state.start().code, 0)
+	local record = state.record()
+	Test.eq(record.sessionId, "session:resolved")
+	local launched = false
+	for _, call in ipairs(state.calls) do
+		launched = launched or (call.opts.stdin or ""):find("REX_SESSION=session:resolved", 1, true)
+	end
+	assert(launched, "worker launch env must carry the resolved REX_SESSION")
+	rt.env.REX_SESSION = false
+	local ok = state.hook("UserPromptSubmit")
+	Test.eq(ok.code, 0)
+	Test.eq(state.record().acknowledged, true)
+	local function hook_env(env)
+		return vim.tbl_extend("force", {}, rt, {
+			env = vim.tbl_extend(
+				"force",
+				{},
+				rt.env,
+				{ ORC_ROLE = "implementer", ORC_WORKER_FILE = state.file() },
+				env
+			),
+		})
+	end
+	Test.raises("block identity", function()
+		workers.event(hook_env({ REX_BLOCK = "block:other" }), { hook_event_name = "Stop" })
+	end)
+	Test.raises("block identity", function()
+		workers.event(
+			hook_env({ REX_BLOCK = record.blockId, REX_SESSION = "session:wrong" }),
+			{ hook_event_name = "Stop" }
+		)
+	end)
+	Test.eq(
+		workers.event(
+			hook_env({ REX_BLOCK = record.blockId, REX_SESSION = record.sessionId }),
+			{ hook_event_name = "Stop" }
+		).code,
+		0
+	)
 end)

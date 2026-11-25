@@ -5,14 +5,43 @@ local M = {}
 ---@return string executable
 function M.resolve(rt)
 	local binary = vim.fn.exepath("rex")
-	local bundled = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
-	return binary ~= "" and binary or rt.exists(bundled) and bundled or "rex"
+	if binary ~= "" then
+		return binary
+	end
+	for _, app in ipairs({ "Rex", "Rex Beta" }) do
+		local bundled = "/Applications/"
+			.. app
+			.. ".app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
+		if rt.exists(bundled) then
+			return bundled
+		end
+	end
+	return "rex"
+end
+
+---Session of the current Rex terminal: REX_SESSION when set, else the session
+---`rex whoami` reports for REX_BLOCK (newer Rex no longer exports REX_SESSION).
+---@param rt orc.Runtime
+---@param identity? {session_id?:string} Already-read whoami reply, to avoid a second call.
+---@return string session
+function M.session(rt, identity)
+	local env = rt.env.REX_SESSION
+	if type(env) == "string" and env ~= "" then
+		return env
+	end
+	identity = identity or M.new(rt).identity()
+	assert(
+		type(identity.session_id) == "string" and identity.session_id ~= "",
+		"rex: cannot resolve the session from REX_BLOCK"
+	)
+	return identity.session_id
 end
 
 ---@class orc.RexIdentity
 ---@field host_id string Server host identity.
 ---@field instance_id string Current server process identity.
 ---@field endpoint string Local Unix socket URI.
+---@field session_id? string Session of the calling terminal.
 
 ---@class orc.RexTarget
 ---@field session_id string Session to focus.

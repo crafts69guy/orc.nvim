@@ -695,6 +695,12 @@ local function start_result(rt, record)
 	})
 end
 
+---Hooks cannot call Rex, so REX_SESSION is compared only when the terminal sets it.
+local function session_matches(rt, record)
+	local session = rt.env.REX_SESSION
+	return not session or session == "" or session == record.sessionId
+end
+
 -- Rex's create RPC alone can take ten seconds before reconciliation begins.
 local function launch_deadline(rt, record)
 	return rt.clock() + (record.launchLabel and 60000 or 5000)
@@ -722,7 +728,7 @@ local function start(rt, feature, task, values, file)
 	end
 	local client = require("orc.rex").new(rt)
 	local identity = client.identity()
-	assert(rt.env.REX_SESSION and rt.env.REX_SESSION ~= "", "orc pane: start needs a Rex session")
+	local session = require("orc.rex").session(rt, identity)
 	local kind = values.kind or "codex"
 	assert(kind == "claude" or kind == "codex", "orc pane: kind must be claude or codex")
 	local role = values.role or "implementer"
@@ -753,7 +759,7 @@ local function start(rt, feature, task, values, file)
 		role = role,
 		level = rt.env.ORC_LEVEL or "default",
 		mcp = values.mcp or {},
-		sessionId = rt.env.REX_SESSION,
+		sessionId = session,
 		hostId = identity.host_id,
 		instanceId = identity.instance_id,
 		brief = brief,
@@ -780,6 +786,8 @@ local function start(rt, feature, task, values, file)
 		workerFile = file,
 		prompt = prompt_text(rt, record, "Your brief: " .. brief .. "."),
 	})
+	-- Already-installed hook copies still require REX_SESSION, which new Rex no longer exports.
+	launch.env.REX_SESSION = session
 	require("orc.worktrees").ignore(rt, path)
 	if values.here and role == "implementer" then
 		assert(rt.env.REX_BLOCK, "orc pane: --here needs REX_BLOCK")
@@ -1074,7 +1082,7 @@ function M.worker_run(rt, file)
 	assert(
 		record.state ~= "closed"
 			and type(record.blockId) == "string"
-			and rt.env.REX_SESSION == record.sessionId
+			and session_matches(rt, record)
 			and rt.env.REX_BLOCK == record.blockId,
 		"orc worker: Rex block identity mismatch"
 	)
@@ -1484,7 +1492,7 @@ function M.event(rt, input)
 	)
 	assert(
 		type(record.blockId) == "string"
-			and rt.env.REX_SESSION == record.sessionId
+			and session_matches(rt, record)
 			and rt.env.REX_BLOCK == record.blockId,
 		"orc worker: Rex block identity mismatch"
 	)

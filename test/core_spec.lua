@@ -279,7 +279,8 @@ Test.test(
 				{ env = { ORC_PANES = "0" }, args = { "--panes" }, panes = true },
 				{ env = { ORC_PANES = "1" }, args = { "--no-panes" }, panes = false },
 				{ env = { ORC_PANES = "1" }, args = {}, panes = true },
-				{ env = { REX_SESSION = "" }, args = {}, panes = false },
+				{ env = { REX_SESSION = "" }, args = {}, panes = true },
+				{ env = { REX_SESSION = false }, args = {}, panes = true },
 				{ env = { REX_BLOCK = "" }, args = {}, panes = false },
 			}) do
 				local rt = fake()
@@ -2000,7 +2001,7 @@ Test.test(
 Test.test(
 	"core doctor resolves bundled Rex off PATH for both version and session probes",
 	function()
-		local bundled = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
+		local bundled = "/Applications/Rex.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
 		local rt, exepath = fake(), vim.fn.exepath
 		rt.env.ORC_PANES = "1"
 		rt.files[bundled] = "exists"
@@ -2025,6 +2026,63 @@ Test.test(
 			end
 			Test.eq(checks.rex.status, "pass")
 			Test.eq(checks["rex-session"].status, "pass")
+		end, debug.traceback)
+		vim.fn.exepath = exepath
+		assert(ok, err)
+	end
+)
+
+Test.test(
+	"core Rex resolves its bundled executable, preferring Rex.app over Rex Beta.app",
+	function()
+		local rt, exepath = fake(), vim.fn.exepath
+		local tail = ".app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
+		vim.fn.exepath = function()
+			return ""
+		end
+		local ok, err = xpcall(function()
+			Test.eq(require("orc.rex").resolve(rt), "rex")
+			rt.files["/Applications/Rex Beta" .. tail] = "exists"
+			Test.eq(require("orc.rex").resolve(rt), "/Applications/Rex Beta" .. tail)
+			rt.files["/Applications/Rex" .. tail] = "exists"
+			Test.eq(require("orc.rex").resolve(rt), "/Applications/Rex" .. tail)
+		end, debug.traceback)
+		vim.fn.exepath = exepath
+		assert(ok, err)
+	end
+)
+
+Test.test(
+	"core pair launch resolves REX_SESSION from REX_BLOCK while hooks never call Rex",
+	function()
+		local rt = fake()
+		rt.env.REX_SESSION, rt.env.REX_BLOCK = nil, "block:1"
+		local whoami = 0
+		route(rt, {
+			["rex whoami --json"] = function()
+				whoami = whoami + 1
+				return result(
+					0,
+					rt.encode({
+						endpoint = "unix:///x",
+						host_id = "h",
+						instance_id = "i",
+						session_id = "session:resolved",
+					})
+				)
+			end,
+		})
+		local exepath = vim.fn.exepath
+		vim.fn.exepath = function(name)
+			return name == "rex" and "rex" or exepath(name)
+		end
+		local ok, err = xpcall(function()
+			Test.eq(cli.run(rt, { "claude", "--pair", "prompt" }).code, 0)
+			Test.eq(rt.launched[#rt.launched].options.env.REX_SESSION, "session:resolved")
+			Test.eq(whoami, 1)
+			rt.env.ORC_PAIR = "1"
+			hooks.context(rt)
+			Test.eq(whoami, 1)
 		end, debug.traceback)
 		vim.fn.exepath = exepath
 		assert(ok, err)

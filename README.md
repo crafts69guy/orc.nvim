@@ -161,13 +161,15 @@ reproducible bug fix or new check failing before the change and passing after.
 When a fix round leaves its finding open, the orchestrator records the shared
 assumption of the failed fixes and checks it before the next attempt.
 
-Inside Rex (`REX_SESSION` and `REX_BLOCK` set), pane mode turns on automatically
+Inside Rex (`REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with
 `orc pane start <feature> <task> --path <checkout> --brief <file>`: Codex and
 `--role implementer` are defaults. Use `--role scoper` for read-only scoping or
 `--kind claude` for Claude. Scopers return reports in their final message; the
 Stop hook saves a matching Run report when its file is absent.
+Orc uses a non-empty `REX_SESSION` when present and otherwise resolves the session
+from `REX_BLOCK` with `rex whoami`.
 
 Choose a worker transport with `--transport tui|exec`:
 

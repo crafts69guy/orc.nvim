@@ -253,8 +253,11 @@ function M.context(rt, cwd)
 				"Checkout already has uncommitted changes. Preserve work from other sessions; isolate with `orc wt session <branch>` when ownership is uncertain."
 		end
 		local checkout = require("orc.worktrees").checkout(rt, cwd)
+		local own_session = rt.env.ORC_PAIR == "1"
+			and (rt.env.REX_SESSION or "") ~= ""
+			and rt.env.REX_SESSION
 		for _, worker in ipairs(require("orc.workers").collect(rt, cwd)) do
-			local own_pair = rt.env.ORC_PAIR == "1" and worker.sessionId == rt.env.REX_SESSION
+			local own_pair = own_session and worker.sessionId == own_session
 			local active = worker.role ~= "scoper"
 				and worker.state ~= "closed"
 				and worker.state ~= "exited"
@@ -274,7 +277,7 @@ function M.context(rt, cwd)
 		end
 	end
 	if rt.env.ORC_PAIR == "1" or rt.env.ORC_PANES == "1" then
-		assert(rt.env.REX_SESSION and rt.env.REX_BLOCK, "orc: pair/pane mode needs a Rex terminal")
+		assert((rt.env.REX_BLOCK or "") ~= "", "orc: pair/pane mode needs a Rex terminal")
 		text[#text + 1] = rt.env.ORC_PAIR == "1"
 				and "Pair mode uses one Codex implementer in the selected checkout."
 			or "Pane mode delegates scoping and implementation in Rex."
