@@ -634,12 +634,66 @@ Test.test("evals scores and statistics exclude peeking without hiding error coun
 			meanSeconds = 20,
 			p50Seconds = 20,
 			costUsd = 2,
+			scoreRange = { min = 0.5, max = 1, n = 2 },
+			secondsRange = { min = 10, max = 30, n = 2 },
 		}
 	)
 	Test.eq(eval.arm_stats({}).p50Seconds, vim.NIL)
+	Test.eq(eval.arm_stats({}).scoreRange, vim.NIL)
 	Test.eq(eval.arm_stats({ result_run(1, 5, 2) }).p50Seconds, 5)
 	Test.eq(eval.arm_stats({ { error = "no data" } }).costUsd, vim.NIL)
 end)
+
+Test.test(
+	"evals summaries call deltas inside the run-to-run range no measured difference",
+	function()
+		local function paired(with, without)
+			return { cases = { { name = "c", arms = { with = with, without = without } } } }
+		end
+		local apart = paired(
+			{ result_run(1, 10, 0), result_run(0.9, 12, 0) },
+			{ result_run(0.5, 30, 0), result_run(0.4, 40, 0) }
+		)
+		local rows = eval.summarize(apart)
+		Test.eq({ rows[3].scoreRange, rows[3].secondsRange }, { "separated", "separated" })
+		local text = eval.format_summary(apart)
+		assert(text:find("| 0.90..1.00 |", 1, true) and text:find("| 10..12 |", 1, true), text)
+		assert(not text:find("no measured difference", 1, true), text)
+		-- Touching endpoints overlap: the gap is no larger than the spread.
+		local touching = paired(
+			{ result_run(1, 10, 0), result_run(0.5, 20, 0) },
+			{ result_run(0.5, 20, 0), result_run(0, 30, 0) }
+		)
+		rows = eval.summarize(touching)
+		Test.eq({ rows[3].scoreRange, rows[3].secondsRange }, { "overlap", "overlap" })
+		assert(eval.format_summary(touching):find("no measured difference", 1, true))
+		Test.eq(eval.summarize(sample())[3].scoreRange, "n<2")
+		local mixed = {
+			cases = {
+				{
+					name = "one",
+					arms = { with = { result_run(1, 10, 0) }, without = touching.cases[1].arms.without },
+				},
+				{ name = "blank", arms = { with = apart.cases[1].arms.with, without = { {} } } },
+				{
+					name = "mixed",
+					arms = {
+						with = { result_run(1, 10, 0), result_run(0.9, 30, 0) },
+						without = { result_run(0.5, 20, 0), result_run(0.4, 25, 0) },
+					},
+				},
+			},
+		}
+		local labels = {}
+		for _, row in ipairs(eval.summarize(mixed)) do
+			if row.delta then
+				labels[#labels + 1] = row.scoreRange .. "/" .. row.secondsRange
+			end
+		end
+		Test.eq(labels, { "n<2/n<2", "n<2/n<2", "separated/overlap" })
+		assert(eval.format_summary(mixed):find("no measured difference", 1, true))
+	end
+)
 
 Test.test(
 	"evals summaries render deltas empty arms partial results and new-series caveat",

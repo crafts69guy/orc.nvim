@@ -16,6 +16,10 @@ Lua tasks. Historical JavaScript time/cost deltas are not directly comparable.
 Summarize saved runs with `orc eval summarize [aggregate-result.json]`.
 Reports exclude runs failing no-peek guards from means and include mean/median
 duration, outcome-only score, agent cost, judge cost and paired deltas.
+Arm rows show score and duration ranges (`min..max`). A delta row marks each range
+`separated` only when both arms have at least 2 runs and their ranges do not
+touch; `overlap` and `n<2` mean no measured difference. Use at least 5 runs per
+arm before calling one arm better.
 
 ## Workflow routing boundaries
 

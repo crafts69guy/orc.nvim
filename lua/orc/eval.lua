@@ -421,6 +421,12 @@ local function median(values)
 	local middle = math.floor(#sorted / 2)
 	return #sorted % 2 == 1 and sorted[middle + 1] or (sorted[middle] + sorted[middle + 1]) / 2
 end
+local function spread(values)
+	if #values == 0 then
+		return vim.NIL
+	end
+	return { min = math.min(unpack(values)), max = math.max(unpack(values)), n = #values }
+end
 local function guard(grader)
 	return type(grader.name) == "string" and grader.name:sub(1, 8) == "no-peek-"
 end
@@ -487,13 +493,24 @@ function M.arm_stats(runs)
 		meanSeconds = mean(times),
 		p50Seconds = median(times),
 		costUsd = mean(costs),
+		scoreRange = spread(scores),
+		secondsRange = spread(times),
 	}
 end
 local function delta(a, b)
 	return type(a) == "number" and type(b) == "number" and a - b or vim.NIL
 end
+-- Touching ranges overlap: a gap no larger than the run-to-run spread is noise.
+local function separation(a, b)
+	if type(a) ~= "table" or type(b) ~= "table" or a.n < 2 or b.n < 2 then
+		return "n<2"
+	end
+	return (a.max < b.min or b.max < a.min) and "separated" or "overlap"
+end
 
 ---One row per case/arm, plus a with-minus-without delta for paired arms.
+---Arm rows carry `{min,max,n}` ranges; delta rows label each range
+---`separated`, `overlap` or `n<2`.
 ---@param result table
 ---@return table[]
 function M.summarize(result)
@@ -512,6 +529,9 @@ function M.summarize(result)
 			for _, key in ipairs({ "score", "meanSeconds", "p50Seconds", "costUsd" }) do
 				row[key] = delta(arms.with[key], arms.without[key])
 			end
+			for _, key in ipairs({ "scoreRange", "secondsRange" }) do
+				row[key] = separation(arms.with[key], arms.without[key])
+			end
 			rows[#rows + 1] = row
 		end
 	end
@@ -523,6 +543,12 @@ local function format_number(value, digits, signed)
 	end
 	return (signed and value >= 0 and "+" or "") .. string.format("%." .. digits .. "f", value)
 end
+local function format_range(value, digits)
+	if type(value) ~= "table" then
+		return type(value) == "string" and value or "–"
+	end
+	return format_number(value.min, digits) .. ".." .. format_number(value.max, digits)
+end
 
 ---Render a local report explicitly marked as the new Lua benchmark series.
 ---@param result table
@@ -531,22 +557,31 @@ function M.format_summary(result)
 	local lines = {
 		"Lua benchmark series; establish a new baseline (not comparable to the former JavaScript suite).",
 		"",
-		"| case | arm | runs | invalid | errors | mean score | mean s | p50 s | mean $ |",
-		"|---|---|---|---|---|---|---|---|---|",
+		"| case | arm | runs | invalid | errors | mean score | score range | mean s | p50 s | s range | mean $ |",
+		"|---|---|---|---|---|---|---|---|---|---|---|",
 	}
+	local noisy = false
 	for _, row in ipairs(M.summarize(result)) do
+		noisy = noisy
+			or row.delta and (row.scoreRange ~= "separated" or row.secondsRange ~= "separated")
 		lines[#lines + 1] = string.format(
-			"| %s | %s | %s | %s | %s | %s | %s | %s | %s |",
+			"| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |",
 			row.case,
 			row.arm,
 			row.delta and "" or row.runs,
 			row.delta and "" or row.invalid,
 			row.delta and "" or row.errors,
 			format_number(row.score, 2, row.delta),
+			format_range(row.scoreRange, 2),
 			format_number(row.meanSeconds, 0, row.delta),
 			format_number(row.p50Seconds, 0, row.delta),
+			format_range(row.secondsRange, 0),
 			format_number(row.costUsd, 2, row.delta)
 		)
+	end
+	if noisy then
+		lines[#lines + 1] =
+			"\nA Δ marked overlap or n<2 is no measured difference; run at least 5 runs per arm before deciding."
 	end
 	local judge = 0
 	for _, case in ipairs(result.cases) do
