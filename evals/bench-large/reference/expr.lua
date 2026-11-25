@@ -72,7 +72,9 @@ local function tokenize(source)
 	return result
 end
 local function parse(tokens)
-	local index, expression = 1, nil
+	local index = 1
+	---@type fun(minimum:integer):table
+	local expression
 	local function expect(value)
 		if tokens[index].value ~= value then
 			fail("SyntaxError", "expected " .. value, tokens[index].position)

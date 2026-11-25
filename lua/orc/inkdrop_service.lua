@@ -20,6 +20,7 @@ end
 local function private(path, kind)
 	local stat = uv.fs_lstat(path)
 	need(stat and stat.type == kind, "private " .. kind .. " is missing or is a symlink")
+	---@cast stat -nil
 	need(
 		stat.uid == uv.getuid() and stat.mode % 64 == 0,
 		"private path has unsafe ownership or permissions"
@@ -568,6 +569,7 @@ local function migrate(rt, flags, paths, data)
 		stat and stat.type == "file" and stat.uid == uv.getuid(),
 		"provider configuration must be a regular user-owned file"
 	)
+	---@cast stat -nil
 	local source = need(rt.read(file), "cannot read provider configuration")
 	local body, after_entry
 	if flags.provider == "claude" then
@@ -680,6 +682,7 @@ local function rollback(rt, flags, paths)
 			stat and stat.type == "file" and stat.uid == uv.getuid(),
 			"provider configuration ownership changed"
 		)
+		---@cast stat -nil
 		local current = need(rt.read(file), "cannot read provider configuration")
 		local hash = vim.fn.sha256(current)
 		local restored

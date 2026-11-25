@@ -24,7 +24,9 @@ end
 ---@param plan string
 ---@return table[]
 function M.parse_tasks(plan)
-	local tasks, section, fence, current = {}, false, false, nil
+	local tasks, section, fence = {}, false, false
+	---@type {id:string|vim.NIL,goal:string|vim.NIL,size:string|vim.NIL,dependsOn:string[]}?
+	local current
 	for line in (plan:gsub("\r\n", "\n") .. "\n"):gmatch("([^\n]*)\n") do
 		if line:match("^## ") then
 			section, fence = line:match("^## Tasks%s*$") ~= nil, false

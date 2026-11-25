@@ -593,7 +593,7 @@ local function pull(rt, feature)
 	local dir = feature_dir(ctx, feature)
 	local link = read_link(ctx, dir)
 	if not link then
-		fail("feature " .. feature .. " has no linked note")
+		return fail("feature " .. feature .. " has no linked note")
 	end
 	local doc = ctx.call("GET", "/" .. link.noteId)
 	intact(doc.body or "", link.noteId)

@@ -309,6 +309,7 @@ function M.plan(rt, request)
 		"orc: exec transport requires a Codex worker"
 	)
 	local flags, args, cwd = request.flags or {}, request.args or {}, request.cwd or rt.cwd
+	---@type table<string,string|false>
 	local env = { ORC = "1", ORC_ROLE = role }
 	if role == "main" then
 		env.ORC_ROLE = ""
@@ -330,6 +331,7 @@ function M.plan(rt, request)
 	if config.paths and config.paths.config then
 		env.ORC_INKDROP_MCP_CONFIG = config.paths.config
 	end
+	---@type string[]
 	local command = { kind }
 	if kind == "codex" then
 		-- Keep hooks and model shell commands in the launch environment, not a shared daemon's.

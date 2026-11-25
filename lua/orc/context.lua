@@ -788,8 +788,9 @@ function M.run(rt, argv)
 	then
 		return { code = 1, out = "", err = USAGE }
 	end
+	local scope = flags.scope --[[@as string?]]
 	local success, data = pcall(function()
-		return M.analyze(collect_sources(rt, project_root(rt, rt.cwd), rt.cwd), flags.scope)
+		return M.analyze(collect_sources(rt, project_root(rt, rt.cwd), rt.cwd), scope)
 	end)
 	if not success then
 		local item = finding("fail", "context", tostring(data))

@@ -364,7 +364,7 @@ local function snapshot(rt, client, record)
 		if got then
 			for _, entry in ipairs(status.records or {}) do
 				local app = entry.effective_app or entry.app or ""
-				local matching_app = app:lower():find(record.kind, 1, true)
+				local matching_app = app:lower():find(record.kind, 1, true) ~= nil
 				if record.transport == "exec" then
 					matching_app = app == "orc"
 				end
@@ -713,7 +713,7 @@ local function launch_deadline(rt, record)
 	return rt.clock() + (record.launchLabel and 60000 or 5000)
 end
 
-local function start(rt, feature, task, values, file)
+local function start(rt, feature, task, values, file, servers)
 	local transport = values.transport or "tui"
 	assert(transport == "tui" or transport == "exec", "orc pane: transport must be tui or exec")
 	assert(
@@ -765,7 +765,7 @@ local function start(rt, feature, task, values, file)
 		transport = transport,
 		role = role,
 		level = rt.env.ORC_LEVEL or "default",
-		mcp = values.mcp or {},
+		mcp = servers or {},
 		sessionId = session,
 		hostId = identity.host_id,
 		instanceId = identity.instance_id,
@@ -886,7 +886,7 @@ local function start(rt, feature, task, values, file)
 	return start_result(rt, record)
 end
 
----@param review? {skill:string,target:string} Frames the run as a read-only review instead.
+---@param review? {skill:string,target:string,baseline?:string}
 local function follow_up(rt, record, values, review)
 	-- shortcut: exec resume needs a new owned block; add it when follow-ups are required.
 	assert(
@@ -1653,19 +1653,22 @@ function M.run(rt, argv)
 			"orc pane: --transport only applies to start"
 		)
 		assert(not values.mcp or command == "start", "orc pane: --mcp only applies to start")
-		if values.mcp then
+		local mcp = values.mcp --[[@as string?]]
+		local servers
+		if mcp then
 			local names = {}
-			for _, name in ipairs(vim.split(values.mcp, ",", { trimempty = true })) do
+			for _, name in ipairs(vim.split(mcp, ",", { trimempty = true })) do
 				name = vim.trim(name)
 				-- Claude allows display names such as "Framelink MCP for Figma".
 				assert(name:match("^[%w_.:-][%w_.: -]*$"), "orc pane: invalid MCP server name " .. name)
 				names[name] = true
 			end
-			values.mcp = vim.tbl_keys(names)
-			table.sort(values.mcp)
+			servers = vim.tbl_keys(names)
+			table.sort(servers)
 		end
-		assert(values.path and values.path ~= "", "orc pane: --path is required")
-		local path = rt.abspath(values.path)
+		local raw_path = values.path --[[@as string?]]
+		assert(raw_path and raw_path ~= "", "orc pane: --path is required")
+		local path = rt.abspath(raw_path)
 		path = vim.uv.fs_realpath(path) or path
 		values.path = path
 		if command == "prune" then
@@ -1702,7 +1705,7 @@ function M.run(rt, argv)
 					pos[1]:match("^[%w_.%-]+$") and not pos[1]:match("^%.+$"),
 					"orc pane: invalid feature"
 				)
-				return start(rt, pos[1], task, values, file)
+				return start(rt, pos[1], task, values, file, servers)
 			end
 			local record = assert(read_record(rt, file), "orc pane: worker not found")
 			if command == "prompt" then

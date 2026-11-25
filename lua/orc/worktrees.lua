@@ -327,10 +327,12 @@ end
 function M.run(rt, argv)
 	local ok, result, code = pcall(function()
 		local flags, pos = parse(argv, { yes = "boolean", message = "string", base = "string" })
+		local yes = flags.yes --[[@as boolean?]]
+		local message = flags.message --[[@as string?]]
 		local command, base, task = pos[1], pos[2], pos[3]
 		assert(base, M.usage)
 		if command == "session" and #pos == 2 then
-			return M.session(rt, base, flags.base, flags.yes), 0
+			return M.session(rt, base, flags.base --[[@as string?]], yes), 0
 		elseif command == "new" and #pos >= 3 then
 			-- Validate every id before creating any, and reuse live task worktrees so a retry is safe.
 			local branches, existing = {}, {}
@@ -358,7 +360,7 @@ function M.run(rt, argv)
 						base,
 						"--no-cd",
 						"--format=json",
-					}, flags.yes)
+					}, yes)
 					local item = rt.decode(checked(rt.exec(cmd)))
 					assert(type(item.path) == "string", "wt switch returned no path")
 					existing[branch], action = item.path, "created"
@@ -376,14 +378,14 @@ function M.run(rt, argv)
 				end
 			end
 			return found, 0
-		elseif command == "merge" and #pos == 3 and flags.message and flags.message ~= "" then
-			return M.merge(rt, base, task, flags.message, flags.yes)
+		elseif command == "merge" and #pos == 3 and message and message ~= "" then
+			return M.merge(rt, base, task, message, yes)
 		elseif command == "apply" and #pos == 3 then
-			return M.apply(rt, base, task, flags.message or ("orc: apply " .. task))
+			return M.apply(rt, base, task, message or ("orc: apply " .. task))
 		elseif command == "remove" and #pos == 3 then
 			local branch = M.branch(base, task)
 			find(rt, branch)
-			checked(rt.exec(options({ "wt", "remove", branch, "--foreground", "-D", "-f" }, flags.yes)))
+			checked(rt.exec(options({ "wt", "remove", branch, "--foreground", "-D", "-f" }, yes)))
 			forget_applied(rt, branch)
 			return { status = "removed", task = task, branch = branch }, 0
 		end

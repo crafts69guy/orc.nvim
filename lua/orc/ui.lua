@@ -149,7 +149,9 @@ function M.close(event)
 	end
 	if previous.options.quit_on_close then
 		vim.schedule(function()
-			local ok = pcall(vim.cmd, "qa")
+			local ok = pcall(function()
+				vim.cmd("qa")
+			end)
 			if not ok then
 				notify("Popup remains open: save modified buffers before quitting")
 			end

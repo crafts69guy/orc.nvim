@@ -141,6 +141,7 @@ local rex = rex_module.new(rt)
 local session
 local exec, stream = rt.exec, rt.stream
 local function interrupt_stream(argv, opts, on_data, delay)
+	---@type {exit?:{code:integer,signal:integer},interrupted?:boolean}
 	local first = {}
 	local handle = stream(
 		argv,
@@ -172,7 +173,7 @@ if not offline then
 	session = rex_module.session(rt, rex.identity())
 end
 
-local temp = assert(vim.uv.fs_mkdtemp(rt.path(vim.uv.os_tmpdir(), "orc-rex-smoke-XXXXXX")))
+local temp = assert(vim.uv.fs_mkdtemp(rt.path(assert(vim.uv.os_tmpdir()), "orc-rex-smoke-XXXXXX")))
 local parent = assert(vim.uv.fs_realpath(temp))
 local repo, checkout = rt.path(parent, "repo"), rt.path(parent, "worktree")
 local task = "smoke-" .. vim.fs.basename(parent)
@@ -499,7 +500,7 @@ local function live_exec()
 			handle, first = interrupt_stream(rex_command(argv), opts, on_data, 700)
 			return handle
 		end
-		if watches ~= 2 or not (first.interrupted and first.exit) then
+		if watches ~= 2 or not (first and first.interrupted and first.exit) then
 			return stream(rex_command(argv), opts, on_data)
 		end
 		local receive = observe_replacement(replacement, function()

@@ -121,7 +121,7 @@ end
 ---Return earliest matching whole UTC minute strictly after epoch milliseconds.
 ---@param text string
 ---@param from number
----@return number|userdata
+---@return number|vim.NIL
 function M.next(text, from)
 	local parts, sets = expression(text), M.parse(text)
 	if type(from) ~= "number" or from ~= from or math.abs(from) == math.huge then

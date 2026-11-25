@@ -132,7 +132,9 @@ function M.new(opts)
 
 	local function asynchronous(argv, options, on_data, callback)
 		options = options or {}
-		local finished, stopped, process = false, false, nil
+		local finished, stopped = false, false
+		---@type vim.SystemObj?
+		local process
 		local function complete(result)
 			finished = true
 			if callback then
@@ -161,6 +163,7 @@ function M.new(opts)
 						on_data(chunk)
 					end)
 				elseif err then
+					---@cast process -nil
 					process:kill(15)
 				end
 			end
@@ -184,6 +187,7 @@ function M.new(opts)
 			stop = function()
 				if not stopped and not finished then
 					stopped = true
+					---@cast process -nil
 					process:kill(15)
 				end
 			end,
@@ -307,8 +311,10 @@ function M.new(opts)
 		rt.mkdir(vim.fs.dirname(path))
 		serial = serial + 1
 		local temporary = path .. ".tmp." .. uv.os_getpid() .. "." .. serial
+		---@type integer?
 		local fd = assert(uv.fs_open(temporary, "wx", 384))
 		local ok, err = pcall(function()
+			---@cast fd -nil
 			local offset = 0
 			while offset < #text do
 				local written = assert(uv.fs_write(fd, text:sub(offset + 1), offset))

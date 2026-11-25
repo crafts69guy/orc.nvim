@@ -1,0 +1,6 @@
+{
+  "runtime.version": "LuaJIT",
+  "workspace.library": ["$VIMRUNTIME"],
+  "workspace.checkThirdParty": false,
+  "workspace.ignoreDir": [".worktrees", ".scratch"]
+}

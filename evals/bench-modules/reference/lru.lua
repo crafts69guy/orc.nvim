@@ -23,7 +23,14 @@ function M.new(capacity)
 	if type(capacity) ~= "number" or capacity < 1 or capacity % 1 ~= 0 or capacity == math.huge then
 		error({ kind = "RangeError", message = "capacity must be a positive finite integer" }, 0)
 	end
-	local entries, count, head, tail = {}, 0, nil, nil
+	local entries, count = {}, 0
+	---@class EvalLRUNode
+	---@field key unknown
+	---@field value unknown
+	---@field prev? EvalLRUNode
+	---@field next? EvalLRUNode
+	---@type EvalLRUNode?, EvalLRUNode?
+	local head, tail
 	local object, methods = {}, {}
 	local function detach(node)
 		if node.prev then
@@ -67,6 +74,7 @@ function M.new(capacity)
 		end
 		newest(node)
 		if count > capacity then
+			---@cast head -nil
 			entries[head.key] = nil
 			detach(head)
 			count = count - 1

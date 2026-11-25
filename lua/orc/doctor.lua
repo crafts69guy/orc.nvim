@@ -180,7 +180,7 @@ function M.collect(rt)
 		add(
 			"inkdrop",
 			probe.error and "warn" or "pass",
-			probe.error or "v" .. tostring(probe.version),
+			probe.error or ("v" .. tostring(probe.version)),
 			"enable Inkdrop's local server"
 		)
 	else

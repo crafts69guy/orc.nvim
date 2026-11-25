@@ -150,8 +150,9 @@ function M.run(rt, argv)
 				rt.sleep(250)
 			end
 		end
-		if flags.log then
-			local path = rt.abspath(flags.log)
+		local log_path = flags.log --[[@as string?]]
+		if log_path then
+			local path = rt.abspath(log_path)
 			assert(
 				path ~= lock and uv.fs_realpath(path) ~= uv.fs_realpath(lock),
 				"orc gate: log must not overwrite the lock"

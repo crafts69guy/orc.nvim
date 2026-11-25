@@ -107,8 +107,11 @@ function M.resolve(rt, mode)
 	return { mode = mode, url = url(settings.url), paths = paths }
 end
 
-local function private(stat, kind)
-	return stat and stat.type == kind and stat.uid == uv.getuid() and stat.mode % 64 == 0
+---@param stat uv.fs_stat.result?
+---@return uv.fs_stat.result?
+local function private_stat(stat, kind)
+	return stat and stat.type == kind and stat.uid == uv.getuid() and stat.mode % 64 == 0 and stat
+		or nil
 end
 
 ---Read only Inkdrop credentials from its private service file; absence permits legacy fallback.
@@ -124,32 +127,29 @@ function M.credentials(rt)
 	if not stat and err and err:find("ENOENT", 1, true) then
 		return nil
 	end
-	if not private(stat, "file") or not private(uv.fs_lstat(paths.dir), "directory") then
-		fail("backend credential file and directory must be private and owned by this user")
+	stat = private_stat(stat, "file")
+	if not stat or not private_stat(uv.fs_lstat(paths.dir), "directory") then
+		return fail("backend credential file and directory must be private and owned by this user")
 	end
 	local fd = uv.fs_open(paths.backend, "r", 0)
 	if not fd then
-		fail("backend credential file could not be opened")
+		return fail("backend credential file could not be opened")
 	end
-	local opened = uv.fs_fstat(fd)
-	local text
-	if
-		private(opened, "file")
-		and opened.ino == stat.ino
-		and opened.dev == stat.dev
-		and opened.size <= 1048576
-	then
-		text = uv.fs_read(fd, opened.size, 0)
+	local opened = private_stat(uv.fs_fstat(fd), "file")
+	local text, size
+	if opened and opened.ino == stat.ino and opened.dev == stat.dev and opened.size <= 1048576 then
+		size = opened.size
+		text = uv.fs_read(fd, size, 0)
 	end
 	uv.fs_close(fd)
-	if type(text) ~= "string" or #text ~= opened.size then
-		fail("backend credential file could not be read safely")
+	if type(text) ~= "string" or #text ~= size then
+		return fail("backend credential file could not be read safely")
 	end
 	local document = decode(rt, text, "backend credential configuration is invalid")
 	local entry = type(document.mcpServers) == "table" and document.mcpServers.inkdrop
 	local source = type(entry) == "table" and entry.env
 	if type(source) ~= "table" then
-		fail("backend credential configuration is invalid")
+		return fail("backend credential configuration is invalid")
 	end
 	local result = {}
 	for _, key in ipairs(credential_keys) do
@@ -322,7 +322,7 @@ function M.check(rt, config)
 			or vim.islist(value.capabilities.tools)
 			or not protocols[negotiated]
 		then
-			fail("endpoint returned an invalid MCP initialize response")
+			return fail("endpoint returned an invalid MCP initialize response")
 		end
 		protocol = negotiated
 		request("POST", { jsonrpc = "2.0", method = "notifications/initialized" })
@@ -338,7 +338,7 @@ function M.check(rt, config)
 			or type(tools) ~= "table"
 			or not vim.islist(tools)
 		then
-			fail("endpoint returned an invalid Inkdrop tool catalog")
+			return fail("endpoint returned an invalid Inkdrop tool catalog")
 		end
 		local names = {}
 		for _, tool in ipairs(tools) do
@@ -359,7 +359,7 @@ function M.check(rt, config)
 		end
 	end
 	if ok then
-		return result
+		return result --[[@as {ok:true,serverName:string,version:string}]]
 	end
 	local message = type(result) == "string" and result:match("^orc Inkdrop MCP: ([^\n]+)$")
 	return { ok = false, error = message or "endpoint health check failed" }

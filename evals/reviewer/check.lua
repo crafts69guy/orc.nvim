@@ -118,6 +118,7 @@ end
 local command, variant = arg[1], arg[2]
 assert(variant == "buggy" or variant == "fixed", "choose buggy or fixed")
 if command == "prompt" and #arg == 2 then
+	local diff = vim.text and vim.text.diff or rawget(vim, "diff")
 	io.write(
 		[[
 Review this Lua report parser for actionable correctness bugs in Run and Status
@@ -136,7 +137,7 @@ that report should produce). Use only the supplied diff and contract.
 --- a/lua/orc/workers.lua
 +++ b/lua/orc/workers.lua
 ]],
-		vim.diff(parser_source("base"), parser_source(variant), { ctxlen = 99 })
+		diff(parser_source("base"), parser_source(variant), { ctxlen = 99 })
 	)
 elseif command == "grade" and #arg == 3 then
 	local file = assert(io.open(arg[3], "r"))

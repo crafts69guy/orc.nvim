@@ -525,6 +525,7 @@ function M.summarize(result)
 			end
 		end
 		if arms.with and arms.without then
+			---@type table<string,string|boolean|number|vim.NIL>
 			local row = { case = case.name, arm = "Δ with−without", delta = true }
 			for _, key in ipairs({ "score", "meanSeconds", "p50Seconds", "costUsd" }) do
 				row[key] = delta(arms.with[key], arms.without[key])
