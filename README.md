@@ -109,6 +109,14 @@ directly when targeted checks can verify them. Before delegating, read the
 absolute workflow guide path printed in the session context. The guide comes
 from the same Orc runtime and loads on demand.
 
+[Plan](skills/plan/SKILL.md) fills gaps in the brief's done-evidence and runs
+small in-scope experiments when they can settle a technical tradeoff. To revise
+the prompt before planning, call [sharpen](skills/sharpen/SKILL.md) with
+`/orc:sharpen` in Claude Code or select `orc:sharpen` from the `$` menu in Codex.
+This explicit-only skill returns a revised prompt with primary sources, a method
+and an independent check. It can propose a prototype within the task's scope
+and leaves product and preference decisions to you.
+
 ## Commands
 
 | Command | Purpose |

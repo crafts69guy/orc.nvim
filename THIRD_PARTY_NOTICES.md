@@ -12,6 +12,10 @@ fast-check's `javascript-testing-expert` skill
 (https://github.com/dubzzz/fast-check/tree/fd17f486fc4c8fce5c1f37ce02278742c56c846b/skills/javascript-testing-expert),
 distributed under the MIT License, Copyright (c) 2017 Nicolas DUBIEN.
 
+`skills/sharpen/SKILL.md` is copied from [pstack at
+`bf0c7cd`](https://github.com/cursor/plugins/blob/bf0c7cd80abdbf7fe47b634978a7d1b4071f71a7/pstack/skills/sharpen/SKILL.md).
+orc adds `skills/sharpen/agents/openai.yaml`.
+
 pstack is distributed under the following license:
 
 ```text
