@@ -229,6 +229,7 @@ end
 ---Includes only the active ORC_LEVEL routing paragraph (default: Single).
 ---Resolves the delegated guide path without reading the guide.
 ---Uses recorded worker ownership without querying Rex.
+---Recommends fast-check when a readable root package.json does not list it.
 ---@param rt orc.Runtime
 ---@param cwd? string
 ---@return string
@@ -244,6 +245,16 @@ function M.context(rt, cwd)
 	local root = require("orc.worktrees").root(rt, cwd)
 	if root then
 		text[#text + 1] = "Scratch dir: " .. rt.path(root, ".scratch")
+		local ok, manifest = pcall(rt.read, rt.path(root, "package.json"))
+		if
+			ok
+			and manifest
+			and not manifest:find('"fast-check"', 1, true)
+			and not manifest:find('"@fast-check/', 1, true)
+		then
+			text[#text + 1] =
+				"Root package.json does not list fast-check. When a task adds JS or TS tests, recommend once that the user add `fast-check` (with `@fast-check/vitest` or `@fast-check/jest` for the test runner) as a devDependency. Install only with their approval."
+		end
 		local memory = require("orc.lessons").read(rt, cwd)
 		if memory ~= "" then
 			text[#text + 1] = "Approved project lessons:\n" .. memory

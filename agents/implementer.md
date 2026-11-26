@@ -21,6 +21,9 @@ Never add lint or type suppressions (`eslint-disable`, `oxlint-disable`,
 check; fix the cause or report the failure.
 For `.ts` or `.tsx` work, read and follow the `typescript-best-practices` skill file
 named in the brief.
+When adding or changing tests, read and follow the `test-discipline` skill file
+named in the brief. Never delete, skip or weaken an existing test or assertion to
+pass a check; report the conflict as blocked.
 Follow the project's style rules, including the injected Ponytail guidance, except
 that you write no comments outside the `comment-sicko` exceptions: no narration,
 workaround notes or `shortcut:` comments.
@@ -31,7 +34,8 @@ Escalate decisions that conflict with the brief. Report these sections:
 - Changes: files and behavior changed.
 - Validation: actual commands and results. For a bug fix or new check a test can
   reproduce, show the test failing before your change and passing after;
-  otherwise say why not.
+  otherwise say why not. List mutation probe results: mutants tried, killed
+  and surviving.
 - Notes: deviations and unverified behavior.
 - Docs: exported interfaces and documentation updated.
 

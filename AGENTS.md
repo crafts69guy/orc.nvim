@@ -16,8 +16,10 @@ another task's files. Do not publish, push, or create a remote repository.
 Validation: `nvim --clean -l test/run.lua`, `stylua --check lua test scripts bin/orc plugin evals`,
 and the whole-tree `lua-language-server --check . --checklevel=Warning` command in
 [README Development](README.md#development).
-Coverage must report lines, branches and functions separately, each >=98%.
-Never replace missing coverage with estimates or exclude production modules.
+Coverage must report lines, branches and functions separately, each >=90%.
+The floor catches untested modules; it is not a target. Do not add tests only to
+raise coverage; follow skills/test-discipline/SKILL.md. Never replace missing
+coverage with estimates or exclude production modules.
 Tests must validate behavior, including errors and recovery, using fake adapters
 and temporary repositories. Paid model evals are separate from ordinary checks.
 Pass deliberately wrong-typed values to production code only through `Test.invalid`,

@@ -7,6 +7,11 @@ These files come from or are adapted from pstack (https://github.com/cursor/plug
 - `skills/principle-boundary-discipline/` (copied; orc adds `agents/openai.yaml`)
 - `agents/comment-sicko.md` and `skills/no-comments/` (adapted)
 
+`skills/test-discipline/` adapts its JavaScript and TypeScript guidance from
+fast-check's `javascript-testing-expert` skill
+(https://github.com/dubzzz/fast-check/tree/fd17f486fc4c8fce5c1f37ce02278742c56c846b/skills/javascript-testing-expert),
+distributed under the MIT License, Copyright (c) 2017 Nicolas DUBIEN.
+
 pstack is distributed under the following license:
 
 ```text

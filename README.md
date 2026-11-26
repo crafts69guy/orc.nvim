@@ -184,6 +184,16 @@ The delegated guide puts the TypeScript skill's path in briefs and review prompt
 for tasks that touch `.ts` or `.tsx` files, and `orc pane review` adds it. See
 [third-party notices](THIRD_PARTY_NOTICES.md).
 
+Every implementer brief and review prompt names orc's explicit-only
+[test-discipline](skills/test-discipline/SKILL.md) skill: protect existing tests,
+red before green, brief edge cases, a bounded mutation probe, deterministic tests,
+property tests and coverage as a diagnostic. The orchestrator reruns one red claim
+itself. Its JavaScript and TypeScript section adapts fast-check's
+`javascript-testing-expert` skill. When the root `package.json` lists no
+`fast-check`, session context asks the orchestrator to recommend the library once;
+it installs it only with the user's approval. The upstream skill is not recommended
+because it asks for test comments and self-installs packages, against orc's rules.
+
 Inside Rex (`REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with
@@ -349,8 +359,9 @@ VIMRUNTIME="$VIMRUNTIME" lua-language-server --check . --checklevel=Warning \
 ```
 
 Tests use fake process/network adapters and temporary repositories; they never
-call a model or need a Rex server. Coverage has separate 98% gates for lines,
-branches and functions ([definitions](docs/coverage.md)).
+call a model or need a Rex server. Coverage has separate 90% floors for lines,
+branches and functions ([definitions](docs/coverage.md)). They catch untested
+modules; they are not a target.
 
 Paid evaluations are separate: `orc eval` enforces a model cost cap
 (`ORC_EVAL_MAX_COST`, default 5 USD).

@@ -166,7 +166,7 @@ local function run()
 	assert(passed + failed > 0, "no tests matched")
 	io.stdout:write(string.format("# pass %d\n# fail %d\n", passed, failed))
 	if coverage then
-		local accepted, reason, report = coverage_session.check(98)
+		local accepted, reason, report = coverage_session.check(90)
 		vim.fn.mkdir(root .. "/coverage", "p")
 		vim.fn.writefile({ vim.json.encode(report) }, root .. "/coverage/report.json")
 		for _, name in ipairs({ "lines", "branches", "functions" }) do

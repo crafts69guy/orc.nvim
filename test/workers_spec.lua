@@ -4183,6 +4183,9 @@ Test.test("workers review frames a read-only reviewer turn per worker kind", fun
 			"cite their paths",
 			"For .ts or .tsx changes, also check them against "
 				.. rt.path(rt.root, "skills", "typescript-best-practices", "SKILL.md"),
+			" When the diff adds or changes tests, also check them against "
+				.. rt.path(rt.root, "skills", "test-discipline", "SKILL.md")
+				.. ".",
 		}) do
 			assert(state.writes[1]:find(part, 1, true), part)
 		end

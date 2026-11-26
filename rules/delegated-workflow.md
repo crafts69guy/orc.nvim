@@ -22,6 +22,9 @@
   [typescript-best-practices](../skills/typescript-best-practices/SKILL.md) in its
   brief and in any review prompt you write, since the skill never loads on its own.
   `orc pane review` adds the path itself. This applies in pair mode too.
+- Give the absolute path of [test-discipline](../skills/test-discipline/SKILL.md)
+  and the edge cases the task's tests must cover in every implementer brief, and
+  the path in any review prompt you write. `orc pane review` adds the path itself.
 
 ## Reports and review
 
@@ -29,6 +32,16 @@
   Require done status, validation evidence and docs for changed exports and touched
   behavior. A bug fix or new check that a test can reproduce also needs the test
   failing before the change and passing after, or a stated reason why not.
+  Before review, while the worker is idle, verify in the task checkout, which
+  already has its dependencies (a fresh worktree may lack `node_modules`). Save
+  `git diff HEAD | shasum`, `git status --porcelain` and copies of the changed
+  non-test files outside the checkout. For one red claim, put the base version of
+  those files in place (`git checkout HEAD -- <files>`, moving new ones aside), run
+  the new tests and confirm the failure has the named reason. Then restore the
+  copies, apply one mutant of your own to a changed decision the report did not
+  mutate and confirm a targeted test fails. Restore again and confirm the checksum
+  and status match. A surviving mutant goes into the follow-up. Give the reported
+  mutation probe survivors to the review as questions, not as tests to write.
   If a native subagent has handed back its report and shows "waiting on
   its own background work", stop it with TaskStop and keep the report.
 - For an implementer pane, get the report, inspect the diff, run deterministic

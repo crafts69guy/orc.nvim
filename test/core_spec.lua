@@ -399,6 +399,33 @@ Test.test("core hooks context warns from durable worker records without calling 
 end)
 
 Test.test(
+	"core session context recommends fast-check only when missing from package.json",
+	function()
+		local rt = fake()
+		local path = "/repo/package.json"
+		local hint =
+			"Root package.json does not list fast-check. When a task adds JS or TS tests, recommend once that the user add `fast-check` (with `@fast-check/vitest` or `@fast-check/jest` for the test runner) as a devDependency. Install only with their approval."
+		rt.files[path] = '{"devDependencies": {"vitest": "1.0.0"}}'
+		assert(hooks.context(rt):find("\n\n" .. hint .. "\n\n", 1, true), hint)
+		for _, manifest in ipairs({
+			'{"devDependencies": {"fast-check": "1.0.0"}}',
+			'{"devDependencies": {"@fast-check/vitest": "1.0.0"}}',
+		}) do
+			rt.files[path] = manifest
+			assert(not hooks.context(rt):find(hint, 1, true), manifest)
+		end
+		rt.files[path] = nil
+		assert(not hooks.context(rt):find(hint, 1, true))
+		local read = rt.read
+		rt.read = function(file)
+			assert(file ~= path, "package.json read failed")
+			return read(file)
+		end
+		assert(not hooks.context(rt):find(hint, 1, true))
+	end
+)
+
+Test.test(
 	"core Codex launcher injects context and generated roles without persisted config",
 	function()
 		local rt = fake()

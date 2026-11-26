@@ -686,6 +686,8 @@ local function review_body(rt, record, review)
 		.. review.target
 		.. ". If the skill is unavailable, end with Status: blocked. For .ts or .tsx changes, also check them against "
 		.. rt.path(rt.root, "skills", "typescript-best-practices", "SKILL.md")
+		.. ". When the diff adds or changes tests, also check them against "
+		.. rt.path(rt.root, "skills", "test-discipline", "SKILL.md")
 		.. "."
 end
 

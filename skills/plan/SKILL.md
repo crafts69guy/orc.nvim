@@ -29,6 +29,7 @@ Base branch: feat/example
 ## Decisions
 
 - Fixed interfaces, constraints and compatibility decisions.
+- Edge cases each task's tests must cover.
 
 ## Tasks
 

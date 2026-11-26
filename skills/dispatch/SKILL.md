@@ -12,8 +12,9 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
 1. Create worktrees with `orc wt new <base> <task>...`; retain returned paths.
    Re-running it is safe: live task worktrees are reused (`action: reused`).
 2. Write one brief per task, including plan section, decisions, ownership, docs
-   acceptance criteria and done-evidence (command and expected output). Tell workers
-   others are active.
+   acceptance criteria, the edge cases its tests must cover, the absolute path of
+   [test-discipline](../test-discipline/SKILL.md) and done-evidence (command and
+   expected output). Tell workers others are active.
 3. When tasks have near-identical briefs (same instructions, different files) or the
    workflow is untried, pilot one task and accept its report before starting the rest: a flawed
    brief then costs one worker. Start the rest concurrently in their assigned

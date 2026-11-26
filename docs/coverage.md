@@ -5,7 +5,10 @@ It instruments copies/in-memory chunks, never rewrites production files, and
 registers the source inventory before executing tests. An unloaded module and an
 uncalled nested function remain visible as uncovered.
 
-The three thresholds are independent and are each at least 98%:
+The three thresholds are independent and are each at least 90%. They are a
+tripwire for untested modules, not a target; test quality is judged by the red
+and mutation evidence in [test-discipline](../skills/test-discipline/SKILL.md).
+The metrics:
 
 - **Lines:** original source lines containing executable statement sites. Several
   sites on the same line count as one line. Structural delimiters, comments and
