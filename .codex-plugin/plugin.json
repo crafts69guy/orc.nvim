@@ -1,6 +1,6 @@
 {
   "name": "orc",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Lua orchestration workflow for Neovim and Rex.",
   "author": { "name": "crafts69guy" },
   "license": "MIT",
