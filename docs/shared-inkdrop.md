@@ -8,7 +8,7 @@ new STDIO backend. The canonical server name stays `inkdrop`.
 
 launchd owns one user job, `io.crafts69guy.orc.inkdrop-mcp`. That job runs
 `mcp-proxy` 0.13.3, which owns one Inkdrop MCP backend from
-`@inkdropapp/mcp-server` 1.5.0. These are external dependencies; orc's owned
+`@inkdropapp/mcp-server` 1.9.0. These are external dependencies; orc's owned
 implementation remains Lua. Closing a task, worker, MCP client, or Neovim panel
 does not stop the service.
 

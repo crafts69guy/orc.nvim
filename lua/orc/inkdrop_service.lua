@@ -2,6 +2,7 @@ local M = {}
 local uv = vim.uv
 local LABEL = "io.crafts69guy.orc.inkdrop-mcp"
 local PREFIX = "orc inkdrop-mcp: "
+local INKDROP_PACKAGE_VERSION = "1.9.0"
 local locked
 local usage =
 	"usage: orc inkdrop-mcp install --proxy ABS --node ABS --backend ABS --port PORT [--credentials FILE] | start|stop|restart|status [--json] | enable|disable | migrate --provider claude|codex [--file ABS] [--apply] | rollback --provider claude|codex [--file ABS] | uninstall"
@@ -200,8 +201,8 @@ local function install(rt, flags, paths)
 	local package_path = rt.path(vim.fs.dirname(vim.fs.dirname(flags.backend)), "package.json")
 	local package = json(rt, rt.read(package_path), "cannot inspect Inkdrop package")
 	need(
-		package.name == "@inkdropapp/mcp-server" and package.version == "1.5.0",
-		"Inkdrop MCP package 1.5.0 is required"
+		package.name == "@inkdropapp/mcp-server" and package.version == INKDROP_PACKAGE_VERSION,
+		"Inkdrop MCP package " .. INKDROP_PACKAGE_VERSION .. " is required"
 	)
 	local source = rt.env
 	if flags.credentials then

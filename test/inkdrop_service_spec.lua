@@ -21,7 +21,7 @@ local function fake()
 	end
 	rt.write(
 		home .. "/dependencies/inkdrop/package.json",
-		rt.encode({ name = "@inkdropapp/mcp-server", version = "1.5.0" })
+		rt.encode({ name = "@inkdropapp/mcp-server", version = "1.9.0" })
 	)
 	rt.exec = function(argv, opts)
 		state.calls[#state.calls + 1] = { argv = vim.deepcopy(argv), opts = vim.deepcopy(opts) }
@@ -227,12 +227,12 @@ Test.test(
 		state.version = "mcp-proxy 0.13.30"
 		assert_error(install(rt, state), "0.13.3 is required")
 		state.version = "mcp-proxy 0.13.3"
-		rt.write(
-			vim.fs.dirname(vim.fs.dirname(state.backend)) .. "/package.json",
-			'{"name":"@inkdropapp/mcp-server","version":"2.0.0"}'
-		)
-		assert_error(install(rt, state), "1.5.0 is required")
-		Test.eq(rt.exists(state.paths.config), false)
+		local manifest = vim.fs.dirname(vim.fs.dirname(state.backend)) .. "/package.json"
+		for _, version in ipairs({ "1.5.0", "2.0.0" }) do
+			rt.write(manifest, rt.encode({ name = "@inkdropapp/mcp-server", version = version }))
+			assert_error(install(rt, state), "1.9.0 is required")
+			Test.eq(rt.exists(state.paths.config), false)
+		end
 		rt, state = fake()
 		rt.write(state.paths.backend, "user-owned")
 		uv.fs_chmod(state.paths.dir, 448)
@@ -688,9 +688,9 @@ Test.test(
 		assert_error(install(rt, state), "cannot inspect Inkdrop package")
 		rt.write(
 			vim.fs.dirname(vim.fs.dirname(state.backend)) .. "/package.json",
-			'{"name":"other","version":"1.5.0"}'
+			'{"name":"other","version":"1.9.0"}'
 		)
-		assert_error(install(rt, state), "1.5.0 is required")
+		assert_error(install(rt, state), "1.9.0 is required")
 		rt, state = fake()
 		rt.env.INKDROP_LOCAL_SERVER_URL = "https://remote.invalid:443"
 		assert_error(install(rt, state), "data API must use loopback")
