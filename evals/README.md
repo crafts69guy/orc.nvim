@@ -72,8 +72,8 @@ Offline check from a checkout containing commits `162c5d2` and `588bc8c`:
 nvim --clean -l evals/reviewer/check.lua --self-check
 ```
 
-Both prompts use the same pre-`162c5d2` parser as their diff base. The buggy
-candidate is the parser after `162c5d2`; the fixed candidate is the parser after
+The `buggy` and `fixed` prompts share the pre-`162c5d2` parser as their diff base.
+The buggy candidate is the parser after `162c5d2`; the fixed candidate is the parser after
 `588bc8c`. The self-check replays the latter commit's regression case against
 both historical implementations. It also checks grading for a miss, a hit, an
 incorrect blocker, an ungraded finding and a clean review. The grader replays
@@ -85,45 +85,87 @@ reviewer output is a failed or unavailable run. The prompt forbids Markdown
 fences, and fenced output stays malformed: in a 2026-11-25 Opus A/B under the
 earlier wording, 15 of 20 replies wrapped the array in a fence.
 
-For an opt-in comparison, use an explicitly approved model budget and
-authenticated Claude and Codex CLIs. Treat the candidate as Claude-authored.
-Claude is the fresh same-vendor arm; Codex is the cross-vendor arm. Share exactly
-the same prompt file between arms for each candidate. Record model IDs, output
-and exit status for each call. Record an unavailable arm and its reason if quota
-or transport prevents a run. Start every invocation as a fresh session. The full
-pair uses up to four paid invocations. The Claude cap is per invocation. Run the
-Codex arm only within its separately approved usage limit.
+### Historical parser comparison
+
+Treat the candidate as Claude-authored. Claude is the fresh same-vendor arm and
+Codex is the cross-vendor arm. Both providers receive the same prompt file for
+each candidate. Choose this setup or the fix-round setup below, then use the
+shared loop.
 
 ```fish
 set -l checker (pwd)/evals/reviewer/check.lua
 set -l eval_dir (mktemp -d)
-for candidate in buggy fixed
-    nvim --clean -l "$checker" prompt "$candidate" > "$eval_dir/$candidate.prompt"
-end
-cd "$eval_dir"
+set -l review_variants buggy fixed
 ```
 
-Set `review_claude_model`, `review_claude_cap` (USD per call), and
-`review_codex_model` to the approved values in the same Fish shell:
+### Fix-round rechecks
+
+Both arms get the original finding, the parser contract and the diff from `buggy`
+to `symptom`. The partial fix stops at a new Markdown heading once it has the
+header and validation evidence. It handles the original report, while a quoted
+Run and Status pair without a new heading can still overwrite the header.
+The self arm adds the implementer's first-person fix rationale and asks it to
+review its own fix. This single-shot prompt only approximates a live worker's
+context across implementation and review turns.
+
+Run both arms on Claude and on Codex. Compare `missedKnownBugs` and
+`incorrectActionableBlockers` between arms within each provider. All four
+outputs are graded against `symptom` using the same criteria. Treat one pass as a
+pilot. Collect at least 5 runs per arm within each provider before calling one
+arm better.
 
 ```fish
-for candidate in buggy fixed
-    claude -p --tools '' --setting-sources '' --strict-mcp-config \
-        --max-turns 1 --max-budget-usd "$review_claude_cap" \
-        --no-session-persistence --model "$review_claude_model" \
-        < "$candidate.prompt" > "claude-$candidate.json" 2> "claude-$candidate.log"
-    echo $status > "claude-$candidate.status"
+set -l checker (pwd)/evals/reviewer/check.lua
+set -l eval_dir (mktemp -d)
+set -l review_variants fixround-fresh fixround-self
+```
 
-    codex --no-daemon -a never exec --ignore-user-config --ignore-rules \
-        --ephemeral --sandbox read-only --skip-git-repo-check \
-        -m "$review_codex_model" -o "codex-$candidate.json" - \
-        < "$candidate.prompt" > "codex-$candidate.stdout" 2> "codex-$candidate.log"
-    echo $status > "codex-$candidate.status"
+### Run the selected comparison
 
-    for reviewer in claude codex
-        test (cat "$reviewer-$candidate.status") = 0; or continue
-        printf '%s %s\n' "$candidate" "$reviewer"
-        nvim --clean -l "$checker" grade "$candidate" "$reviewer-$candidate.json"
+Either comparison requires an explicitly approved model budget and authenticated
+Claude and Codex CLIs. Each pass uses up to four paid invocations. The Claude cap is
+per invocation. Use Codex only within its separately approved usage limit.
+Start every invocation as a fresh session. Record model IDs, output and exit
+status for each call. If quota or transport prevents a run, record the unavailable
+arm and the reason.
+
+Set `review_claude_model`, `review_claude_cap` (USD per call), and
+`review_codex_model` to the approved values in the same Fish shell.
+
+```fish
+set -l prompts_ready 1
+for variant in $review_variants
+    if not nvim --clean -l "$checker" prompt "$variant" > "$eval_dir/$variant.prompt"
+        printf 'Failed to generate prompt for %s.\n' "$variant" >&2
+        set prompts_ready 0
+        break
+    end
+end
+
+if test "$prompts_ready" = 1; and cd "$eval_dir"
+    for variant in $review_variants
+        set -l grade_variant "$variant"
+        if string match -q 'fixround-*' "$variant"
+            set grade_variant symptom
+        end
+
+        claude -p --tools '' --setting-sources '' --strict-mcp-config \
+            --max-turns 1 --max-budget-usd "$review_claude_cap" \
+            --no-session-persistence --model "$review_claude_model" \
+            < "$variant.prompt" > "claude-$variant.json" 2> "claude-$variant.log"
+        echo $status > "claude-$variant.status"
+
+        codex --no-daemon -a never exec --ignore-user-config --ignore-rules \
+            --ephemeral --sandbox read-only --skip-git-repo-check \
+            -m "$review_codex_model" -o "codex-$variant.json" - \
+            < "$variant.prompt" > "codex-$variant.stdout" 2> "codex-$variant.log"
+        echo $status > "codex-$variant.status"
+
+        for reviewer in claude codex
+            test (cat "$reviewer-$variant.status") = 0; or continue
+            printf '%s %s\n' "$variant" "$reviewer"
+            nvim --clean -l "$checker" grade "$grade_variant" "$reviewer-$variant.json"
+        end
     end
 end
 ```

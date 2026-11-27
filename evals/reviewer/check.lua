@@ -4,9 +4,15 @@ local revisions = {
 	buggy = "162c5d2",
 	fixed = "588bc8c",
 }
+local round_one = {
+	description = "The quoted report replaces the current run and status.",
+	report = "Run: new\nStatus: partial\n## Validation\nran tests\n\n## Earlier report\nRun: old\nStatus: done\n",
+	expectedRun = "new",
+	expectedStatus = "partial",
+}
 
 local function parser_source(variant)
-	local revision = assert(revisions[variant], "choose buggy or fixed")
+	local revision = variant == "symptom" and revisions.buggy or assert(revisions[variant])
 	local result = vim
 		.system({
 			"git",
@@ -19,6 +25,14 @@ local function parser_source(variant)
 	assert(result.code == 0, result.stderr)
 	local statuses = assert(result.stdout:match("local statuses = [^\n]+"))
 	local parser = assert(result.stdout:match("(function M%.parse_report%b().-\nend)\n"))
+	if variant == "symptom" then
+		local replacements
+		parser, replacements = parser:gsub("(\n\t\trun = plain:match%b() or run\n)", "\n" .. [[
+		if run and status and validation and line:match("^%%s*#+%%s") then
+			break
+		end]] .. "%1")
+		assert(replacements == 1, "symptom transform expected one buggy Run assignment")
+	end
 	return statuses .. "\n\n" .. parser .. "\n"
 end
 
@@ -77,12 +91,7 @@ end
 
 if arg[1] == "--self-check" and #arg == 1 then
 	local buggy, fixed = parser("buggy"), parser("fixed")
-	local finding = {
-		description = "The quoted report replaces the current run and status.",
-		report = "Run: new\nStatus: partial\n## Validation\nran tests\n\n## Earlier report\nRun: old\nStatus: done\n",
-		expectedRun = "new",
-		expectedStatus = "partial",
-	}
+	local finding = round_one
 	local false_blocker = vim.tbl_extend("force", finding, { expectedRun = "unrelated" })
 	local other_issue = vim.tbl_extend("force", finding, {
 		description = "The closing hashes of a Markdown heading hide its Run value.",
@@ -111,14 +120,50 @@ if arg[1] == "--self-check" and #arg == 1 then
 	assert(fixed(other_issue.report).run == nil)
 	local ungraded = grade(fixed, false, { other_issue })
 	assert(ungraded.ungradedFindings == 1 and ungraded.incorrectActionableBlockers == 0)
+	local symptom = parser("symptom")
+	local remaining = vim.tbl_extend("force", finding, {
+		description = "An inline quote can still replace the current run and status.",
+		report = finding.report:gsub(
+			"## Earlier report\nRun: old\nStatus: done",
+			"> Run: old\n> Status: done",
+			1
+		),
+	})
+	local header = { run = "new", status = "partial", validation = true }
+	assert(vim.deep_equal(symptom(finding.report), header))
+	assert(
+		vim.deep_equal(symptom(remaining.report), { run = "old", status = "done", validation = true })
+	)
+	assert(vim.deep_equal(fixed(remaining.report), header))
+	assert(vim.deep_equal(grade(symptom, true, { finding }), {
+		missedKnownBugs = 1,
+		incorrectActionableBlockers = 1,
+		ungradedFindings = 0,
+	}))
+	assert(vim.deep_equal(grade(symptom, true, { remaining }), {
+		missedKnownBugs = 0,
+		incorrectActionableBlockers = 0,
+		ungradedFindings = 0,
+	}))
 	print("reviewer self-check passed")
 	return
 end
 
+local fixround_context = {
+	["fixround-fresh"] = "You are a fresh reviewer rechecking the implementer's fix for a round-1 finding.",
+	["fixround-self"] = [[
+You are the implementer rechecking your own fix for a round-1 finding.
+I stopped scanning at the next Markdown heading once I had the run, status and
+validation evidence, so a later report section could not overwrite the header.]],
+}
 local command, variant = arg[1], arg[2]
-assert(variant == "buggy" or variant == "fixed", "choose buggy or fixed")
-if command == "prompt" and #arg == 2 then
+local historical = variant == "buggy" or variant == "fixed"
+local context = fixround_context[variant]
+if command == "prompt" and #arg == 2 and (historical or context) then
 	local diff = vim.text and vim.text.diff or rawget(vim, "diff")
+	if context then
+		io.write(context, "\n\n")
+	end
 	io.write(
 		[[
 Review this Lua report parser for actionable correctness bugs in Run and Status
@@ -132,22 +177,33 @@ Return only a JSON array of actionable blockers, or [] if none, with no Markdown
 code fence or other text around it. For each blocker provide four string
 fields: description (the concrete consequence), report (a complete example
 input with non-empty Validation), expectedRun and expectedStatus (the values
-that report should produce). Use only the supplied diff and contract.
-
---- a/lua/orc/workers.lua
-+++ b/lua/orc/workers.lua
-]],
-		diff(parser_source("base"), parser_source(variant), { ctxlen = 99 })
+that report should produce). ]],
+		context and "Report only blockers that remain after the fix. Use only the supplied material."
+			or "Use only the supplied diff and contract."
 	)
-elseif command == "grade" and #arg == 3 then
+	if context then
+		io.write("\n\nRound-1 finding\n\n", round_one.description, "\n\n", round_one.report)
+	end
+	io.write(
+		"\n\n--- a/lua/orc/workers.lua\n+++ b/lua/orc/workers.lua\n",
+		diff(
+			parser_source(context and "buggy" or "base"),
+			parser_source(context and "symptom" or variant),
+			{ ctxlen = 99 }
+		)
+	)
+elseif command == "grade" and #arg == 3 and (historical or variant == "symptom") then
 	local file = assert(io.open(arg[3], "r"))
 	local data = file:read("*a")
 	file:close()
 	-- Neovim may decode an empty object as an empty table.
 	assert(data:match("^%s*%["), "expected a JSON array of findings")
 	io.write(
-		vim.json.encode(grade(parser(variant), variant == "buggy", vim.json.decode(data))) .. "\n"
+		vim.json.encode(grade(parser(variant), variant ~= "fixed", vim.json.decode(data))) .. "\n"
 	)
 else
-	error("usage: check.lua --self-check | prompt buggy|fixed | grade buggy|fixed <findings.json>")
+	error([[
+usage: check.lua --self-check | prompt <variant> | grade <candidate> <findings.json>
+For historical comparisons, choose buggy or fixed for either command.
+For fix rounds, prompt accepts fixround-fresh or fixround-self and grade accepts symptom.]])
 end

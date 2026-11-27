@@ -65,7 +65,7 @@ local function entry(path, target, args)
 	return ok, value
 end
 
-Test.test("evals reviewer CLI grades historical parser fixtures without model calls", function()
+local function reviewer_fixture()
 	-- Simulate Git history locally so the ordinary suite also works in shallow clones.
 	local fixed = assert(rt.read(rt.path(rt.root, "lua", "orc", "workers.lua")))
 	local buggy, run_replacements = fixed:gsub("run = run or (plain:match%b())", "run = %1 or run", 1)
@@ -82,17 +82,16 @@ Test.test("evals reviewer CLI grades historical parser fixtures without model ca
 		["588bc8c"] = fixed,
 	}
 	local root, script = Test.temp(), rt.path(rt.root, "evals", "reviewer", "check.lua")
-	local findings = rt.path(root, "findings.json")
-	local output, git_unavailable
+	local output
 	Test.replace(vim, "system", function(argv)
 		assert(argv[1] == "git" and argv[4] == "show")
 		local revision = assert(argv[5]:match("^([^:]+):lua/orc/workers%.lua$"))
 		return {
 			wait = function()
-				if git_unavailable then
+				if not sources[revision] then
 					return { code = 128, stderr = "fixture history unavailable" }
 				end
-				return { code = 0, stdout = assert(sources[revision]) }
+				return { code = 0, stdout = sources[revision] }
 			end,
 		}
 	end)
@@ -110,6 +109,12 @@ Test.test("evals reviewer CLI grades historical parser fixtures without model ca
 		end
 		return table.concat(output)
 	end
+	return root, invoke, sources
+end
+
+Test.test("evals reviewer CLI grades historical parser fixtures without model calls", function()
+	local root, invoke, sources = reviewer_fixture()
+	local findings = rt.path(root, "findings.json")
 	local ok, err = pcall(function()
 		assert(invoke({ "--self-check" }):find("reviewer self-check passed", 1, true))
 		assert(invoke({ "prompt", "buggy" }):find("Before changing Validation", 1, true))
@@ -137,10 +142,75 @@ Test.test("evals reviewer CLI grades historical parser fixtures without model ca
 		invoke({ "grade", "buggy", findings }, "each finding needs")
 		invoke({ "grade", "unknown", findings }, "choose buggy or fixed")
 		invoke({ "other", "fixed" }, "usage: check.lua")
-		git_unavailable = true
+		sources["162c5d2"] = nil
 		invoke({ "prompt", "buggy" }, "fixture history unavailable")
 	end)
 	assert(ok, err)
+end)
+
+local round_one = {
+	description = "The quoted report replaces the current run and status.",
+	report = "Run: new\nStatus: partial\n## Validation\nran tests\n\n## Earlier report\nRun: old\nStatus: done\n",
+	expectedRun = "new",
+	expectedStatus = "partial",
+}
+
+Test.test("evals reviewer fix-round prompts share evidence and differ in context", function()
+	local _, invoke = reviewer_fixture()
+	local fresh = invoke({ "prompt", "fixround-fresh" })
+	local self = invoke({ "prompt", "fixround-self" })
+	local function split(prompt)
+		local start = assert(prompt:find("Review this Lua report parser", 1, true))
+		return prompt:sub(1, start - 1), prompt:sub(start)
+	end
+	local fresh_context, evidence = split(fresh)
+	local self_context, self_evidence = split(self)
+	Test.eq(self_evidence, evidence)
+	assert(fresh_context:find("fresh reviewer", 1, true))
+	assert(not fresh_context:find("I stopped", 1, true))
+	assert(self_context:find("your own fix", 1, true) and self_context:find("I stopped", 1, true))
+	assert(evidence:find(round_one.description, 1, true) and evidence:find(round_one.report, 1, true))
+	assert(evidence:find("JSON array", 1, true) and evidence:find("or []", 1, true))
+	assert(evidence:find("--- a/lua/orc/workers.lua", 1, true))
+	assert(evidence:find("run = plain:match", 1, true) and evidence:find("+\t\t\tbreak", 1, true))
+	assert(not evidence:find("Before changing Validation", 1, true))
+end)
+
+Test.test("evals reviewer fix-round grading credits only the remaining bug", function()
+	local root, invoke = reviewer_fixture()
+	local findings = rt.path(root, "findings.json")
+	local remaining = vim.tbl_extend("force", round_one, {
+		description = "A quote without a new heading can overwrite the current run and status.",
+		report = "Run: new\nStatus: partial\n## Validation\nran tests\n\n> Run: old\n> Status: done\n",
+	})
+	rt.write(findings, rt.encode({ round_one }))
+	Test.eq(rt.decode(invoke({ "grade", "symptom", findings })), {
+		missedKnownBugs = 1,
+		incorrectActionableBlockers = 1,
+		ungradedFindings = 0,
+	})
+	rt.write(findings, rt.encode({ round_one, remaining }))
+	Test.eq(rt.decode(invoke({ "grade", "symptom", findings })), {
+		missedKnownBugs = 0,
+		incorrectActionableBlockers = 1,
+		ungradedFindings = 0,
+	})
+	Test.eq(rt.decode(invoke({ "grade", "fixed", findings })).incorrectActionableBlockers, 2)
+end)
+
+Test.test("evals reviewer fix-round transform refuses changed history", function()
+	local _, invoke, sources = reviewer_fixture()
+	local replacements
+	sources["162c5d2"], replacements =
+		sources["162c5d2"]:gsub("run = plain:match", "run  = plain:match")
+	Test.eq(replacements, 1)
+	invoke({ "prompt", "fixround-fresh" }, "symptom transform expected one buggy Run assignment")
+end)
+
+Test.test("evals reviewer CLI shows usage for unknown variants", function()
+	local _, invoke = reviewer_fixture()
+	invoke({ "prompt", "unknown" }, "usage: check.lua")
+	invoke({ "grade", "unknown", "missing.json" }, "usage: check.lua")
 end)
 
 Test.test("evals hidden suites accept every fresh Lua reference and reject every stub", function()
