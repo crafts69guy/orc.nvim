@@ -19,7 +19,7 @@ M.usage = [[usage: orc <command> [args]
   inkdrop init|inbox|claim|push|pull|lessons ...
   inkdrop-mcp install|start|stop|restart|status|enable|disable|migrate|rollback|uninstall ...
   update
-  eval [--bench] [evaluation args]
+  eval [--bench] [evaluation args] | micro <spec.lua> [--dry-run] [--pilot]
   completion fish
   --help | --version
 

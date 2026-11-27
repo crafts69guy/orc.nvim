@@ -144,7 +144,7 @@ and leaves product and preference decisions to you.
 | `orc inkdrop init\|inbox\|claim\|push\|pull\|lessons` | Mirror managed feature blocks and approved lessons |
 | `orc inkdrop-mcp` | Explicit shared Inkdrop service setup, migration and lifecycle |
 | `orc completion fish` | Print fish completion definitions |
-| `orc eval` | Explicitly run model-based behavior evaluations |
+| `orc eval` | Explicitly run model-based behavior evaluations; `orc eval micro <spec.lua>` runs capped wording experiments with a control arm |
 | `orc update` | Fast-forward the clean Git checkout and update installed plugins |
 
 Run `orc --help` for arguments.
@@ -334,7 +334,7 @@ for session selection. See [Rex integration](docs/rex-integration.md).
   between `null`, empty arrays and empty objects. Each task carries a `state`
   (merged, agent, report status, `worktree` or `pending`); plain-text `orc status`
   prints it. Task report status comes from the matching worker's run-specific report,
-  never a shared checkout report. A worker report counts only with `Status:` (`done|partial|blocked`)
+  never a shared checkout report. A worker report counts only with `Status:` (`done|partial|needs-context|blocked`)
   and a nonempty `Validation`; markdown bold labels are accepted, and a headed
   `Validation` may hold deeper sub-headings.
 - `orc context` reports `orchestratorRule` in JSON and prints the same provenance
