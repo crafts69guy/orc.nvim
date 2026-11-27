@@ -21,6 +21,10 @@ worker is still `working`; wait again without `--until report`.
 
 ## Steps
 
+0. Search the scope's added lines and untracked files with `rg` for the comment
+   syntax of each language in it, for example `git diff -U0 HEAD -- <paths> |
+   rg '^\+.*(//|/\*|--)'` for TypeScript and Lua. With no match, skip
+   comment-sicko and record the command and the zero count in the task log.
 1. Start `orc:comment-sicko` (Codex: the `comment-sicko` agent) in the task
    checkout with the scope. Pick its reasoning effort for the job. Do not restate
    its rules. Save its report to `.scratch/<feature>/<task>-no-comments.md`.
