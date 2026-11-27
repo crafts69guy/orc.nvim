@@ -138,6 +138,14 @@ Plans and managed-note links belong to the main checkout; task reports belong to
 their run-specific paths. Task status uses the matching worker's report status; there
 is no shared checkout report copy. Worker scans skip mismatched record identities and
 status warns with their paths; unreadable or invalid records remain errors.
+
+Status assigns a task worktree to one feature by plan task ID, then by a worker
+record for that checkout, then by a unique feature using the base branch. Tasks
+with a worktree report its current branch. Status warns about unclaimed
+task worktrees and entries in the stash shared by all worktrees. When all tasks
+in a nonempty feature are merged or closed, it suggests moving the feature to
+`.scratch/.archive/<feature>`. Warnings appear in JSON and on stderr in text mode.
+
 State writes are atomic. No UI process is required for worker
 liveness. JSON command fields keep their established schemaVersion 1 meaning,
 with additive worker metadata for new clients.

@@ -90,6 +90,29 @@ function M.task_state(task)
 	return "pending"
 end
 
+local function worktree_owner(branch, features, tasks, claims)
+	local owner, task_id, best = nil, nil, 0
+	if claims then
+		best = 2
+		if #claims == 1 then
+			owner, task_id = claims[1].feature, claims[1].task
+		end
+	end
+	for _, feature in ipairs(features) do
+		local prefix = (feature.base ~= vim.NIL and feature.base or feature.feature) .. "--"
+		local id = branch:sub(#prefix + 1)
+		if vim.startswith(branch, prefix) and id:match("^[%w_.-]+$") then
+			local priority = tasks[feature.feature][id] and 3 or 1
+			if priority > best then
+				owner, task_id, best = feature, id, priority
+			elseif priority == best then
+				owner = nil
+			end
+		end
+	end
+	return owner, task_id
+end
+
 ---Join plans, worktrees, durable workers, reports and merge receipts into schema version 1.
 ---@param rt orc.Runtime
 ---@param cwd? string
@@ -102,70 +125,108 @@ function M.collect(rt, cwd)
 	for _, file in ipairs(skipped or {}) do
 		result.warnings[#result.warnings + 1] = "worker record identity mismatch; skipped " .. file
 	end
-	local trees = nil
+	local features_by_name, tasks_by_feature, trees_by_feature = {}, {}, {}
 	for _, feature in ipairs(rt.list(rt.path(root, ".scratch"))) do
 		local dir = rt.path(root, ".scratch", feature)
 		local plan_path = rt.path(dir, "plan.md")
 		local plan = rt.read(plan_path)
 		if plan then
-			if not trees then
-				local ok, found = pcall(wt.list, rt, cwd)
-				trees = ok and found or {}
-				if not ok then
-					result.warnings[#result.warnings + 1] = "worktree list failed; worktrees unknown: "
-						.. tostring(found)
-				end
-			end
-			local base = M.parse_base(plan)
-			local branch = base or feature
 			local tasks = M.parse_tasks(plan)
-			local by_id = {}
+			local planned = {}
 			for _, task in ipairs(tasks) do
-				by_id[task.id] = task
+				planned[task.id] = true
 			end
-			local paths = {}
-			for _, tree in ipairs(trees) do
-				local prefix = branch .. "--"
-				if tree.branch and tree.branch:sub(1, #prefix) == prefix then
-					local id = tree.branch:sub(#prefix + 1)
-					paths[id] = rt.abspath(tree.path, root)
-					if not by_id[id] then
-						local orphan = { id = id, goal = rt.null, size = rt.null, dependsOn = {} }
-						tasks[#tasks + 1], by_id[id] = orphan, orphan
-					end
-				end
-			end
-			local merges = {}
-			for id, commit in (rt.read(rt.path(dir, "merged")) or ""):gmatch("([^%s]+) ([^%s]+)") do
-				merges[id] = commit
-			end
-			for _, task in ipairs(tasks) do
-				task.branch, task.worktree = wt.branch(branch, task.id), paths[task.id] or rt.null
-				task.agent, task.report, task.merged = rt.null, rt.null, rt.null
-				for _, worker in ipairs(result.workers) do
-					if worker.feature == feature and worker.task == task.id then
-						task.agent = { name = worker.runId, state = worker.state }
-						task.report = worker.reportStatus and { status = worker.reportStatus } or rt.null
-					end
-				end
-				if merges[task.id] then
-					task.merged = { commit = merges[task.id] }
-				end
-				task.state = M.task_state(task)
-			end
+			tasks_by_feature[feature], trees_by_feature[feature] = planned, {}
 			local link = optional_json(rt, rt.path(dir, "inkdrop.json"))
 			local note = link
 					and type(link.noteId) == "string"
 					and link.noteId:match("^note:")
 					and link.noteId
 				or rt.null
-			result.features[#result.features + 1] = {
+			local entry = {
 				feature = feature,
-				base = base or rt.null,
+				base = M.parse_base(plan) or rt.null,
 				plan = plan_path,
 				note = note,
 				tasks = tasks,
 			}
+			features_by_name[feature] = entry
+			result.features[#result.features + 1] = entry
+		end
+	end
+	local workers_by_feature, claims_by_path = {}, {}
+	for _, worker in ipairs(result.workers) do
+		local named_workers = workers_by_feature[worker.feature] or {}
+		named_workers[worker.task] = worker
+		workers_by_feature[worker.feature] = named_workers
+		local feature = features_by_name[worker.feature]
+		if feature and worker.path then
+			local claims = claims_by_path[worker.path] or {}
+			claims[#claims + 1] = { feature = feature, task = worker.task }
+			claims_by_path[worker.path] = claims
+		end
+	end
+	local ok, trees = pcall(wt.list, rt, cwd)
+	if not ok then
+		result.warnings[#result.warnings + 1] = "worktree list failed; worktrees unknown: "
+			.. tostring(trees)
+		trees = {}
+	end
+	for _, tree in ipairs(trees) do
+		local branch = tree.branch
+		if branch and branch:match("^.+%-%-[%w_.-]+$") then
+			local path = rt.abspath(tree.path, root)
+			local owner, id =
+				worktree_owner(branch, result.features, tasks_by_feature, claims_by_path[path])
+			if owner and id then
+				local worktrees = trees_by_feature[owner.feature]
+				if not tasks_by_feature[owner.feature][id] and not worktrees[id] then
+					owner.tasks[#owner.tasks + 1] =
+						{ id = id, goal = rt.null, size = rt.null, dependsOn = {} }
+				end
+				worktrees[id] = { path = path, branch = branch }
+			elseif path ~= root then
+				result.warnings[#result.warnings + 1] = "Unclaimed worktree " .. branch .. " at " .. path
+			end
+		end
+	end
+	local stash = rt.exec({ "git", "stash", "list" }, { cwd = root })
+	if stash.code == 0 then
+		local count = #vim.split(stash.stdout, "\n", { trimempty = true })
+		if count > 0 then
+			local entries = count == 1 and "entry" or "entries"
+			local warning = ("%d stash %s (shared by all worktrees)"):format(count, entries)
+			result.warnings[#result.warnings + 1] = warning
+		end
+	end
+	for _, feature in ipairs(result.features) do
+		local name = feature.feature
+		local base = feature.base ~= rt.null and feature.base or name
+		local worktrees = trees_by_feature[name]
+		local receipt = rt.read(rt.path(root, ".scratch", name, "merged")) or ""
+		local merges = {}
+		for id, commit in receipt:gmatch("([^%s]+) ([^%s]+)") do
+			merges[id] = commit
+		end
+		local named_workers = workers_by_feature[name] or {}
+		local finished = #feature.tasks > 0
+		for _, task in ipairs(feature.tasks) do
+			local worker = named_workers[task.id]
+			local tree = worktrees[task.id]
+			task.branch = tree and tree.branch or wt.branch(base, task.id)
+			task.worktree = tree and tree.path or rt.null
+			task.agent = worker and { name = worker.runId, state = worker.state } or rt.null
+			task.report = worker and worker.reportStatus and { status = worker.reportStatus } or rt.null
+			task.merged = merges[task.id] and { commit = merges[task.id] } or rt.null
+			task.state = M.task_state(task)
+			finished = finished and (task.state == "merged" or task.state == "closed")
+		end
+		if finished then
+			local warning = ("Archive finished feature .scratch/%s to .scratch/.archive/%s"):format(
+				name,
+				name
+			)
+			result.warnings[#result.warnings + 1] = warning
 		end
 	end
 	return result

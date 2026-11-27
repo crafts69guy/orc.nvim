@@ -136,7 +136,7 @@ and leaves product and preference decisions to you.
 | `orc pane wait ... --until report` | Wait for a matching report, user-action block, exit/error, 60 seconds without prompt acknowledgment, five idle minutes without a report, or timeout. Returns `stalled` with a recovery hint when a working TUI transcript is unchanged for 30+ minutes. A done report adds `next` with `pane review` for a TUI implementer's work run or the close command in other cases. Follows new runs and lists replaced ones in `previousRuns`. Failures return `state: "wait-failed"` with a `hint`. |
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
-| `orc status --json` | Feature/task/worker snapshot, also usable outside Rex |
+| `orc status --json` | Feature/task/worker snapshot with warnings for shared stash entries, unclaimed task worktrees, and features ready to archive. Also usable outside Rex. |
 | `orc doctor --json` | Prerequisite and integration checks |
 | `orc context --scope all --json` | Audit static Claude/Codex context sources and report the invoked Orc runtime's rule provenance |
 | `orc inkdrop init\|inbox\|claim\|push\|pull\|lessons` | Mirror managed feature blocks and approved lessons |

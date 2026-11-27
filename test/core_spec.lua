@@ -965,6 +965,156 @@ Test.test(
 )
 
 Test.test(
+	"core status reports a shared-base worktree without assigning it to either feature",
+	function()
+		local rt = fake()
+		rt.files["/repo/.scratch/a/plan.md"] = "Base branch: main\n"
+		rt.files["/repo/.scratch/b/plan.md"] = "Base branch: main\n"
+		route(rt, { [LIST] = trees({ branch = "main--x", path = "/repo/left over" }) })
+
+		local snapshot = rt.decode(status.run(rt, { "--json" }).out)
+		Test.eq(snapshot.schemaVersion, 1)
+		Test.eq(snapshot.features[1].tasks, {})
+		Test.eq(snapshot.features[2].tasks, {})
+		Test.eq(#snapshot.warnings, 1)
+		assert(snapshot.warnings[1]:find("main--x", 1, true))
+		assert(snapshot.warnings[1]:find("/repo/left over", 1, true))
+		local plain = status.run(rt, {})
+		Test.eq(plain.out, "no tasks\n")
+		Test.eq(plain.err, snapshot.warnings[1] .. "\n")
+	end
+)
+
+Test.test(
+	"core status uses worker claims for shared-base orphans and gives plans precedence",
+	function()
+		local rt = fake()
+		rt.files["/repo/.scratch/a/plan.md"] = "Base branch: main\n"
+		rt.files["/repo/.scratch/b/plan.md"] = "Base branch: main\n"
+		route(rt, { [LIST] = trees({ branch = "main--x", path = "/repo/x" }) })
+		with_module("orc.workers", {
+			collect = function()
+				return { { feature = "b", task = "x", path = "/repo/x", runId = "run", state = "working" } }
+			end,
+		}, function()
+			local snapshot = status.collect(rt)
+			Test.eq(snapshot.features[1].tasks, {})
+			Test.eq(snapshot.features[2].tasks[1].worktree, "/repo/x")
+			Test.eq(snapshot.features[2].tasks[1].state, "working")
+			Test.eq(snapshot.warnings, {})
+
+			rt.files["/repo/.scratch/a/plan.md"] = "Base branch: main\n## Tasks\n```yaml\n- id: x\n```\n"
+			snapshot = status.collect(rt)
+			Test.eq(snapshot.features[1].tasks[1].worktree, "/repo/x")
+			Test.eq(snapshot.features[2].tasks, {})
+			Test.eq(snapshot.warnings, {})
+		end)
+	end
+)
+
+Test.test("core status matches worker claims by checkout across feature bases", function()
+	local rt = fake()
+	rt.files["/repo/.scratch/a/plan.md"] = "Base branch: main\n"
+	rt.files["/repo/.scratch/b/plan.md"] = "Base branch: feat/b\n"
+	route(rt, { [LIST] = trees({ branch = "main--x", path = "/repo/x" }) })
+	local worker = { feature = "b", task = "x", path = "/repo/x", runId = "run", state = "working" }
+	local workers = { worker }
+	with_module("orc.workers", {
+		collect = function()
+			return workers
+		end,
+	}, function()
+		local snapshot = status.collect(rt)
+		Test.eq(snapshot.features[1].tasks, {})
+		Test.eq(snapshot.features[2].tasks[1].id, "x")
+		Test.eq(snapshot.features[2].tasks[1].branch, "main--x")
+		Test.eq(snapshot.features[2].tasks[1].worktree, "/repo/x")
+		Test.eq(snapshot.warnings, {})
+
+		worker.task = "assigned"
+		snapshot = status.collect(rt)
+		Test.eq(snapshot.features[1].tasks, {})
+		Test.eq(snapshot.features[2].tasks[1].id, "assigned")
+		Test.eq(snapshot.features[2].tasks[1].branch, "main--x")
+
+		local function expect_base_fallback()
+			local fallback = status.collect(rt)
+			Test.eq(fallback.features[1].tasks[1].worktree, "/repo/x")
+			Test.eq(fallback.features[2].tasks, {})
+			Test.eq(fallback.warnings, {})
+		end
+		worker.task, worker.path = "x", "/repo/other"
+		expect_base_fallback()
+		worker.feature, worker.path = "no-plan", "/repo/x"
+		expect_base_fallback()
+		workers = {}
+		expect_base_fallback()
+	end)
+end)
+
+Test.test("core status reports task worktrees whose base has no active plan", function()
+	local rt = fake()
+	route(rt, {
+		[LIST] = trees(
+			{ branch = "main", path = "/repo" },
+			{ branch = "retired--x", path = "/leftover" },
+			{ branch = "unrelated", path = "/other" },
+			{ path = "/detached" }
+		),
+	})
+
+	local snapshot = status.collect(rt)
+	Test.eq(snapshot.features, {})
+	Test.eq(#snapshot.warnings, 1)
+	assert(snapshot.warnings[1]:find("retired--x", 1, true))
+	assert(snapshot.warnings[1]:find("/leftover", 1, true))
+end)
+
+Test.test("core status counts stash entries from the shared repository root", function()
+	local rt = fake()
+	local listing = result(0, "stash@{0}: WIP on main\nstash@{1}: On feature: saved work\n")
+	route(rt, {
+		["git stash list"] = function(_, options)
+			Test.eq(options and options.cwd, "/repo")
+			return listing
+		end,
+	})
+
+	local warnings = status.collect(rt, "/repo/linked").warnings
+	Test.eq(#warnings, 1)
+	assert(warnings[1]:find("2 stash entries", 1, true))
+	assert(warnings[1]:find("shared by all worktrees", 1, true))
+	listing = result(0, "stash@{0}: WIP on main\n")
+	assert(status.collect(rt, "/repo/linked").warnings[1]:find("1 stash entry", 1, true))
+	listing = result(0)
+	Test.eq(status.collect(rt, "/repo/linked").warnings, {})
+	listing = result(1, "partial listing\n", "unavailable")
+	Test.eq(status.collect(rt, "/repo/linked").warnings, {})
+end)
+
+Test.test("core status suggests archiving only features with merged or closed tasks", function()
+	local rt = fake()
+	rt.files["/repo/.scratch/finished/plan.md"] = "## Tasks\n```yaml\n- id: x\n- id: y\n```\n"
+	rt.files["/repo/.scratch/finished/merged"] = "x abc\n"
+	rt.files["/repo/.scratch/active/plan.md"] = "## Tasks\n```yaml\n- id: x\n- id: y\n```\n"
+	rt.files["/repo/.scratch/active/merged"] = "x def\n"
+	rt.files["/repo/.scratch/empty/plan.md"] = "# No tasks\n"
+	with_module("orc.workers", {
+		collect = function()
+			return {
+				{ feature = "finished", task = "y", runId = "closed-run", state = "closed" },
+				{ feature = "active", task = "y", runId = "done-run", state = "done" },
+			}
+		end,
+	}, function()
+		local warnings = status.collect(rt).warnings
+		Test.eq(#warnings, 1)
+		assert(warnings[1]:find(".scratch/finished", 1, true))
+		assert(warnings[1]:find(".scratch/.archive/finished", 1, true))
+	end)
+end)
+
+Test.test(
 	"core status records unique merges, preserves ambiguity and warns on mirror failures",
 	function()
 		local rt = fake()
