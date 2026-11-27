@@ -169,6 +169,19 @@ Test.test(
 		rt.write(added, "// untracked\n")
 		rt.write(source, "const value = 3\n")
 		Test.eq({ review_delta.compare(rt, path, reviewed) }, { true, true })
+		for _, failure in ipairs({ "--name-only", "cat-file blob" }) do
+			local run = rt.exec
+			Test.replace(rt, "exec", function(argv, opts)
+				local result = run(argv, opts)
+				if table.concat(argv, "\0"):find(failure, 1, true) then
+					assert(result.code == 0, result.stderr)
+					result.code = 1
+				end
+				return result
+			end, function()
+				Test.eq({ review_delta.compare(rt, path, reviewed) }, { false })
+			end)
+		end
 		for _, ending in ipairs({ "\r", "\r\r" }) do
 			rt.write(source, "// working copy" .. ending .. "\nconst value = 3\n")
 			local tree = assert(review_delta.snapshot(rt, path))
@@ -213,3 +226,253 @@ Test.test("review delta refuses working edits to a force-added ignored file", fu
 	rt.write(source, "export const value = 1\n")
 	Test.eq(review_delta.compare(rt, path, reviewed), false)
 end)
+
+local function source_change(label, extension, prefix, removed, suffix, accepted)
+	Test.test("review delta compares source for " .. label, function()
+		local path = Test.temp()
+		local rt = runtime.new({ cwd = path, env = { HOME = path, GIT_CONFIG_NOSYSTEM = "1" } })
+		local function git(...)
+			local result = rt.exec({ "git", ... })
+			assert(result.code == 0, result.stderr)
+		end
+		local name = "source " .. extension .. "." .. extension
+		local source = rt.abspath(name)
+		local safe = rt.abspath("a quote ' and\r\n.ts")
+		Test.eq(review_delta.comment_only(deletion(name, unpack(removed))), true)
+		git("init", "-q")
+		rt.write(source, prefix .. table.concat(removed, "\n") .. "\n" .. suffix)
+		rt.write(safe, "// details\nrun();\n")
+		git("add", "-A")
+		git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
+		local reviewed = assert(review_delta.snapshot(rt, path))
+		rt.write(source, prefix .. suffix)
+		rt.write(safe, "run();\n")
+		Test.eq({ review_delta.compare(rt, path, reviewed) }, accepted and { true, true } or { false })
+	end)
+end
+
+source_change("Lua long string", "lua", "return [[\n", { "-- text" }, "]]\n", false)
+source_change("Lua leveled long string", "lua", "return [==[\n", { "-- text" }, "]==]\n", false)
+source_change("Lua outer block closer", "lua", "--[[ a\n", { "--[[ b ]]" }, "run()\n--]]\n", false)
+source_change("Lua syntax error", "lua", "local = 1\n", { "-- explanation" }, "", false)
+source_change(
+	"Lua function comments",
+	"lua",
+	"return function()\n",
+	{ "-- explanation", "--[[", "-- detail", "--]]" },
+	"return 1\nend\n",
+	true
+)
+source_change("TypeScript template", "ts", "const value = `\n", { "// text" }, "`;\n", false)
+source_change(
+	"TypeScript nested template",
+	"mts",
+	'const value = `${{ x: `nested ${"}"}\n',
+	{ "// text" },
+	"` }.x}`;\n",
+	false
+)
+source_change(
+	"TypeScript outer block closer",
+	"ts",
+	"/* a\n",
+	{ "/* b */" },
+	"run();\n/* c */\n",
+	false
+)
+source_change(
+	"TypeScript string continuation",
+	"cts",
+	'const value = "\\\n',
+	{ '// text"' },
+	";\n",
+	false
+)
+source_change(
+	"TypeScript unterminated template",
+	"ts",
+	"const value = `\n",
+	{ "// text" },
+	"",
+	false
+)
+source_change(
+	"TypeScript unterminated comment",
+	"ts",
+	"/* unterminated\n",
+	{ "// text" },
+	"",
+	false
+)
+source_change("TypeScript JSDoc", "ts", "", { "/**", " * details", " */" }, "run();\n", true)
+source_change(
+	"TypeScript regular expressions",
+	"ts",
+	[[const first = /[/"'`]/; function second() { return /a\/\*b/g; }]] .. "\n",
+	{ "// explanation" },
+	"run();\n",
+	true
+)
+source_change(
+	"TypeScript division",
+	"ts",
+	"const number = a / b / c;\n",
+	{ "// explanation" },
+	"run();\n",
+	true
+)
+source_change(
+	"TypeScript template substitution",
+	"ts",
+	[[const value = `\${raw\` ${ {x: 1}.x /* } ` */ // } `
+ }`;]] .. "\n",
+	{ "// explanation" },
+	"run();\n",
+	true
+)
+source_change(
+	"TypeScript complete block",
+	"ts",
+	"run();\n",
+	{ "/* complete */" },
+	"stop();\n",
+	true
+)
+source_change(
+	"TypeScript template after Unicode line separator",
+	"ts",
+	"// note\226\128\168const value = `\n",
+	{ "// text" },
+	"`;\n",
+	false
+)
+source_change(
+	"TypeScript template after an ambiguous regex",
+	"ts",
+	'if (ok) /[/*]/.test("a");\nconst value = `\n',
+	{ "// text" },
+	"`;\nrun(); /* note */\n",
+	false
+)
+source_change(
+	"TypeScript outer block closer after ambiguous division",
+	"ts",
+	"const value = {} / number /* a\n",
+	{ "/* b */" },
+	"+ other\n/* c */\n",
+	false
+)
+source_change(
+	"TypeScript escaped CRLF inside a string",
+	"ts",
+	"const café = 'first\\\r\nsecond';\n",
+	{ "// explanation" },
+	"run();\n",
+	true
+)
+source_change(
+	"TypeScript escaped newline inside an unterminated regex",
+	"ts",
+	"const value = /first\\\n",
+	{ "// explanation" },
+	"run();\n",
+	false
+)
+source_change(
+	"TypeScript slash desynchronization after an if condition",
+	"ts",
+	'const s = "a=b";\nif (s) /=/.test(s) && console.log(`/\n',
+	{ "// x" },
+	"`);\n// `\n",
+	false
+)
+source_change(
+	"TypeScript slash desynchronization after a for header",
+	"ts",
+	"for (;;) /a,/.exec(`/\n",
+	{ "// x" },
+	"`);\n// `\n",
+	false
+)
+source_change(
+	"TypeScript slash desynchronization after export default",
+	"ts",
+	"export default /=/.test(`/\n",
+	{ "// x" },
+	"`);\n// `\n",
+	false
+)
+source_change(
+	"TypeScript slash desynchronization after an object literal",
+	"ts",
+	"const v = {} / (a, /x.`/) + `\n",
+	{ "// x" },
+	"`;\n// `\n",
+	false
+)
+source_change(
+	"TypeScript division before a Unicode line separator",
+	"ts",
+	"(a + b) / 2; // half\226\128\168const t = `kept`;\n",
+	{ "// explanation" },
+	"run();\n",
+	true
+)
+source_change(
+	"TypeScript template after a hashbang",
+	"ts",
+	"#!node `\nconst t = `\n",
+	{ "// x" },
+	"`;\n// `\n",
+	false
+)
+source_change(
+	"TypeScript template after a BOM and hashbang",
+	"ts",
+	"\239\187\191#!node `\nconst t = `\n",
+	{ "// x" },
+	"`;\n// `\n",
+	false
+)
+source_change(
+	"TypeScript plain comment after a hashbang",
+	"ts",
+	"#!/usr/bin/env node\n",
+	{ "// x" },
+	"run();\n",
+	true
+)
+
+local emit_tag = "const emit = (parts: TemplateStringsArray) => (console.log(parts[0]), 1);\n"
+source_change(
+	"TypeScript slash ambiguity carries across a regex class with slashes",
+	"ts",
+	emit_tag .. "if (true) /[//]/.source.length\n  / emit`/\n",
+	{ "// x" },
+	"`;\n// `\n",
+	false
+)
+source_change(
+	"TypeScript slash ambiguity carries across a regex at line end",
+	"ts",
+	emit_tag .. "if (true) /a/\n  / emit`/\n",
+	{ "// x" },
+	"`;\n// `\n",
+	false
+)
+source_change(
+	"TypeScript division after a line with an ambiguous slash",
+	"ts",
+	"if (x) /a/.test(y);\nconst z = a / b;\n",
+	{ "// x" },
+	"",
+	true
+)
+source_change(
+	"TypeScript assignment clears slash ambiguity from an earlier line",
+	"ts",
+	"if (x) /a/.test(y);\n" .. [[const z = /["'`]/;]] .. "\n",
+	{ "// x" },
+	"",
+	true
+)

@@ -193,6 +193,245 @@ function M.comment_only(diff_text)
 	return true
 end
 
+local regex_keywords = {}
+for keyword in
+	("return typeof instanceof in of new delete void throw case do else yield await"):gmatch("%S+")
+do
+	regex_keywords[keyword] = true
+end
+
+local function line_break(source, index)
+	if source:sub(index, index) == "\r" then
+		return source:sub(index + 1, index + 1) == "\n" and 2 or 1
+	elseif source:sub(index, index) == "\n" then
+		return 1
+	elseif source:find("^\226\128[\168\169]", index) then
+		return 3
+	end
+end
+
+local function line_end(source, index)
+	while index <= #source and not line_break(source, index) do
+		index = index + 1
+	end
+	return index
+end
+
+local function unicode_space(source, index)
+	if source:find("^\194\160", index) then
+		return 2
+	end
+	local char = source:sub(index, index + 2)
+	if
+		char == "\225\154\128"
+		or char:match("^\226\128[\128-\138\168\169\175]$")
+		or char == "\226\129\159"
+		or char == "\227\128\128"
+		or char == "\239\187\191"
+	then
+		return 3
+	end
+end
+
+local function word_end(source, index)
+	while true do
+		local after = source:match("^[%w_$]+()", index)
+		if after then
+			index = after
+		elseif (source:byte(index) or 0) >= 128 and not unicode_space(source, index) then
+			index = index + 1
+		else
+			return index
+		end
+	end
+end
+
+local function literal_end(source, index, delimiter)
+	local regex, in_class = delimiter == "/", false
+	while index <= #source do
+		local char = source:sub(index, index)
+		if line_break(source, index) then
+			return nil
+		elseif char == "\\" then
+			local continued = line_break(source, index + 1)
+			if regex and continued then
+				return nil
+			end
+			index = index + 1 + (continued or 1)
+		elseif char == delimiter and not in_class then
+			return regex and word_end(source, index + 1) or index + 1
+		else
+			if regex and char == "[" then
+				in_class = true
+			elseif regex and char == "]" then
+				in_class = false
+			end
+			index = index + 1
+		end
+	end
+end
+
+local function clean_slash_line_end(source, index)
+	local ending = line_end(source, index + 1)
+	local line = source:sub(index, ending - 1)
+	if not line:find("[`\"'{}]") and not line:find("/*", 1, true) then
+		return ending
+	end
+end
+
+local function typescript_tokens(source)
+	local tokens, templates = {}, {}
+	local index, template_start = source:match("^\239\187\191()") or 1, 1
+	if source:sub(index, index + 1) == "#!" then
+		index = line_end(source, index + 2)
+	end
+	local regex_allowed, uncertain_prefix, after_dot = true, false, false
+	local doubt_line_end
+	while index <= #source do
+		local char, pair = source:sub(index, index), source:sub(index, index + 1)
+		local depth = templates[#templates]
+		if depth == 0 then
+			if char == "`" then
+				templates[#templates] = nil
+				if #templates == 0 then
+					tokens[#tokens + 1] = source:sub(template_start, index)
+				end
+				index, regex_allowed, after_dot = index + 1, false, false
+			elseif pair == "${" then
+				templates[#templates] = 1
+				index, regex_allowed, uncertain_prefix, after_dot = index + 2, true, false, false
+			else
+				index = index + (char == "\\" and 2 or 1)
+			end
+		elseif source:find("^%s", index) then
+			index = index + 1
+		elseif pair == "//" then
+			index = line_end(source, index + 2)
+		elseif pair == "/*" then
+			local closing = source:find("*/", index + 2, true)
+			if not closing then
+				return nil
+			end
+			index = closing + 2
+		elseif char == "`" then
+			doubt_line_end = nil
+			if #templates == 0 then
+				template_start = index
+			end
+			templates[#templates + 1] = 0
+			index = index + 1
+		else
+			local start = index
+			local space = (source:byte(index) or 0) >= 128 and unicode_space(source, index)
+			if space then
+				index = index + space
+			elseif char == "/" then
+				local after = literal_end(source, index + 1, "/")
+				if
+					after
+					and (not doubt_line_end or index >= doubt_line_end)
+					and (doubt_line_end or not regex_allowed or uncertain_prefix)
+				then
+					doubt_line_end = clean_slash_line_end(source, index)
+					if not doubt_line_end then
+						return nil
+					end
+				end
+				if regex_allowed and not after then
+					return nil
+				end
+				index = regex_allowed and after or index + 1
+				regex_allowed, uncertain_prefix, after_dot = not regex_allowed, false, false
+			elseif char == "'" or char == '"' then
+				local after = literal_end(source, index + 1, char)
+				if not after then
+					return nil
+				end
+				doubt_line_end = nil
+				index, regex_allowed, after_dot = after, false, false
+			else
+				index = word_end(source, index)
+				if index > start then
+					local word = source:sub(start, index - 1)
+					regex_allowed = regex_keywords[word] == true
+					uncertain_prefix = after_dot or word == "of" or word == "yield" or word == "await"
+					after_dot = false
+				else
+					if doubt_line_end and start >= doubt_line_end then
+						doubt_line_end = nil
+					end
+					if depth and char == "{" then
+						templates[#templates] = depth + 1
+					elseif depth and char == "}" then
+						templates[#templates] = depth - 1
+					end
+					index, regex_allowed = index + 1, char ~= ")" and char ~= "]"
+					uncertain_prefix = char:find("[}+.>!%-]") ~= nil
+					after_dot = char == "."
+				end
+			end
+			if not space and #templates == 0 then
+				tokens[#tokens + 1] = source:sub(start, index - 1)
+			end
+		end
+	end
+	return #templates == 0 and tokens or nil
+end
+
+local function code_matches(rt, options, dir, reviewed, current)
+	local output = rt.path(dir, "source")
+	local changed = rt.exec({
+		"git",
+		"diff",
+		"--name-only",
+		"-z",
+		"--no-renames",
+		"--no-relative",
+		"--ignore-submodules=none",
+		"--output=" .. output,
+		reviewed,
+		current,
+		"--",
+	}, options)
+	local paths = changed.code == 0 and rt.read(output)
+	if not paths or paths == "" then
+		return false
+	end
+	local function read_blob(tree, file)
+		local result = rt.exec({
+			"sh",
+			"-c",
+			'git cat-file blob "$1" > "$2"',
+			"orc",
+			tree .. ":" .. file,
+			output,
+		}, options)
+		return result.code == 0 and rt.read(output) or nil
+	end
+	for _, file in ipairs(vim.split(paths, "\0", { plain = true, trimempty = true })) do
+		local before, after = read_blob(reviewed, file), read_blob(current, file)
+		if not before or not after then
+			return false
+		end
+		if file:sub(-4) == ".lua" then
+			local old_chunk, new_chunk = loadstring(before), loadstring(after)
+			if
+				not old_chunk
+				or not new_chunk
+				or string.dump(old_chunk, true) ~= string.dump(new_chunk, true)
+			then
+				return false
+			end
+		else
+			local old_tokens, new_tokens = typescript_tokens(before), typescript_tokens(after)
+			if not old_tokens or not new_tokens or not vim.deep_equal(old_tokens, new_tokens) then
+				return false
+			end
+		end
+	end
+	return true
+end
+
 ---Compare a reviewed tree to the current checkout.
 ---@param rt orc.Runtime
 ---@param path string Checkout path.
@@ -207,8 +446,9 @@ function M.compare(rt, path, reviewed_tree)
 	if now == reviewed_tree then
 		return true
 	end
-	local patch = with_temp_dir(rt, function(dir)
+	local accepted = with_temp_dir(rt, function(dir)
 		local raw_patch = rt.path(dir, "diff")
+		local options = { cwd = path, env = { LC_ALL = "C" } }
 		local diff = rt.exec({
 			"git",
 			"diff",
@@ -227,10 +467,13 @@ function M.compare(rt, path, reviewed_tree)
 			reviewed_tree,
 			now,
 			"--",
-		}, { cwd = path, env = { LC_ALL = "C" } })
-		return diff.code == 0 and rt.read(raw_patch) or nil
-	end)
-	local accepted = patch ~= nil and patch ~= "" and M.comment_only(patch)
+		}, options)
+		local patch = diff.code == 0 and rt.read(raw_patch)
+		return patch
+			and patch ~= ""
+			and M.comment_only(patch)
+			and code_matches(rt, options, dir, reviewed_tree, now)
+	end) == true
 	return accepted, accepted or nil
 end
 

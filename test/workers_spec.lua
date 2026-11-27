@@ -3891,6 +3891,9 @@ local function review_fixture(kind)
 			end
 			return git_rt.exec(argv, opts)
 		end
+		if argv[1] == "sh" and argv[2] == "-c" and vim.startswith(argv[3], "git cat-file blob ") then
+			return git_rt.exec(argv, opts)
+		end
 		return exec(argv, opts)
 	end
 	state.processName = kind or "codex"
@@ -3952,6 +3955,22 @@ for _, route in ipairs({ "self", "follow-up", "independent" }) do
 		assert(state.record().reviewed.stagedFingerprint)
 	end)
 end
+
+Test.test("workers close gate refuses deletions inside a reviewed template", function()
+	local rt, state = review_fixture()
+	local file = rt.abspath("source.ts")
+	rt.write(file, "const value = `\n// still part of the string\n`;\n")
+	local args = { "--review", ".scratch/template-review.md" }
+	Test.eq(state.run("review-begin", args).code, 0)
+	rt.write(rt.abspath(args[2]), "Accepted\n")
+	rt.write(file, "const value = `\n`;\n")
+	local refused = state.run("close", args)
+	Test.eq(
+		{ refused.code, refused.result.status, refused.result.reviewDelta },
+		{ 1, "not-reviewed" }
+	)
+	Test.eq(state.closed, {})
+end)
 
 Test.test(
 	"workers close gate refuses staging a self-reviewed change with an identical tree",

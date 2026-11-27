@@ -51,11 +51,11 @@ diff match the review, they also accept a tree diff limited to deletions of whol
 comments and blank lines in `.ts`, `.mts`, `.cts`, and `.lua` files. The tree
 snapshot starts from a temporary copy of the real Git index, so it includes
 working-copy edits to tracked files that match an ignore rule. The checkout
-fingerprint must stay the same across the comparison. Comment-shaped lines
-inside multiline strings or block comments opened above the deleted run can
-pass the check. Directive removals and file changes such as additions, deletions
-or mode changes require a new review. Records missing a tree or staged fingerprint
-require a matching checkout fingerprint. `pane close` reports
+fingerprint must stay the same across the comparison. Every touched file must
+also have the same code before and after, compared as stripped Lua bytecode or
+TypeScript code tokens. Directive removals and file changes such as additions,
+deletions or mode changes require a new review. Records missing a tree or staged
+fingerprint require a matching checkout fingerprint. `pane close` reports
 `reviewDelta: "comments-only"` when the deletion check authorizes closure. Scopers,
 exec workers and exited processes are exempt from the review requirement. Use
 `close --no-review` for an abandoned, stalled or failed task, an unavailable review
