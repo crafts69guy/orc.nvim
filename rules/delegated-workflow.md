@@ -89,8 +89,9 @@
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex
   reference for the Claude review command. Give reviewers the fresh package, brief
   and acceptance criteria. Rerun safe, reviewer-bounded `proven` commands and treat
-  other claims as `unproven`. Drop non-repros. An `inconclusive` verdict is not a
-  pass: run the missing check or record the review as pending.
+  other claims as `unproven`. Drop non-repros and log each as a ruling. An
+  `inconclusive` verdict is not a pass: run the missing check or record the
+  review as pending.
 
 ## Follow-ups and handoff
 
@@ -98,6 +99,9 @@
   `orc gate` on the exact tree that will be committed. Reuse a gate run when the
   tree and required checks match. Run the affected checks again if integration or
   fixes change that tree.
+- Log each dropped finding and each decision you make without the user in
+  `.scratch/<feature>/log.md` as `Ruling: <what> — <why> — <cost if wrong>`.
+  List every ruling in the handoff to the user.
 - Merge findings into one follow-up for the same implementer. Allow at most two
   fix rounds, then sharpen the brief for a new worker. When a fix round leaves
   its finding open, write the assumption the failed fixes share in the task log
