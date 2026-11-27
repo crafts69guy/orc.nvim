@@ -3872,7 +3872,7 @@ Test.test("workers wait failures are JSON with a state and hint, never a traceba
 end)
 
 -- A ready TUI worker in a real temporary repository, so review fingerprints run real Git.
-local function review_fixture(kind)
+local function review_fixture(kind, subdir)
 	local rt, state = fake()
 	local git_rt, exec = runtime.new({ cwd = rt.cwd }), rt.exec
 	local function git(...)
@@ -3901,20 +3901,24 @@ local function review_fixture(kind)
 		return exec(argv, opts)
 	end
 	state.processName = kind or "codex"
-	Test.eq(
-		workers.run(rt, {
-			"start",
-			"feature",
-			"task",
-			"--path",
-			rt.cwd,
-			"--brief",
-			"brief.md",
-			"--kind",
-			state.processName,
-		}).code,
-		0
-	)
+	local path = subdir and rt.abspath(subdir) or rt.cwd
+	local args = {
+		"start",
+		"feature",
+		"task",
+		"--path",
+		path,
+		"--brief",
+		"brief.md",
+		"--kind",
+		state.processName,
+	}
+	if subdir then
+		rt.mkdir(path)
+		state.processCwd = path
+		args[#args + 1] = "--allow-subdir"
+	end
+	Test.eq(workers.run(rt, args).code, 0)
 	state.hook("UserPromptSubmit")
 	state.hook("Stop")
 	state.native = "idle"
@@ -4100,6 +4104,7 @@ Test.test(
 	"workers close accepts a fresh pinned independent review for the current checkout",
 	function()
 		local rt, state = review_fixture()
+		rt.write(rt.abspath("implementation.txt"), "reviewable change\n")
 		local args = { "--review", ".scratch/review.md" }
 		state.report()
 		local next_step = state.run("wait", { "--until", "report", "--timeout", "0" }).result.next
@@ -4145,6 +4150,7 @@ Test.test(
 
 Test.test("workers close refuses missing empty and unreadable saved reviews", function()
 	local rt, state = review_fixture()
+	rt.write(rt.abspath("implementation.txt"), "reviewable change\n")
 	local read = rt.read
 	rt.read = function(file)
 		if file == rt.cwd .. "/.scratch/unreadable.md" then
@@ -4193,6 +4199,7 @@ Test.test("workers reject stale review evidence after the final Rex identity rea
 		{ file = ".scratch/review.md", text = "", reason = "review report is empty" },
 	}) do
 		local rt, state = review_fixture()
+		rt.write(rt.abspath("implementation.txt"), "reviewable change\n")
 		local args = { "--review", ".scratch/review.md" }
 		Test.eq(state.run("review-begin", args).code, 0)
 		rt.write(rt.abspath(args[2]), "Accepted\n")
@@ -4247,6 +4254,7 @@ Test.test(
 	"workers reject a preexisting report, stale content and pins for another path, diff or run",
 	function()
 		local rt, state = review_fixture()
+		rt.write(rt.abspath("implementation.txt"), "reviewable change\n")
 		local old = { "--review", ".scratch/old.md" }
 		local args = { "--review", ".scratch/review.md" }
 		local file = rt.abspath(args[2])
@@ -4291,6 +4299,7 @@ Test.test(
 
 Test.test("workers review pin and hook or snapshot writes preserve each other's state", function()
 	local rt, state = review_fixture()
+	rt.write(rt.abspath("implementation.txt"), "reviewable change\n")
 	local first = { "--review", ".scratch/first.md" }
 	local second = { "--review", ".scratch/second.md" }
 	local third = { "--review", ".scratch/third.md" }
@@ -4311,6 +4320,235 @@ Test.test("workers review pin and hook or snapshot writes preserve each other's 
 	end)
 	workers.collect(rt)
 	Test.eq(state.record().reviewPin.report, rt.abspath(third[2]))
+end)
+
+Test.test(
+	"workers review-begin packages uncommitted changes and preserves the close pin",
+	function()
+		local rt, state, git = review_fixture()
+		local report = vim.fs.joinpath(Test.temp(), "review", "findings.md")
+		git("checkout", "-q", "-b", "main--task")
+		rt.write(rt.abspath("tracked.txt"), "commit-only content\n")
+		git("commit", "-qam", "task commit")
+		rt.write(rt.abspath("tracked.txt"), "staged content\n")
+		git("add", "--", "tracked.txt")
+		rt.write(rt.abspath("tracked.txt"), "working content\n")
+		rt.write(rt.abspath("untracked file.txt"), "untracked content\n")
+		rt.write(rt.abspath("-"), "content of the file named dash\n")
+		local index = assert(rt.read(rt.abspath(".git/index")))
+		local pin = state.run("review-begin", { "--review", report })
+		Test.eq(pin.code, 0)
+		Test.eq(pin.result.package, rt.abspath(report .. ".diff"))
+		local package = assert(rt.read(pin.result.package))
+		for _, expected in ipairs({
+			"MM tracked.txt",
+			'?? "untracked file.txt"',
+			"1 file changed, 1 insertion(+), 1 deletion(-)",
+			"-commit-only content",
+			"+working content",
+			"--- /dev/null",
+			"+++ b/untracked file.txt",
+			"+untracked content",
+			"+content of the file named dash",
+		}) do
+			assert(package:find(expected, 1, true), expected)
+		end
+		Test.eq(package:find("task commit", 1, true), nil)
+		Test.eq(rt.read(rt.abspath(".git/index")), index)
+		rt.write(rt.abspath(report), "Accepted\n")
+		Test.eq(state.run("close", { "--review", report }).result.status, "closed")
+	end
+)
+
+Test.test(
+	"workers review-begin and close hash root-level untracked files from a subdirectory",
+	function()
+		local rt = review_fixture("codex", "nested")
+		local path = rt.abspath("nested")
+		local report = rt.abspath(".scratch/review.md")
+		rt.write(rt.abspath("root-only.txt"), "root-level content\n")
+		local pin = workers.run(rt, { "review-begin", "task", "--path", path, "--review", report })
+		assert(pin.code == 0, pin.result.stderr)
+		local package = assert(rt.read(pin.result.package))
+		assert(package:find("+root-level content", 1, true))
+		rt.write(report, "Accepted\n")
+		local closed = workers.run(rt, { "close", "task", "--path", path, "--review", report })
+		assert(closed.code == 0, closed.result.stderr)
+		Test.eq(closed.result.status, "closed")
+	end
+)
+
+Test.test("workers review-begin refuses checkout changes during packaging", function()
+	local rt, state = review_fixture()
+	local report = ".scratch/review.md"
+	local source = rt.abspath("untracked.txt")
+	rt.write(source, "before packaging\n")
+	local exec = rt.exec
+	rt.exec = function(argv, opts)
+		local response = exec(argv, opts)
+		if argv[1] == "git" and argv[2] == "diff" and vim.tbl_contains(argv, "--no-index") then
+			rt.write(source, "changed during packaging\n")
+		end
+		return response
+	end
+	local refused = state.run("review-begin", { "--review", report })
+	Test.eq(refused.code, 1)
+	assert(
+		refused.result.stderr:find("checkout changed while packaging", 1, true),
+		refused.result.stderr
+	)
+	Test.eq(state.record().reviewPin, nil)
+	Test.eq(rt.exists(rt.abspath(report .. ".diff")), false)
+end)
+
+Test.test("workers review-begin packages committed-only task changes against the base", function()
+	local rt, state, git = review_fixture()
+	git("checkout", "-qb", "main--task")
+	rt.write(rt.abspath("tracked.txt"), "committed change\n")
+	git("commit", "-qam", "task commit")
+	Test.eq(git("status", "--porcelain"), "")
+	local pin = state.run("review-begin", { "--review", ".scratch/review.md" })
+	Test.eq(pin.code, 0)
+	assert(pin.result.package, "missing committed review package")
+	local package = assert(rt.read(pin.result.package))
+	for _, expected in ipairs({
+		"main..HEAD",
+		"main...HEAD",
+		"task commit",
+		"1 file changed, 1 insertion(+), 1 deletion(-)",
+		"+committed change",
+	}) do
+		assert(package:find(expected, 1, true), expected)
+	end
+end)
+
+Test.test("workers review-begin refuses a checkout with nothing to review", function()
+	local rt, state, git = review_fixture()
+	git("checkout", "-qb", "main--task")
+	local report = ".scratch/review.md"
+	local refused = state.run("review-begin", { "--review", report })
+	Test.eq(refused.code, 1)
+	assert(refused.result.stderr:find(rt.cwd, 1, true))
+	assert(refused.result.stderr:find("no uncommitted changes or task commits", 1, true))
+	Test.eq(state.record().reviewPin, nil)
+	Test.eq(rt.exists(rt.abspath(report .. ".diff")), false)
+end)
+
+Test.test("workers review-begin refuses an existing package without replacing it", function()
+	local rt, state = review_fixture()
+	rt.write(rt.abspath("tracked.txt"), "working content\n")
+	local report = ".scratch/review.md"
+	local package = rt.abspath(report .. ".diff")
+	rt.write(package, "existing package\n")
+	local refused = state.run("review-begin", { "--review", report })
+	Test.eq(refused.code, 1)
+	assert(refused.result.stderr:find("package must be a new file", 1, true))
+	Test.eq(state.record().reviewPin, nil)
+	Test.eq(rt.read(package), "existing package\n")
+end)
+
+Test.test(
+	"workers review-begin preserves the checkout when the package would be untracked",
+	function()
+		local rt, state = review_fixture()
+		rt.write(rt.abspath("tracked.txt"), "working content\n")
+		rt.mkdir(rt.abspath(".scratch"))
+		assert(vim.uv.fs_symlink(rt.cwd, rt.abspath(".scratch/checkout")))
+		local report = ".scratch/checkout/review.md"
+		local refused = state.run("review-begin", { "--review", report })
+		Test.eq(refused.code, 1)
+		assert(refused.result.stderr:find("outside the checkout or Git-ignored", 1, true))
+		Test.eq(state.record().reviewPin, nil)
+		Test.eq(rt.exists(rt.abspath("review.md.diff")), false)
+	end
+)
+
+Test.test("workers review-begin removes the package when saving the pin fails", function()
+	local rt, state = review_fixture()
+	rt.write(rt.abspath("tracked.txt"), "working content\n")
+	local report = ".scratch/review.md"
+	local worker_file, write = state.file(), rt.write
+	rt.write = function(path, data)
+		assert(path ~= worker_file, "failed to save pin")
+		write(path, data)
+	end
+	local refused = state.run("review-begin", { "--review", report })
+	Test.eq(refused.code, 1)
+	assert(refused.result.stderr:find("failed to save pin", 1, true))
+	Test.eq(state.record().reviewPin, nil)
+	Test.eq(rt.exists(rt.abspath(report .. ".diff")), false)
+	rt.write = write
+	local retried = state.run("review-begin", { "--review", report })
+	Test.eq(retried.code, 0)
+	assert(retried.result.package, "missing package after retry")
+end)
+
+Test.test(
+	"workers review-begin rejects pre-judging prompt phrases with their line number",
+	function()
+		local rt, state = review_fixture()
+		rt.write(rt.abspath("tracked.txt"), "working content\n")
+		local report, prompt = ".scratch/review.md", ".scratch/prompt.md"
+		for _, phrase in ipairs({
+			"Do NoT FlAg",
+			"DOn'T FlAg",
+			"aT MoSt MiNoR",
+			"tHe PlAn ChOsE",
+			"nOt a DeFeCt",
+			"DoN't TrEaT",
+		}) do
+			rt.write(rt.abspath(prompt), "Review the checkout.\n\nPlease " .. phrase .. " this.\n")
+			local refused = state.run("review-begin", { "--review", report, "--prompt", prompt })
+			Test.eq(refused.code, 1)
+			assert(refused.result.stderr:lower():find(phrase:lower(), 1, true), refused.result.stderr)
+			assert(refused.result.stderr:find("line 3", 1, true), refused.result.stderr)
+			Test.eq(state.record().reviewPin, nil)
+			Test.eq(rt.exists(rt.abspath(report .. ".diff")), false)
+		end
+	end
+)
+
+Test.test("workers review-begin reads the prompt before pinning", function()
+	local rt, state = review_fixture()
+	rt.write(rt.abspath("tracked.txt"), "working content\n")
+	local report, prompt = ".scratch/review.md", ".scratch/prompt.md"
+	local args = { "--review", report, "--prompt", prompt }
+	local function refuse_prompt()
+		local refused = state.run("review-begin", args)
+		Test.eq(refused.code, 1)
+		assert(refused.result.stderr:find("cannot read review prompt", 1, true), refused.result.stderr)
+		assert(refused.result.stderr:find(rt.abspath(prompt), 1, true))
+		Test.eq(state.record().reviewPin, nil)
+		Test.eq(rt.exists(rt.abspath(report .. ".diff")), false)
+	end
+	refuse_prompt()
+	rt.write(rt.abspath(prompt), "Read the review package and report findings.\n")
+	local read = rt.read
+	rt.read = function(path)
+		if path == rt.abspath(prompt) then
+			return nil, "permission denied"
+		end
+		return read(path)
+	end
+	refuse_prompt()
+	rt.read = read
+	local pin = state.run("review-begin", args)
+	Test.eq(pin.code, 0)
+	Test.eq(state.record().reviewPin.runId, pin.result.runId)
+	Test.eq(rt.exists(rt.abspath(report .. ".diff")), true)
+end)
+
+Test.test("workers review-begin alone accepts and advertises the prompt option", function()
+	local _, state = fake()
+	local refused = state.run("prune", { "--prompt", "prompt.md" })
+	Test.eq(refused.code, 1)
+	assert(refused.result.stderr:find("--prompt only applies to review-begin", 1, true))
+	assert(require("orc.cli").usage:find("--review <new-file> [--prompt <file>]", 1, true))
+	assert(
+		require("orc.completion")
+			.fish()
+			:find("__fish_seen_subcommand_from review-begin' -l prompt -r", 1, true)
+	)
 end)
 
 Test.test("workers expose review-begin and scope the saved review flag", function()

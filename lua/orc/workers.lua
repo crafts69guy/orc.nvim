@@ -567,7 +567,7 @@ local function reviewable(record)
 end
 
 local function git(rt, path, ...)
-	local done = rt.exec({ "git", ... }, { cwd = path })
+	local done = rt.exec({ "git", ... }, { cwd = path, env = { GIT_OPTIONAL_LOCKS = "0" } })
 	assert(done.code == 0, "orc pane: git " .. (...) .. " failed: " .. vim.trim(done.stderr))
 	return done.stdout
 end
@@ -588,9 +588,71 @@ local function fingerprint(rt, path)
 		end
 	end
 	if #untracked > 2 then
-		parts[#parts + 1] = git(rt, path, unpack(untracked))
+		local checkout = vim.trim(git(rt, path, "rev-parse", "--show-toplevel"))
+		parts[#parts + 1] = git(rt, checkout, unpack(untracked))
 	end
-	return vim.fn.sha256(table.concat(parts, "\0")), vim.fn.sha256(head .. "\0" .. staged)
+	return vim.fn.sha256(table.concat(parts, "\0")), vim.fn.sha256(head .. "\0" .. staged), status
+end
+
+local function review_base(rt, record)
+	local branch = vim.trim(git(rt, record.path, "branch", "--show-current"))
+	local base = branch:match("^(.+)%-%-" .. vim.pesc(record.task) .. "$")
+	if base and vim.trim(git(rt, record.path, "rev-list", "--count", base .. "..HEAD")) ~= "0" then
+		return base
+	end
+end
+
+local function review_package(rt, record, checkout, status)
+	local sections = {}
+	local function section(title, ...)
+		sections[#sections + 1] = "=== " .. title .. " ===\n" .. git(rt, checkout, ...)
+	end
+	local range = "HEAD"
+	if status ~= "" then
+		section("git status", "status", "--porcelain=v1", "--untracked-files=all")
+	else
+		local base = assert(
+			review_base(rt, record),
+			"orc pane review-begin: " .. record.path .. " has no uncommitted changes or task commits"
+		)
+		local commits = base .. "..HEAD"
+		section("git log --oneline " .. commits, "log", "--oneline", "--no-color", commits)
+		range = base .. "...HEAD"
+	end
+	section("git diff --stat " .. range, "diff", "--stat", "--no-color", range, "--")
+	section(
+		"git diff " .. range,
+		"diff",
+		"--no-ext-diff",
+		"--no-textconv",
+		"--no-color",
+		"-U10",
+		range,
+		"--"
+	)
+	for _, entry in ipairs(vim.split(status, "\0", { trimempty = true })) do
+		if entry:sub(1, 3) == "?? " then
+			local name = entry:sub(4)
+			local done = rt.exec({
+				"git",
+				"diff",
+				"--no-index",
+				"--no-ext-diff",
+				"--no-textconv",
+				"--no-color",
+				"-U10",
+				"--",
+				"/dev/null",
+				name == "-" and "./-" or name,
+			}, { cwd = checkout })
+			assert(
+				done.code == 0 or (done.code == 1 and done.stdout ~= ""),
+				"orc pane review-begin: cannot diff " .. name .. ": " .. vim.trim(done.stderr)
+			)
+			sections[#sections + 1] = "=== Untracked " .. vim.inspect(name) .. " ===\n" .. done.stdout
+		end
+	end
+	return table.concat(sections, "\n")
 end
 
 local function review_match(rt, path, review)
@@ -611,25 +673,112 @@ local function independent_review_hint(record)
 	local target = record.task .. " --path " .. vim.fn.shellescape(record.path)
 	return "run no-comments on the current diff, then orc pane review-begin "
 		.. target
-		.. " --review <new-file> before dispatching an independent review; read and accept its verdict, then run orc pane close "
+		.. " --review <new-file> [--prompt <file>] to create the package for independent review; read and accept its verdict, then run orc pane close "
 		.. target
 		.. " --review <saved report>"
 end
 
-local function require_new_review_file(file)
+local function require_new_review_file(file, kind)
 	local _, err, code = vim.uv.fs_lstat(file)
-	assert(code == "ENOENT", "orc pane review-begin: report must be a new file: " .. (err or file))
+	assert(
+		code == "ENOENT",
+		"orc pane review-begin: " .. kind .. " must be a new file: " .. (err or file)
+	)
 end
 
-local function review_begin(rt, record, path)
+local function require_review_location(rt, checkout, file)
+	local parent = vim.fs.dirname(file)
+	local resolved = vim.uv.fs_realpath(parent)
+	while not resolved do
+		parent = vim.fs.dirname(parent)
+		resolved = vim.uv.fs_realpath(parent)
+	end
+	local destination = resolved .. file:sub(#parent + 1)
+	if vim.fs.relpath(checkout, destination) then
+		local ignored = rt.exec({ "git", "check-ignore", "-q", "--", destination }, { cwd = checkout })
+		assert(
+			ignored.code == 0,
+			"orc pane review-begin: use a path outside the checkout or Git-ignored: " .. file
+		)
+	end
+end
+
+local function check_review_prompt(rt, path)
+	local file = rt.abspath(path)
+	local stat, stat_error = vim.uv.fs_stat(file)
+	local message = "orc pane review-begin: cannot read review prompt " .. file .. ": "
+	assert(stat and stat.type == "file", message .. (stat_error or "expected a regular file"))
+	local text, read_error = rt.read(file)
+	assert(text, message .. tostring(read_error))
+	local phrases = {
+		"do not flag",
+		"don't flag",
+		"at most minor",
+		"the plan chose",
+		"not a defect",
+		"don't treat",
+	}
+	for number, line in ipairs(vim.split(text:lower(), "\n", { plain = true })) do
+		for _, phrase in ipairs(phrases) do
+			if line:find(phrase, 1, true) then
+				error(
+					("orc pane review-begin: %s line %d pre-judges findings with %q"):format(
+						file,
+						number,
+						phrase
+					),
+					0
+				)
+			end
+		end
+	end
+end
+
+local function write_review_package(rt, file, contents)
+	rt.mkdir(vim.fs.dirname(file))
+	local fd, open_error = vim.uv.fs_open(file, "wx", 384)
+	local message = "orc pane review-begin: cannot write package " .. file .. ": "
+	assert(fd, message .. tostring(open_error))
+	local ok, err = pcall(function()
+		local offset = 0
+		while offset < #contents do
+			local written = assert(vim.uv.fs_write(fd, contents:sub(offset + 1), offset))
+			assert(written > 0, "file write made no progress")
+			offset = offset + written
+		end
+		assert(vim.uv.fs_fsync(fd))
+	end)
+	local closed, close_error = vim.uv.fs_close(fd)
+	if not ok or not closed then
+		rt.remove(file)
+		error(message .. tostring(err or close_error), 0)
+	end
+end
+
+local function review_begin(rt, record, path, prompt)
 	assert(record.state ~= "closed", "orc pane review-begin: worker is closed")
 	assert(path and path ~= "", "orc pane review-begin: --review is required")
 	local file = rt.abspath(path)
-	require_new_review_file(file)
-	local baseline, staged = fingerprint(rt, record.path)
+	local package = file .. ".diff"
+	require_new_review_file(file, "report")
+	require_new_review_file(package, "package")
+	if prompt then
+		check_review_prompt(rt, prompt)
+	end
+	local checkout = vim.trim(git(rt, record.path, "rev-parse", "--show-toplevel"))
+	checkout = vim.uv.fs_realpath(checkout) or checkout
+	require_review_location(rt, checkout, file)
+	require_review_location(rt, checkout, package)
+	local baseline, staged, status = fingerprint(rt, record.path)
+	local contents = review_package(rt, record, checkout, status)
 	local tree = review_delta.snapshot(rt, record.path)
+	assert(
+		fingerprint(rt, record.path) == baseline,
+		"orc pane review-begin: checkout changed while packaging"
+	)
+	require_new_review_file(file, "report")
+	write_review_package(rt, package, contents)
 	local seconds, microseconds = vim.uv.gettimeofday()
-	require_new_review_file(file)
 	record.reviewPin = {
 		runId = record.runId,
 		report = file,
@@ -638,12 +787,18 @@ local function review_begin(rt, record, path)
 		stagedFingerprint = staged,
 		started = seconds + microseconds / 1000000,
 	}
-	save(rt, record, "review-pin")
-	return result(
-		rt,
-		0,
-		{ status = "review-pinned", task = record.task, runId = record.runId, report = file }
-	)
+	local saved, err = pcall(save, rt, record, "review-pin")
+	if not saved then
+		rt.remove(package)
+		error(err, 0)
+	end
+	return result(rt, 0, {
+		status = "review-pinned",
+		task = record.task,
+		runId = record.runId,
+		report = file,
+		package = package,
+	})
 end
 
 local function independent_review(rt, record, path)
@@ -688,10 +843,8 @@ local function review_target(rt, record, values)
 	elseif git(rt, record.path, "status", "--porcelain", "--untracked-files=all") ~= "" then
 		return "the uncommitted changes (staged, unstaged and untracked)"
 	end
-	local branch = vim.trim(git(rt, record.path, "branch", "--show-current"))
-	-- Task worktrees use the `<base>--<task>` branch from `orc wt new`.
-	local base = branch:match("^(.+)%-%-" .. vim.pesc(record.task) .. "$")
-	if base and vim.trim(git(rt, record.path, "rev-list", "--count", base .. "..HEAD")) ~= "0" then
+	local base = review_base(rt, record)
+	if base then
 		return "the branch diff `git diff " .. base .. "...HEAD`"
 	end
 	error(
@@ -1816,6 +1969,7 @@ function M.run(rt, argv)
 			force = "boolean",
 			["no-review"] = "boolean",
 			review = "string",
+			prompt = "string",
 			skill = "string",
 			target = "string",
 		})
@@ -1823,6 +1977,10 @@ function M.run(rt, argv)
 		assert(
 			not values.review or command == "close" or command == "review-begin",
 			"orc pane: --review only applies to close and review-begin"
+		)
+		assert(
+			not values.prompt or command == "review-begin",
+			"orc pane: --prompt only applies to review-begin"
 		)
 		assert(
 			not (values.review and values["no-review"]),
@@ -1912,10 +2070,10 @@ function M.run(rt, argv)
 				return review_run(rt, record, values)
 			elseif command == "review-begin" then
 				assert(
-					vim.tbl_count(values) == 2 and values.review,
-					"usage: orc pane review-begin <task> --path <dir> --review <new-file>"
+					vim.tbl_count(values) == (values.prompt and 3 or 2) and values.review,
+					"usage: orc pane review-begin <task> --path <dir> --review <new-file> [--prompt <file>]"
 				)
-				return review_begin(rt, record, values.review)
+				return review_begin(rt, record, values.review, values.prompt)
 			elseif command == "pause" then
 				return pause(rt, record)
 			elseif command == "close" then

@@ -87,9 +87,14 @@ retrying an ambiguous send must not type a duplicate prompt. Report validation
 checks the current run ID and required sections. Only the orchestrator accepts
 work after reading the diff and rerunning the task's validation.
 For a saved independent review, `pane review-begin` binds a new report path to the
-current run and Git fingerprint before the reviewer starts. `pane close --review`
-checks the pin against the current checkout and the chosen report after the
-orchestrator reads the verdict.
+current run and Git fingerprint, writes `<review-file>.diff`, and returns its
+absolute path as `package`. The package includes the checkout status, stat and
+patch, with untracked files shown as additions. A clean task branch uses its
+commit log, stat and patch against its base. An empty review or an unreadable or
+pre-judging `--prompt` file prevents the pin and package from being created.
+The report and package paths must be outside the task checkout or Git-ignored.
+`pane close --review` checks the pin against the current checkout and the chosen
+report after the orchestrator reads the verdict.
 
 `pane start` guards the checkout's own git toplevel (`--allow-subdir` is explicit),
 including `--here` starts in another repository. `--precheck` runs via `sh -c`

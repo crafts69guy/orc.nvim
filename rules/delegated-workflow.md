@@ -71,20 +71,23 @@
   If no independent reviewer can run, record the blocker and leave the independent
   review pending. Deterministic checks and the applicable review still apply,
   including for work with no parallel tasks.
-- Before launching a saved independent review of a pane task, pin the checkout
-  with `orc pane review-begin <task> --path <checkout> --review <new-file>`.
-  Save the reviewer's output there and read the verdict before passing that same
-  path to `orc pane close --review`. See dispatch's Rex reference for details.
+- Before launching a saved independent review of a pane task, write the reviewer
+  prompt to a file. Name the package at `<review-file>.diff` in the prompt and ask
+  the reviewer to read it once. Pin the checkout and create the package with
+  `orc pane review-begin <task> --path <checkout> --review <review-file> --prompt <prompt-file>`.
+  Save the reviewer's output at `<review-file>` and read the verdict before passing
+  that same path to `orc pane close --review`. See dispatch's Rex reference for details.
 - For cross-vendor review of Codex implementation from a Claude orchestrator, use
   a native `orc:reviewer`. For Claude implementation or a second opinion, write the
-  brief, acceptance criteria and "review `git diff`, end with a verdict" to a prompt
-  file, then run `codex --no-daemon -a never exec --ephemeral --sandbox read-only
+  brief, acceptance criteria and instructions to read `<review-file>.diff` once
+  and end with a verdict to the prompt file. Pass the file to `review-begin --prompt`,
+  then run `codex --no-daemon -a never exec --ephemeral --sandbox read-only
   --ignore-rules -o <report> - < <prompt-file>` in the task checkout using the
   harness's background execution. `codex review --uncommitted` rejects a custom
   prompt, so it cannot carry the brief. Save stdout and stderr under
   `.scratch/<feature>/`.
   For a Codex-written diff under a Codex orchestrator, follow dispatch's Rex
-  reference for the Claude review command. Give reviewers the fresh diff, brief
+  reference for the Claude review command. Give reviewers the fresh package, brief
   and acceptance criteria. Rerun safe, reviewer-bounded `proven` commands and treat
   other claims as `unproven`. Drop non-repros. An `inconclusive` verdict is not a
   pass: run the missing check or record the review as pending.

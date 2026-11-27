@@ -80,6 +80,8 @@ function M.fish()
 			.. "' -l review -r"
 	end
 	lines[#lines + 1] =
+		"complete -c orc -n '__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from review-begin' -l prompt -r"
+	lines[#lines + 1] =
 		"complete -c orc -n '__fish_seen_subcommand_from pane' -l skill -x -a 'ponytail-review ponytail-audit'"
 	for _, flag in ipairs({ "label", "log" }) do
 		lines[#lines + 1] = "complete -c orc -n '__fish_seen_subcommand_from gate' -l " .. flag .. " -r"

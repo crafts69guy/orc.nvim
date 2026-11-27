@@ -63,11 +63,13 @@ skill, or a non-risky fix round the orchestrator verified. Record the reason in 
 task log.
 
 For an independent review, first run
-`orc pane review-begin <task> --path <dir> --review <new-file>`. Choose a path
-that does not exist yet, such as a new file under the ignored `.scratch/` directory.
-Orc pins the current run, absolute report path, checkout fingerprint, tree and
-staged fingerprint before dispatch. Use the same procedure for an independent
-fallback. The orchestrator still reads and accepts the verdict before running
+`orc pane review-begin <task> --path <dir> --review <new-file> [--prompt <file>]`.
+Choose a new report path, such as a file under the orchestrator's `.scratch/`.
+Orc requires checkout changes or task commits, pins the review, and writes
+`<new-file>.diff`. The JSON result gives its absolute path as `package`. Ask the
+reviewer to read that package. Pass the prompt with `--prompt` to check for
+wording that pre-judges findings. Use the same procedure for an independent
+fallback. Save the verdict at the report path and accept it before running
 `orc pane close <task> --path <dir> --review <file>`. After verifying Rex ownership,
 close checks the pin, a fresh nonempty report at that path and the reviewed checkout
 under the same fingerprint and comment-deletion rules. A follow-up run or a change

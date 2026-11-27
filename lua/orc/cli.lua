@@ -8,7 +8,7 @@ M.usage = [[usage: orc <command> [args]
   pane wait <task> --path <dir> [--until report] [--timeout <ms>]
   pane prompt <task> --path <dir> --text <text>|--file <file> [--queue]
   pane review <task> --path <dir> [--skill ponytail-review|ponytail-audit] [--target <range|paths>]
-  pane review-begin <task> --path <dir> --review <new-file>
+  pane review-begin <task> --path <dir> --review <new-file> [--prompt <file>]
   pane pause <task> --path <dir>
   pane close <task> --path <dir> [--force] [--no-review | --review <file>]
   pane prune --path <dir>

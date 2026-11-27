@@ -13,13 +13,16 @@ review is unavailable, record the blocker and leave the review pending.
 
 For a Codex-written diff under a Codex orchestrator, this is a bounded Claude
 review. Run it from the task checkout with absolute `worktree`, `brief` and
-`report` paths. Pin the checkout before launching the reviewer.
+`report` paths. Set `prompt_file` to an absolute path under the orchestrator's
+`.scratch/<feature>/`. Pin the checkout and write the package before launching
+the reviewer.
 
 ```fish
-orc pane review-begin "$task" --path "$worktree" --review "$report"
+printf '%s\n' "Use ponytail:ponytail-review when available. Read $report.diff once and review it against the brief at $brief. Report findings and a verdict." > "$prompt_file"
+and orc pane review-begin "$task" --path "$worktree" --review "$report" --prompt "$prompt_file"
 and claude -p --permission-mode plan --tools Read,Grep,Glob,Bash,Skill \
     --append-system-prompt 'Review only. Read the code and diff without writing files or running tests.' \
-    "Use ponytail:ponytail-review when available. Review the uncommitted diff against the brief at $brief and report findings and a verdict." \
+    < "$prompt_file" \
     > "$report" 2> "$report.stderr"
 ```
 
@@ -44,8 +47,8 @@ outputs and verdicts in that report and accept both before closing.
   block, process exit/error or timeout; a working TUI transcript unchanged for 30+ minutes returns `stalled` with a recovery hint. Missing evidence never ends this wait.
   A done report adds `next`: `orc pane review` for a TUI implementer's work run, then
   `orc pane close` after its review run (directly for scopers and exec workers).
-  When the active level requires independent review, use `pane review-begin`
-  followed by a saved report and `close --review <file>`.
+  When the active level requires independent review, use `pane review-begin` to
+  create the review package, then use the saved verdict with `close --review <file>`.
   After five idle minutes without that report it returns `turn-ended-no-report` with a hint.
   Plain wait can return `turn-ended-no-report` as soon as a turn ends without evidence.
   Both wait modes return `unacknowledged` after 60 seconds without acknowledgment.
@@ -90,10 +93,14 @@ outputs and verdicts in that report and accept both before closing.
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
   never type into a worker pane with `rex send`, which bypasses run IDs and reports.
-- Pin independent review: `orc pane review-begin <task> --path <worktree> --review <new-file>`.
-  Use a new path under `.scratch/<feature>/`, preferably outside the task
-  checkout. Start the reviewer after pinning succeeds. If the run or checkout
-  changes, pin again with a new path and review the updated tree.
+- Pin independent review with
+  `orc pane review-begin <task> --path <worktree> --review <new-file> [--prompt <file>]`.
+  Use a new path under the orchestrator's `.scratch/<feature>/`. The command
+  writes `<new-file>.diff` and returns its absolute path as `package`. Write the
+  prompt to a file naming that package, ask the reviewer to read it once, and
+  pass it with `--prompt` to catch wording that pre-judges findings. Start the
+  reviewer after pinning succeeds. If the run or checkout changes, pin again
+  with a new path and review the updated tree.
 - Close: `orc pane close <task> --path <worktree> [--review <file>]`. A live TUI
   implementer closes only after a done self-review of the checkout as it is now or
   an accepted saved independent review passed with `--review <file>`. Close checks
