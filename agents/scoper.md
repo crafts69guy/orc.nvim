@@ -18,7 +18,8 @@ End with a report containing:
 Keep the final report concise (about 60 lines max); put long logs/outputs under `.scratch/` and cite their paths.
 
 - Run: current run ID when supplied.
-- Status: done, partial, or blocked.
+- Status: done, partial, needs-context or blocked.
+  Use `needs-context` when answers let you continue. Put the exact questions first.
 - Scope: existing behavior and the smallest change, with concrete file citations.
 - Validation: commands and actual results, distinguishing proposed checks from runs.
 - Decisions: unresolved choices or constraints; say none when resolved.

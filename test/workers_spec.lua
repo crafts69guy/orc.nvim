@@ -452,6 +452,16 @@ Test.test("workers validation profile follows shared project memory and is optio
 	end
 end)
 
+Test.test("workers prompts tell implementers and scopers to report needs-context", function()
+	for _, role in ipairs({ "implementer", "scoper" }) do
+		local _, state = fake()
+		Test.eq(state.start({ "--role", role }).code, 0)
+		local prompt = table.concat(state.layout.block.options.command, " ")
+		assert(prompt:find("Status: done|partial|needs-context|blocked", 1, true), role)
+		assert(prompt:find("Status: needs-context", 1, true), role)
+	end
+end)
+
 Test.test("workers reject subdirectories and allow here starts in another checkout", function()
 	for _, allow in ipairs({ false, true }) do
 		local rt, state = fake()
@@ -804,6 +814,22 @@ local function with_exec_runner(fn, body)
 	assert(ok, err)
 end
 
+Test.test("workers exec prompts request blocked instead of needs-context", function()
+	local rt, state = fake()
+	state.processName, state.app = "nvim", "orc"
+	Test.eq(state.start({ "--transport", "exec" }).code, 0)
+	local file = state.file()
+	rt.env.ORC_WORKER_FILE, rt.env.REX_BLOCK = file, state.record().blockId
+	with_exec_runner(function(_, launch)
+		local prompt = assert(launch.argv[#launch.argv]:match("If you need an answer to continue.*"))
+		assert(not prompt:find("needs-context", 1, true), "exec prompt offers needs-context")
+		assert(prompt:find("end the turn with a Status: blocked report", 1, true))
+		return { code = 0, out = "", err = "" }
+	end, function()
+		Test.eq(workers.worker_run(rt, file).code, 0)
+	end)
+end)
+
 Test.test(
 	"workers exec transport launches the owned Lua runner and recognizes its OSC app",
 	function()
@@ -850,6 +876,19 @@ Test.test(
 		Test.eq(state.record().state, "closed")
 	end
 )
+
+Test.test("workers wait routes an exec needs-context report to a TUI worker", function()
+	local _, state = fake()
+	state.processName, state.app = "nvim", "orc"
+	Test.eq(state.start({ "--transport", "exec" }).code, 0)
+	state.hook("UserPromptSubmit")
+	state.report("needs-context")
+	state.exitCode = 0
+	local answer = state.run("wait", { "--until", "report", "--timeout", "0" }).result
+	Test.eq({ answer.evidence, answer.status }, { true, "needs-context" })
+	assert(answer.next:find("new TUI worker", 1, true))
+	assert(not answer.next:find("pane prompt", 1, true))
+end)
 
 Test.test("workers reject unsupported transports before creating a block", function()
 	for _, transport in ipairs({ "bad", "exec" }) do
@@ -1717,6 +1756,86 @@ Test.test(
 		Test.eq(rt.read(rt.path(rt.cwd, ".orc", "report.md")), nil)
 	end
 )
+
+Test.test("workers wait can resume the same worker after needs-context", function()
+	local rt, state = fake()
+	Test.eq(state.start().code, 0)
+	state.hook("UserPromptSubmit")
+	state.hook("Stop")
+	state.native = "idle"
+	local record = state.record()
+	local function wait_report()
+		return state.run("wait", { "--until", "report", "--timeout", "0" }).result
+	end
+	state.report("needs-context", "earlier-run")
+	Test.eq({ wait_report().evidence, state.record().reportStatus }, { false })
+	state.report("needs-context", nil, "")
+	Test.eq({ wait_report().evidence, state.record().reportStatus }, { false })
+	state.report("needs-context")
+	local answer = wait_report()
+	Test.eq({ answer.runId, answer.report, answer.evidence, answer.status }, {
+		record.runId,
+		record.report,
+		true,
+		"needs-context",
+	})
+	local prompt = "orc pane prompt task --path " .. vim.fn.shellescape(rt.cwd) .. " --file <answer>"
+	assert(answer.next and answer.next:find(prompt, 1, true), vim.inspect(answer.next))
+	assert(not answer.next:find("pane review", 1, true))
+	assert(not answer.next:find("pane close", 1, true))
+	local file = rt.path(rt.cwd, "answer.md")
+	rt.write(file, "Use the existing report fields.")
+	local prompted = state.run("prompt", { "--file", file })
+	assert(prompted.result.sent, prompted.result.stderr or prompted.out)
+	local next_run = state.record()
+	Test.eq(next_run.blockId, record.blockId)
+	assert(next_run.runId ~= record.runId)
+	state.hook("UserPromptSubmit")
+	Test.eq(next_run.reportStatus, nil)
+	Test.eq(wait_report().evidence, false)
+end)
+
+Test.test("workers wait routes an unavailable TUI worker's needs-context report", function()
+	for _, case in ipairs({
+		{ exit = 0, state = "exited" },
+		{ exit = 1, state = "error" },
+		{ exit = 1, state = "rate-limited", rateLimited = true },
+	}) do
+		local _, state = fake()
+		Test.eq(state.start().code, 0)
+		state.hook("UserPromptSubmit")
+		state.report("needs-context")
+		state.hook("Stop")
+		state.noChild, state.exitCode = true, case.exit
+		local record = state.record()
+		record.rateLimited = case.rateLimited
+		state.store(record)
+		local answer = state.run("wait", { "--until", "report", "--timeout", "0" }).result
+		Test.eq({ answer.state, answer.evidence, answer.status }, { case.state, true, "needs-context" })
+		Test.eq(answer.next, "include the answers in the brief for a new TUI worker")
+	end
+end)
+
+Test.test("workers status JSON shows needs-context and close requires --no-review", function()
+	local rt, state = fake()
+	Test.eq(state.start().code, 0)
+	state.hook("UserPromptSubmit")
+	state.report("needs-context")
+	state.hook("Stop")
+	state.native = "idle"
+	local plan = rt.path(rt.cwd, ".scratch", "feature", "plan.md")
+	rt.write(plan, "## Tasks\n```yaml\n- id: task\n```\n")
+	local output = require("orc.cli").run(rt, { "status", "--json" })
+	Test.eq(output.code, 0)
+	local snapshot = rt.decode(output.out)
+	Test.eq(snapshot.workers[1].reportStatus, "needs-context")
+	Test.eq(snapshot.features[1].tasks[1].report, { status = "needs-context" })
+	local closed = state.run("close")
+	Test.eq({ closed.code, closed.result.status, state.closed }, { 1, "not-reviewed", {} })
+	assert(closed.result.stderr:find("--no-review", 1, true))
+	Test.eq(state.run("close", { "--no-review" }).result.status, "closed")
+	Test.eq(state.closed, { "block:worker" })
+end)
 
 Test.test("workers followup is a new unconfirmed run and retains the previous report", function()
 	local rt, state = fake()
@@ -3500,6 +3619,14 @@ Test.test("workers parse_report accepts bullets and bold labels and rejects pros
 	)
 end)
 
+Test.test("workers parse the whole needs-context status in plain and Markdown labels", function()
+	for _, label in ipairs({ "Status:", "- Status:", "**Status:**" }) do
+		local header = label .. " needs-context\nValidation: traced callers"
+		Test.eq(workers.parse_report(header).status, "needs-context")
+	end
+	Test.eq(workers.parse_report("Status: needs\nValidation: traced callers").status, nil)
+end)
+
 Test.test("workers parse_report keeps its own header when it quotes an earlier report", function()
 	-- A follow-up run pasted its previous report, Run line included; the last Run used to win.
 	local parsed = workers.parse_report(
@@ -4576,6 +4703,14 @@ Test.test("workers expose review-begin and scope the saved review flag", functio
 		assert(refused.result.stderr:find("--review only applies to close and review-begin", 1, true))
 	end
 	Test.eq(#state.closed, 0)
+end)
+
+Test.test("workers reviewer prompts request blocked instead of needs-context", function()
+	local _, state = review_fixture()
+	Test.eq(state.run("review", { "--target", "tracked.txt" }).result.sent, true)
+	local prompt = assert(state.writes[1]:match("If you need an answer to continue.*"))
+	assert(not prompt:find("needs-context", 1, true), "reviewer prompt offers needs-context")
+	assert(prompt:find("end the turn with a Status: blocked report", 1, true))
 end)
 
 Test.test("workers review frames a read-only reviewer turn per worker kind", function()

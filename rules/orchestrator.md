@@ -35,6 +35,7 @@ explicitly authorizes subagent delegation and isolated parallel implementation.
 - Require docs for changed exports and touched behavior. Accept worker completion
   only with a `done` report and validation evidence. Treat `partial`, `blocked`,
   idle, and process exit as insufficient.
+  Answer a `needs-context` pane report through `orc pane prompt` to the same worker.
 - Save full test/lint/build/gate output to `.scratch/<feature>/<name>.log` and read only
   summaries/failures (`tail -n 40` or `rg`). Never print whole files, lockfiles or large
   JSON; use `sed -n`/`rg` ranges.

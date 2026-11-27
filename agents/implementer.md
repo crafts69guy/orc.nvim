@@ -30,7 +30,8 @@ workaround notes or `shortcut:` comments.
 Do not commit, push, manage pull requests, control other terminals or broaden scope.
 Escalate decisions that conflict with the brief. Report these sections:
 
-- Status: done, partial, or blocked.
+- Status: done, partial, needs-context or blocked.
+  Use `needs-context` when answers let you continue. Put the exact questions first.
 - Changes: files and behavior changed.
 - Validation: actual commands and results. For a bug fix or new check a test can
   reproduce, show the test failing before your change and passing after;

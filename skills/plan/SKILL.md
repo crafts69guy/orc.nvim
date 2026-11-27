@@ -58,3 +58,11 @@ as ownership too: tasks that touch the same generated file, record or lock go on
 one dependency path. A substantial task is its own module or feature needing
 multiple edit/test cycles. Batch small tasks.
 Show the task ordering; dispatch substantial independent tasks in worktree waves.
+
+## Builder check
+
+Before dispatch, give each substantial brief to a read-only `orc:scoper` (use
+`--role scoper` in pane mode). Ask which questions it would still need answered
+to implement the task and have it cite the relevant brief lines. Resolve the
+questions in the brief and take product or preference decisions to the user.
+Skip this check for batched small tasks.

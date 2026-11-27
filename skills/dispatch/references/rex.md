@@ -45,6 +45,9 @@ outputs and verdicts in that report and accept both before closing.
   harness's background execution (foreground Bash is capped at 10 minutes).
   Waits for the current run's report with Status and Validation, a native user-action
   block, process exit/error or timeout; a working TUI transcript unchanged for 30+ minutes returns `stalled` with a recovery hint. Missing evidence never ends this wait.
+  A `needs-context` report adds `next` with `orc pane prompt <task> --path <worktree> --file <answer>`
+  to answer the questions in the same TUI worker. For exec workers and TUI workers that
+  exited, errored, or hit a rate limit, give the answers to a new TUI worker in its brief.
   A done report adds `next`: `orc pane review` for a TUI implementer's work run, then
   `orc pane close` after its review run (directly for scopers and exec workers).
   When the active level requires independent review, use `pane review-begin` to

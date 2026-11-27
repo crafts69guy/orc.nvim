@@ -32,6 +32,9 @@
   Require done status, validation evidence and docs for changed exports and touched
   behavior. A bug fix or new check that a test can reproduce also needs the test
   failing before the change and passing after, or a stated reason why not.
+- For `needs-context`, answer the questions and continue with the same worker.
+  In pane mode use `orc pane prompt <task> --path <checkout> --file <answer>`.
+  Reserve fix rounds for changes requested on the worker's implementation.
 - Mark each delegated task risky or non-risky in its brief and task log. Risky
   means it touches security, concurrency, migrations, public APIs or fund safety.
   Re-mark it risky when its diff or a fix round reaches one of those areas.

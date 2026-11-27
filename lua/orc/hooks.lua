@@ -466,7 +466,7 @@ function M.run(rt, event, input)
 			and not M.evidence(M.handback(rt, payload.agent_transcript_path))
 		then
 			local reason =
-				"orc: report Status: done|partial|blocked and a Validation section with commands and results"
+				"orc: report Status: done|partial|needs-context|blocked and a Validation section with commands and results"
 			signal(rt, "no-evidence", role, reason)
 			output = { decision = "block", reason = reason }
 		end

@@ -1,7 +1,7 @@
 local M = {}
 local review_delta = require("orc.review_delta")
 local serial = 0
-local statuses = { done = true, partial = true, blocked = true }
+local statuses = { done = true, partial = true, ["needs-context"] = true, blocked = true }
 local TERMINAL_CREATOR = "com.superlogical.terminal"
 local TERMINAL_FLAVOR = TERMINAL_CREATOR .. ".shell"
 
@@ -39,7 +39,7 @@ local TERMINAL_FLAVOR = TERMINAL_CREATOR .. ".shell"
 ---@field previousRunId? string Previous accepted attempt used for compare-and-swap.
 ---@field previousReport? string Preserved historical report while delivery is pending.
 ---@field queued? boolean Follow-up queued behind a working turn; it is acknowledged only when that turn ends.
----@field reportStatus? 'done'|'partial'|'blocked' Status in the matching report.
+---@field reportStatus? 'done'|'partial'|'needs-context'|'blocked' Status in the matching report.
 ---@field process? {pid:integer,name:string,path?:string,script?:string} Captured terminal child identity.
 ---@field inputReady boolean Last observed readiness; always recomputed before input.
 ---@field nativeState? string Latest recognized root program status.
@@ -288,13 +288,13 @@ end
 ---Labels may be bulleted, headed or wrapped in markdown emphasis.
 ---The first Run and Status win: a report that quotes an earlier run's report keeps its own header.
 ---@param text string
----@return {run:string?,status:'done'|'partial'|'blocked'|nil,validation:boolean}
+---@return {run:string?,status:'done'|'partial'|'needs-context'|'blocked'|nil,validation:boolean}
 function M.parse_report(text)
 	local run, status, validation, depth
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 		local plain = line:gsub("[*_`]", ""):gsub("^%s*[#>%-]*%s*", "")
 		run = run or plain:match("^Run:%s*([%w%-]+)%s*$")
-		local found = (plain:match("^Status:%s*(%a+)%s*$") or ""):lower()
+		local found = (plain:match("^Status:%s*([%a%-]+)%s*$") or ""):lower()
 		status = status or (statuses[found] and found or nil)
 		local tail = plain:match("^Validation%s*:?(.*)$")
 		local level = #line:match("^%s*(#*)")
@@ -528,6 +528,10 @@ local function prompt_text(rt, record, body)
 			.. profile
 			.. "; it overrides the brief's Validate section."
 	end
+	local can_continue = role ~= "reviewer" and record.transport ~= "exec"
+	local report_statuses = can_continue and "done|partial|needs-context|blocked"
+		or "done|partial|blocked"
+	local question_status = can_continue and "needs-context" or "blocked"
 	local prompt = "[orc-run:"
 		.. record.runId
 		.. "] You are the orc "
@@ -538,25 +542,33 @@ local function prompt_text(rt, record, body)
 		.. record.path
 		.. ". Do not commit or push. "
 		.. body
-		.. " If you need a user decision, end the turn with a Status: blocked report that states the question; never wait at an interactive prompt."
+		.. " If you need an answer to continue, end the turn with a Status: "
+		.. question_status
+		.. " report that puts the exact questions first. Never wait at an interactive prompt."
 		.. " Keep the final report concise (about 60 lines max); put long logs/outputs in files under .scratch/ and cite their paths."
 	if role == "scoper" then
 		return prompt
 			.. " Do not modify files. End your final message with the report. Include Run: "
 			.. record.runId
-			.. ", Status: done|partial|blocked, Scope with file citations, Validation with commands and results, Decisions."
+			.. ", Status: "
+			.. report_statuses
+			.. ", Scope with file citations, Validation with commands and results, Decisions."
 	elseif role == "reviewer" then
 		return prompt
 			.. " End your final message with the report; do not write a report file. Include Run: "
 			.. record.runId
-			.. ", Status: done|partial|blocked, Target, Findings numbered with file citations (say none when clean), Validation with the read-only commands you ran and a statement that no tests ran, Verdict."
+			.. ", Status: "
+			.. report_statuses
+			.. ", Target, Findings numbered with file citations (say none when clean), Validation with the read-only commands you ran and a statement that no tests ran, Verdict."
 	end
 	return prompt
 		.. " Write the final report atomically to "
 		.. record.report
 		.. ". Include Run: "
 		.. record.runId
-		.. ", Status: done|partial|blocked, Changes, Validation with commands and results, Notes and Docs."
+		.. ", Status: "
+		.. report_statuses
+		.. ", Changes, Validation with commands and results, Notes and Docs."
 end
 
 local review_skills = { ["ponytail-review"] = true, ["ponytail-audit"] = true }
@@ -1557,6 +1569,20 @@ local function wait_for(rt, record, timeout, until_report)
 							.. independent_review_hint(record)
 					elseif done then
 						answer.next = "after accepting the report: orc pane close " .. target
+					end
+					if evidence and record.reportStatus == "needs-context" and not answer.violation then
+						if
+							record.transport == "exec"
+							or record.state == "exited"
+							or record.state == "error"
+							or record.state == "rate-limited"
+						then
+							answer.next = "include the answers in the brief for a new TUI worker"
+						else
+							answer.next = "send answers to the same worker: orc pane prompt "
+								.. target
+								.. " --file <answer>"
+						end
 					end
 					if record.state == "rate-limited" then
 						answer.hint =

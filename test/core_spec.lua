@@ -877,6 +877,20 @@ Test.test(
 	end
 )
 
+Test.test("core hooks require validation for needs-context reports", function()
+	local rt = fake()
+	rt.env.ORC = "1"
+	local function stop(message)
+		local payload = { agent_type = "implementer", last_assistant_message = message }
+		return hooks.run(rt, "subagent-stop", rt.encode(payload)).out
+	end
+	local report = "Status: needs-context\n"
+	Test.eq(stop(report .. "Validation: traced callers"), "")
+	local denied = rt.decode(stop(report .. "Validation:\n"))
+	Test.eq(denied.decision, "block")
+	assert(denied.reason:find("needs-context", 1, true))
+end)
+
 Test.test(
 	"core hooks read the last handback and surface context flags without trusting output",
 	function()
