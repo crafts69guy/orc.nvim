@@ -14,6 +14,7 @@ M.usage = [[usage: orc <command> [args]
   pane prune --path <dir>
   gate [--label <name>] [--log <file>] -- <cmd...>
   status|doctor [--json]
+  diagnose <feature> [--json]
   context [--scope user|project|all] [--json]
   inkdrop init|inbox|claim|push|pull|lessons ...
   inkdrop-mcp install|start|stop|restart|status|enable|disable|migrate|rollback|uninstall ...
@@ -239,6 +240,7 @@ function M.run(rt, argv, input)
 			gate = "gate",
 			pane = "workers",
 			status = "status",
+			diagnose = "diagnose",
 			doctor = "doctor",
 			context = "context",
 			inkdrop = "inkdrop",

@@ -138,6 +138,7 @@ and leaves product and preference decisions to you.
 | `orc pane pause <task> --path <dir>` | Interrupt a working TUI worker with Esc (or record a manual Esc); resume with `orc pane prompt` |
 | `orc gate [--label <name>] [--log <file>] -- <cmd...>` | Serialize heavy commands across the machine; stream output and optionally save a log |
 | `orc status --json` | Feature/task/worker snapshot with warnings for shared stash entries, unclaimed task worktrees, and features ready to archive. Also usable outside Rex. |
+| `orc diagnose <feature> [--json]` | Read worker costs by role and model and find stumbles with path and line evidence. |
 | `orc doctor --json` | Prerequisite and integration checks |
 | `orc context --scope all --json` | Audit static Claude/Codex context sources and report the invoked Orc runtime's rule provenance |
 | `orc inkdrop init\|inbox\|claim\|push\|pull\|lessons` | Mirror managed feature blocks and approved lessons |

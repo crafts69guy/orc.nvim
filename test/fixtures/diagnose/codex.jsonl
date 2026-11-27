@@ -1,0 +1,19 @@
+{"timestamp":"2026-01-01T00:00:00.250Z","type":"session_meta","payload":{"model_provider":"openai"}}
+{"timestamp":"2026-01-01T00:00:01.250Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"timestamp":"2026-01-01T00:00:02.250Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"codex-fixture"}}
+{"timestamp":"2026-01-01T00:00:03.250Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[orc-run:one] sk-fixture-do-not-display. Hook failed is only quoted here. [orc-run:quoted]"}]}}
+{"timestamp":"2026-01-01T00:00:04.250Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"Text":{"text":"[orc-run:one] sk-fixture-do-not-display"}}]}}}
+{"timestamp":"2026-01-01T00:00:05.250Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"printf ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééTAIL\",\"workdir\":\"/redacted\"}"}}
+{"timestamp":"2026-01-01T00:00:06.250Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"Chunk ID: fixture\nWall time: 0.01 seconds\nProcess exited with code 7\nOutput:\nsk-fixture-do-not-display"}}
+{"timestamp":"2026-01-01T00:00:07.250Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-2","arguments":"{\"workdir\":\"/redacted\",\"cmd\":\"printf ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééTAIL\"}"}}
+{"timestamp":"2026-01-01T00:00:08.250Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-2","output":[{"type":"text","text":"Chunk ID: fixture\nWall time: 0.01 seconds\nProcess exited with code 0\nOutput:\nExit code: 9\nsk-fixture-do-not-display quotes Hook failed in a file."}]}}
+{"timestamp":"2026-01-01T00:00:09.250Z","type":"event_msg","payload":{"type":"error","message":"Hook failed: sk-fixture-do-not-display"}}
+{"timestamp":"2026-01-01T00:00:10.250Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20},"last_token_usage":{"input_tokens":18,"output_tokens":3}}}}
+{"timestamp":"2026-01-01T00:00:11.250Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
+{"timestamp":"2026-01-01T00:00:12.250Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[orc-run:two] redacted"}]}}
+{"timestamp":"2026-01-01T00:00:13.250Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-3","arguments":"{\"cmd\":\"printf ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééTAIL\",\"workdir\":\"/redacted\"}"}}
+{"timestamp":"2026-01-01T00:00:14.250Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-3","output":"Exit code: 0\nOutput: sk-fixture-do-not-display"}}
+{"timestamp":"2026-01-01T00:00:15.250Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","command":["/bin/fish","-c","false"],"cwd":"/redacted","exit_code":5,"aggregated_output":"sk-fixture-do-not-display"}}}
+{"timestamp":"2026-01-01T00:00:16.250Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130,"cached_input_tokens":60,"output_tokens":30},"last_token_usage":{"input_tokens":30,"output_tokens":10}}}}
+{"timestamp":"2026-01-01T00:00:17.250Z","type":"event_msg","payload":{"type":"token_count","info":null}}
+{"timestamp":"2026-01-01T00:00:18.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2"}}

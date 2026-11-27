@@ -110,6 +110,19 @@ without prompt acknowledgment. For queued prompts, the window starts when Rex
 reports the running turn as `idle` or `done`.
 Native `working` clears an observed hook block after an auto-resolved permission.
 
+`orc diagnose <feature> [--json]` reads the main checkout's worker records,
+Codex and Claude transcripts, available exec logs, and guard denies within the
+feature's observed time window. It counts runs, turns, tool calls, failures and
+tokens, and measures elapsed time from the earliest and latest recorded
+timestamps. Totals group workers by role and last recorded model. For a run
+identified in both sources, the rollout supplies the counts. Codex uses
+`input_tokens`, which already includes cached input. Claude sums `input_tokens`,
+`cache_read_input_tokens`, and `cache_creation_input_tokens` once per assistant
+message ID. Both providers use `output_tokens` for output. Stumbles cite the
+source path and line, with command previews capped at 80 characters. Raw prompts,
+tool output and file contents stay in their source files. JSON reports use
+`schemaVersion: 1`.
+
 The shared main checkout's `.orc/validation.md` is optional project memory and is
 injected into implementer prompts. Workers run edit/task tiers. The orchestrator
 runs the gate tier on the integrated tree before commit through `orc gate`. The

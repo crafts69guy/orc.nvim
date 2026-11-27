@@ -7,7 +7,9 @@ description: "orc workflow: propose evidence-backed lesson changes and apply onl
 
 After recording the feature outcome in `.scratch/<feature>/log.md`, inspect only
 verified evidence: failed-then-passing tests, user corrections, fix rounds and
-`.orc/signals.jsonl`. Read the main checkout's `.orc/lessons.md` first.
+`.orc/signals.jsonl`. Read the main checkout's `.orc/lessons.md` first, then read
+`orc diagnose <feature> --json` alongside the other evidence. Verify relevant
+stumbles at their cited path and line before proposing a lesson.
 
 Name the highest enforcement that works for every proposal: architecture/type,
 test, hook or CLI check, lint, then prose. Reserve prose for judgment calls that

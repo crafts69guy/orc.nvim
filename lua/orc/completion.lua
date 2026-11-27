@@ -11,6 +11,7 @@ function M.fish()
 		pane = "Manage Rex workers",
 		gate = "Serialize heavy validation",
 		status = "Show tasks",
+		diagnose = "Show worker costs and stumbles",
 		doctor = "Check prerequisites",
 		context = "Audit context",
 		inkdrop = "Sync notes",
