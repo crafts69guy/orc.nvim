@@ -31,7 +31,7 @@ local function words(command)
 			end
 		elseif char == '"' or char == "'" then
 			quote = char
-		elseif char:match("[;&|\n]") then
+		elseif char:match("[;&|()\n]") then
 			flush()
 			segments[#segments + 1], tokens = tokens, {}
 		elseif char:match("%s") then
@@ -58,16 +58,19 @@ local function command_kind(tokens, depth)
 	end
 	local executable = vim.fs.basename(tokens[index] or "")
 	if executable == "sh" or executable == "bash" or executable == "zsh" or executable == "fish" then
+		local first_kind
 		for position = index + 1, #tokens do
-			if tokens[position] == "-c" or tokens[position] == "-lc" then
+			if tokens[position]:match("^%-%a*c%a*$") then
 				for _, segment in ipairs(words(tokens[position + 1] or "")) do
 					local kind = command_kind(segment, depth + 1)
-					if kind then
+					if kind == "push" or kind == "pr" then
 						return kind
 					end
+					first_kind = first_kind or kind
 				end
 			end
 		end
+		return first_kind
 	elseif executable == "git" or executable == "gh" then
 		local value_options = {
 			["-C"] = true,
@@ -85,6 +88,11 @@ local function command_kind(tokens, depth)
 		local verb = tokens[index]
 		if executable == "git" and (verb == "commit" or verb == "push") then
 			return verb
+		elseif executable == "git" and verb == "stash" then
+			local action = tokens[index + 1]
+			if action ~= "list" and action ~= "show" then
+				return "stash"
+			end
 		elseif executable == "gh" and verb == "pr" then
 			local action = tokens[index + 1]
 			if action == "create" or action == "merge" or action == "edit" then
@@ -126,6 +134,8 @@ function M.decide(role, command)
 		local kind = command_kind(segment, 0)
 		if (kind == "push" or kind == "pr") and role ~= "shipper" then
 			return "orc: only the shipper role may push or manage pull requests"
+		elseif kind == "stash" and restricted[role] then
+			return "orc: git stash is shared by every worktree; copy files aside and use git checkout HEAD -- <file> instead"
 		elseif
 			restricted[role] and (kind == "commit" or kind == "rex-control" or kind == "wrapped-command")
 		then

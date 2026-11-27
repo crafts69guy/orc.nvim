@@ -671,6 +671,7 @@ Test.test("core workflow guards classify direct, chained, quoted and wrapped wri
 		"gh pr edit",
 		"true && git push",
 		"false; git commit -m x",
+		"(git commit -m x)",
 		"sh -c 'git push'",
 		'bash -lc "git commit -m x"',
 		"rex run -- git push",
@@ -692,13 +693,78 @@ Test.test("core workflow guards classify direct, chained, quoted and wrapped wri
 	}) do
 		Test.eq(hooks.decide("implementer", command), nil)
 	end
+	local shipper_reason = "orc: only the shipper role may push or manage pull requests"
+	for _, command in ipairs({
+		"sh -c 'git commit -m x && git push'",
+		"sh -c 'rex open x; git push'",
+		"sh -c 'git commit -m x; gh pr edit'",
+	}) do
+		assert(hooks.decide("main", command) == shipper_reason, command)
+		assert(hooks.decide("implementer", command) == shipper_reason, command)
+	end
 	Test.eq(hooks.decide("shipper", "git push"), nil)
+	Test.eq(hooks.decide("shipper", "sh -c 'git commit -m x && git push'"), nil)
 	Test.eq(hooks.decide("main", "git commit -m x"), nil)
 	Test.eq(hooks.decide("main", "rex run -- git push") ~= nil, true)
 	Test.eq(hooks.decide("reviewer", "rex do action") ~= nil, true)
 	Test.eq(hooks.decide("comment-sicko", "git commit -m x") ~= nil, true)
 	Test.eq(hooks.decide(hooks.role("orc:comment-sicko"), "rex run -- ls") ~= nil, true)
 	Test.eq(hooks.decide("main", nil), nil)
+end)
+
+Test.test("core workflow guards protect the shared Git stash", function()
+	local reason =
+		"orc: git stash is shared by every worktree; copy files aside and use git checkout HEAD -- <file> instead"
+	for _, command in ipairs({
+		"git stash",
+		"git stash -u",
+		"git stash -m x",
+		"git stash push -m x",
+		"git stash pop",
+		"git stash apply stash@{0}",
+		"git stash drop",
+		"git stash clear",
+		"git -C /repo stash pop",
+		"env A=1 git stash pop",
+		"sh -c 'git stash'",
+		"bash -ec 'git stash'",
+		"bash -xc 'git stash'",
+		"bash -euc 'git stash'",
+		"rex run -- git stash",
+		"true && git stash pop",
+		"(cd sub && git stash)",
+		"echo $(git stash)",
+		"sh -c 'git stash; git commit -m x'",
+	}) do
+		local actual = hooks.decide("implementer", command)
+		assert(
+			actual == reason,
+			command .. " should be denied with stash guidance, got " .. tostring(actual)
+		)
+	end
+	for _, role in ipairs({ "scoper", "reviewer", "comment-sicko" }) do
+		Test.eq(hooks.decide(role, "git stash pop"), reason)
+	end
+	for _, command in ipairs({
+		"git stash list",
+		"git stash show -p",
+		"echo 'git stash'",
+		"echo '(git stash)'",
+		'echo "a (b) c"',
+		"bash -e 'git stash'",
+		"bash --rcfile 'git stash'",
+		"git status",
+	}) do
+		Test.eq(hooks.decide("implementer", command), nil)
+	end
+	for _, role in ipairs({ "main", "shipper" }) do
+		Test.eq(hooks.decide(role, "git stash"), nil)
+		Test.eq(hooks.decide(role, "git stash pop"), nil)
+	end
+	Test.eq(
+		hooks.decide("main", "sh -c 'git stash; git push'"),
+		"orc: only the shipper role may push or manage pull requests"
+	)
 end)
 
 Test.test(

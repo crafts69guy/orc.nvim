@@ -130,6 +130,8 @@ accidental workflow violations; they are not a security sandbox against arbitrar
 same-user programs or access to a terminal server. Real restrictions come from the
 harness/OS sandbox and available credentials.
 
+The command guard blocks restricted roles from changing the Git stash shared by all worktrees.
+
 ## Persistence and external interfaces
 
 Plans and managed-note links belong to the main checkout; task reports belong to
