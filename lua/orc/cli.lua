@@ -117,14 +117,44 @@ local function launch(rt, kind, argv)
 	return { code = rt.interactive(launch.argv, { cwd = launch.cwd, env = launch.env }), out = "" }
 end
 
+local function claude_updates(rt)
+	local listing = rt.exec({ "claude", "plugin", "list", "--json" })
+	local ok, installs = pcall(rt.decode, listing.stdout)
+	local updates = {}
+	if listing.code == 0 and ok and type(installs) == "table" then
+		for _, install in ipairs(installs) do
+			local scope = type(install) == "table" and install.id == "orc@orc-nvim" and install.scope
+			local cwd = scope ~= "user" and type(install.projectPath) == "string" and install.projectPath
+				or nil
+			if scope == "user" or ((scope == "project" or scope == "local") and cwd) then
+				updates[#updates + 1] = {
+					argv = { "claude", "plugin", "update", "orc@orc-nvim", "--scope", scope },
+					cwd = cwd,
+				}
+			end
+		end
+	end
+	return #updates > 0 and updates or { { argv = { "claude", "plugin", "update", "orc@orc-nvim" } } }
+end
+
 local function update(rt, argv)
 	assert(#argv == 0, "usage: orc update")
-	local dirty = rt.exec({ "git", "status", "--porcelain" }, { cwd = rt.root })
-	assert(dirty.code == 0, "orc update requires a Git installation")
-	assert(vim.trim(dirty.stdout) == "", "orc update refuses a dirty checkout")
-	local pulled = rt.exec({ "git", "pull", "--ff-only" }, { cwd = rt.root })
-	local code, output, errors = pulled.code, pulled.stdout, pulled.stderr
-	if code ~= 0 then
+	local code, output, errors, pulled = 0, "", "", {}
+	local function pull(dir)
+		local key = vim.uv.fs_realpath(dir) or dir
+		if pulled[key] == nil then
+			local dirty = rt.exec({ "git", "status", "--porcelain" }, { cwd = dir })
+			assert(dirty.code == 0, "orc update requires a Git installation: " .. dir)
+			assert(vim.trim(dirty.stdout) == "", "orc update refuses a dirty checkout: " .. dir)
+			local result = rt.exec({ "git", "pull", "--ff-only" }, { cwd = dir })
+			output, errors, pulled[key] = output .. result.stdout, errors .. result.stderr, result.code
+			if code == 0 then
+				code = result.code
+			end
+		end
+		return pulled[key] == 0
+	end
+	if not pull(rt.root) then
 		return { code = code, out = output, err = errors }
 	end
 	for _, kind in ipairs({ "claude", "codex" }) do
@@ -133,13 +163,19 @@ local function update(rt, argv)
 			local ok, decoded = pcall(rt.decode, listing.stdout)
 			if ok and type(decoded) == "table" then
 				for _, market in ipairs(decoded.marketplaces or decoded) do
-					if market.name == "orc-nvim" then
-						local command = kind == "claude" and { "claude", "plugin", "update", "orc@orc-nvim" }
-							or { "codex", "plugin", "add", "orc@orc-nvim" }
-						local result = rt.exec(command)
-						output, errors = output .. result.stdout, errors .. result.stderr
-						if code == 0 then
-							code = result.code
+					local source = type(market.marketplaceSource) == "table" and market.marketplaceSource
+						or {}
+					local dir = kind == "claude" and market.source == "directory" and market.path
+						or kind == "codex" and source.sourceType == "local" and market.root
+					if market.name == "orc-nvim" and (type(dir) ~= "string" or pull(dir)) then
+						local commands = kind == "claude" and claude_updates(rt)
+							or { { argv = { "codex", "plugin", "add", "orc@orc-nvim" } } }
+						for _, command in ipairs(commands) do
+							local result = rt.exec(command.argv, command.cwd and { cwd = command.cwd } or nil)
+							output, errors = output .. result.stdout, errors .. result.stderr
+							if code == 0 then
+								code = result.code
+							end
 						end
 					end
 				end

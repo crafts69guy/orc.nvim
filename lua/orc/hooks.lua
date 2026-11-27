@@ -110,7 +110,11 @@ local function command_kind(tokens, depth)
 		end
 		local readonly =
 			{ ls = true, list = true, whoami = true, capture = true, version = true, help = true }
-		if not readonly[tokens[index + 1]] then
+		local rename = tokens[index + 1] == "session"
+			and tokens[index + 2] == "rename"
+			and #tokens == index + 3
+			and tokens[index + 3]:sub(1, 1) ~= "-"
+		if not readonly[tokens[index + 1]] and not rename then
 			return "rex-control"
 		end
 	elseif executable == "orc" and tokens[index + 1] == "wt" then

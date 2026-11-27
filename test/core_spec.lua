@@ -676,6 +676,11 @@ Test.test("core workflow guards classify direct, chained, quoted and wrapped wri
 		'bash -lc "git commit -m x"',
 		"rex run -- git push",
 		"rex split -- git commit -m x",
+		"rex session rename other fix-login",
+		"rex session rename -S host",
+		"rex session rename fix-login && rex block send x",
+		"rex session rename fix-login -- git commit -m x",
+		"rex session new fix-login",
 		"orc wt merge feat T1",
 	}) do
 		assert(hooks.decide("implementer", command), command)
@@ -686,6 +691,8 @@ Test.test("core workflow guards classify direct, chained, quoted and wrapped wri
 		"gh pr view",
 		"rex ls",
 		"rex capture",
+		"rex session rename fix-login",
+		"env A=1 rex session rename fix-login",
 		"echo 'git push'",
 		'printf "a;b"',
 		"A=1",
@@ -1560,6 +1567,95 @@ Test.test(
 		Test.eq(cli.run(rt, { "update", "bad" }).code, 1)
 	end
 )
+
+Test.test("core update pulls the clone each orc marketplace installs from", function()
+	local claude = '[{"name":"orc-nvim","source":"directory","path":"/clone"}]'
+	local codex = '{"marketplaces":[{"name":"orc-nvim","root":"/clone",'
+		.. '"marketplaceSource":{"sourceType":"local","source":"/clone"}}]}'
+	for _, case in ipairs({
+		{ status = "", pull = 0, code = 0, pulls = { "/plugin", "/clone" }, updated = 2 },
+		{ status = "", pull = 1, code = 1, pulls = { "/plugin", "/clone" }, updated = 0 },
+		{ status = " M x\n", code = 1, pulls = { "/plugin" }, updated = 0 },
+	}) do
+		local rt = fake()
+		local pulls, updated = {}, 0
+		route(rt, {
+			["git status --porcelain"] = function(_, options)
+				return result(0, options.cwd == "/clone" and case.status or "")
+			end,
+			["git pull --ff-only"] = function(_, options)
+				pulls[#pulls + 1] = options.cwd
+				return result(options.cwd == "/clone" and case.pull or 0)
+			end,
+			["claude plugin marketplace list --json"] = result(0, claude),
+			["codex plugin marketplace list --json"] = result(0, codex),
+			["claude plugin update orc@orc-nvim"] = function()
+				updated = updated + 1
+				return result()
+			end,
+			["codex plugin add orc@orc-nvim"] = function()
+				updated = updated + 1
+				return result()
+			end,
+		})
+		local ran = cli.run(rt, { "update" })
+		Test.eq({ ran.code, pulls, updated }, { case.code, case.pulls, case.updated })
+		assert(case.status == "" or ran.err:find("dirty checkout: /clone", 1, true))
+	end
+end)
+
+Test.test("core update refreshes every Claude scope that has orc installed", function()
+	local update = "claude plugin update orc@orc-nvim"
+	for _, case in ipairs({
+		{
+			installs = {
+				{ id = "orc@orc-nvim", scope = "user" },
+				{ id = "orc@orc-nvim", scope = "project", projectPath = "/dots" },
+				{ id = "orc@orc-nvim", scope = "local", projectPath = "/work" },
+				{ id = "orc@orc-nvim", scope = "project" },
+				{ id = "orc@orc-nvim", scope = "managed", projectPath = "/managed" },
+				{ id = "other@orc-nvim", scope = "user" },
+				"bad",
+			},
+			code = 1,
+			expected = {
+				{ argv = { "claude", "plugin", "update", "orc@orc-nvim", "--scope", "user" } },
+				{
+					argv = { "claude", "plugin", "update", "orc@orc-nvim", "--scope", "project" },
+					cwd = "/dots",
+				},
+				{
+					argv = { "claude", "plugin", "update", "orc@orc-nvim", "--scope", "local" },
+					cwd = "/work",
+				},
+			},
+		},
+		{
+			installs = { { id = "other@orc-nvim", scope = "user" } },
+			code = 0,
+			expected = { { argv = { "claude", "plugin", "update", "orc@orc-nvim" } } },
+		},
+	}) do
+		local rt = fake()
+		local refreshed = {}
+		local function record(code)
+			return function(argv, options)
+				refreshed[#refreshed + 1] = { argv = argv, cwd = options and options.cwd }
+				return result(code)
+			end
+		end
+		route(rt, {
+			["claude plugin marketplace list --json"] = result(0, '[{"name":"orc-nvim"}]'),
+			["claude plugin list --json"] = result(0, rt.encode(case.installs)),
+			[update] = record(0),
+			[update .. " --scope user"] = record(0),
+			[update .. " --scope project"] = record(1),
+			[update .. " --scope local"] = record(0),
+		})
+		Test.eq(cli.run(rt, { "update" }).code, case.code)
+		Test.eq(refreshed, case.expected)
+	end
+end)
 
 Test.test("core Git root helpers distinguish linked worktrees from the main checkout", function()
 	local dir = assert(vim.uv.fs_realpath(Test.temp()))

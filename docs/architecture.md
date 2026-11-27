@@ -131,6 +131,9 @@ same-user programs or access to a terminal server. Real restrictions come from t
 harness/OS sandbox and available credentials.
 
 The command guard blocks restricted roles from changing the Git stash shared by all worktrees.
+Restricted roles may rename the current Rex session, which worker panes share with the
+orchestrator, with `rex session rename <label>`; other Rex control commands stay with the
+orchestrator.
 
 ## Persistence and external interfaces
 

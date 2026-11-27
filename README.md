@@ -91,8 +91,9 @@ codex plugin add orc@orc-nvim
 
 The CLI also loads the local Claude plugin explicitly. Restart agent sessions and
 approve new or changed hooks through the harness's normal trust controls before
-relying on hook-driven automation. `orc update` fast-forwards the clean checkout
-and updates the installed plugins.
+relying on hook-driven automation. `orc update` fast-forwards its own clean
+checkout and each local marketplace checkout orc installs from, then updates the
+installed plugins in every Claude scope (user, project or local) that has orc.
 After `orc update` changes hooks, re-trust them in Codex's `/hooks` before
 workers can be acknowledged.
 
@@ -365,6 +366,11 @@ VIMRUNTIME="$VIMRUNTIME" lua-language-server --check . --checklevel=Warning \
   --metapath="$lua_ls_dir/meta" --logpath="$lua_ls_dir/log"
 '
 ```
+
+Develop in a separate checkout and keep the plugin marketplaces on the
+`~/.local/share/orc.nvim` clone. Claude and Codex copy the whole marketplace
+folder into their plugin cache, untracked `.scratch`, `.orc` and `.worktrees`
+included. Release by pushing the tag, then run `orc update`.
 
 Tests use fake process/network adapters and temporary repositories; they never
 call a model or need a Rex server. Coverage has separate 90% floors for lines,
