@@ -40,25 +40,38 @@ later `pane prompt` can resume it; Esc emits no Stop hook.
 `pane review` is a follow-up framed as a read-only review run under the reviewer role.
 Before the paste it records a checkout fingerprint from HEAD, porcelain status,
 the combined and staged binary diffs against HEAD, and untracked file hashes.
-It skips ignored paths. `pane wait` compares the fingerprint again and returns
+It skips ignored untracked paths. `pane wait` compares the fingerprint again and returns
 `readOnly`, with a `violation` when they differ. It detects edits but
 cannot prevent them: the worker keeps its sandbox and tools. `--queue` is refused,
 because a baseline taken mid-turn would be meaningless.
-A done review run is kept on the record as `reviewed` (`runId`, `baseline`) across
-later runs. `pane close` and `pane prune` require a matching review fingerprint
-for a live TUI implementer. Scopers, exec workers and exited processes are exempt
-from that requirement. Use `close --no-review` for explicit abandonment.
+A done review run is kept on the record as `reviewed` (`runId`, `baseline`, `tree`,
+`stagedFingerprint`) across later runs. For a live TUI implementer, `pane close`
+and `pane prune` accept a matching review fingerprint. When HEAD and the staged
+diff match the review, they also accept a tree diff limited to deletions of whole
+comments and blank lines in `.ts`, `.mts`, `.cts`, and `.lua` files. The tree
+snapshot starts from a temporary copy of the real Git index, so it includes
+working-copy edits to tracked files that match an ignore rule. The checkout
+fingerprint must stay the same across the comparison. Comment-shaped lines
+inside multiline strings or block comments opened above the deleted run can
+pass the check. Directive removals and file changes such as additions, deletions
+or mode changes require a new review. Records missing a tree or staged fingerprint
+require a matching checkout fingerprint. `pane close` reports
+`reviewDelta: "comments-only"` when the deletion check authorizes closure. Scopers,
+exec workers and exited processes are exempt from the review requirement. Use
+`close --no-review` for an abandoned, stalled or failed task, an unavailable review
+skill, or a non-risky fix round the orchestrator verified. Record the reason in the
+task log.
 
 For an independent review, first run
 `orc pane review-begin <task> --path <dir> --review <new-file>`. Choose a path
 that does not exist yet, such as a new file under the ignored `.scratch/` directory.
-Orc pins the current run, absolute report path and checkout fingerprint before
-dispatch. Use the same procedure for an independent fallback. The orchestrator
-still reads and accepts the verdict before running
+Orc pins the current run, absolute report path, checkout fingerprint, tree and
+staged fingerprint before dispatch. Use the same procedure for an independent
+fallback. The orchestrator still reads and accepts the verdict before running
 `orc pane close <task> --path <dir> --review <file>`. After verifying Rex ownership,
-close checks the pin, a fresh nonempty report at that path and an unchanged
-checkout fingerprint immediately before closing the pane.
-A follow-up run or checkout edit requires a new pin and review.
+close checks the pin, a fresh nonempty report at that path and the reviewed checkout
+under the same fingerprint and comment-deletion rules. A follow-up run or a change
+outside those rules requires a new pin and review.
 Use `pane wait --until report` to continue until a matching report with Status and
 Validation, native user-action block, exit/error or timeout. Plain wait distinguishes
 `turn-ended-no-report` from `blocked`; a report wait returns it with a hint only after

@@ -3880,6 +3880,7 @@ local function review_fixture(kind)
 	git("config", "user.name", "test")
 	git("config", "user.email", "test@example.invalid")
 	git("config", "commit.gpgsign", "false")
+	rt.write(rt.abspath(".git/info/exclude"), "/.orc/\n/.scratch/\n")
 	rt.write(rt.cwd .. "/tracked.txt", "base\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "fixture")
@@ -3912,6 +3913,165 @@ local function review_fixture(kind)
 	state.native = "idle"
 	return rt, state, git
 end
+
+for _, route in ipairs({ "self", "follow-up", "independent" }) do
+	Test.test("workers close gate accepts comment deletions via " .. route, function()
+		local rt, state = review_fixture()
+		local file = rt.abspath("source file.ts")
+		rt.write(file, "// explanation\nconst value = 1\n")
+		local args
+		if route == "independent" then
+			args = { "--review", ".scratch/cleanup-review.md" }
+			Test.eq(state.run("review-begin", args).code, 0)
+			rt.write(rt.abspath(args[2]), "Accepted\n")
+		else
+			Test.eq(state.run("review").result.sent, true)
+			state.hook("UserPromptSubmit")
+			state.report()
+			state.hook("Stop")
+			if route == "follow-up" then
+				Test.eq(state.run("prompt", { "--text", "Remove the obsolete comment" }).result.sent, true)
+				state.hook("UserPromptSubmit")
+				state.report()
+				state.hook("Stop")
+			end
+		end
+		rt.write(file, "const value = 1\n")
+		if route == "self" then
+			Test.eq(state.run("wait", { "--timeout", "0" }).result.readOnly, false)
+		end
+		local closed = state.run("close", args)
+		Test.eq({ route, closed.code, closed.result.status, closed.result.reviewDelta }, {
+			route,
+			0,
+			"closed",
+			"comments-only",
+		})
+		Test.eq(state.closed, { "block:worker" })
+		assert(state.record().reviewed.tree)
+		assert(state.record().reviewed.stagedFingerprint)
+	end)
+end
+
+Test.test(
+	"workers close gate refuses staging a self-reviewed change with an identical tree",
+	function()
+		local rt, state, git = review_fixture()
+		rt.write(rt.abspath("tracked.txt"), "reviewed change\n")
+		Test.eq(state.run("review").result.sent, true)
+		state.hook("UserPromptSubmit")
+		state.report()
+		state.hook("Stop")
+		Test.eq(state.run("wait", { "--timeout", "0" }).result.readOnly, true)
+		git("add", "--", "tracked.txt")
+		local refused = state.run("close")
+		Test.eq(
+			{ refused.code, refused.result.status, refused.result.reviewDelta },
+			{ 1, "not-reviewed" }
+		)
+		Test.eq(state.closed, {})
+	end
+)
+
+for _, change in ipairs({ "staged code", "HEAD" }) do
+	Test.test("workers close gate refuses a comment deletion with changed " .. change, function()
+		local rt, state, git = review_fixture()
+		local file = rt.abspath("source.ts")
+		rt.write(file, "// explanation\nconst value = 1\n")
+		git("add", "--", "source.ts")
+		git("commit", "-qm", "reviewed source")
+		Test.eq(state.run("review", { "--target", "source.ts" }).result.sent, true)
+		state.hook("UserPromptSubmit")
+		state.report()
+		state.hook("Stop")
+		Test.eq(state.run("wait", { "--timeout", "0" }).result.readOnly, true)
+
+		if change == "staged code" then
+			rt.write(file, "const value = 2\n")
+			git("add", "--", "source.ts")
+		else
+			git("commit", "-q", "--allow-empty", "-m", "advance HEAD")
+		end
+		rt.write(file, "const value = 1\n")
+		local refused = state.run("close")
+		Test.eq(
+			{ refused.code, refused.result.status, refused.result.reviewDelta },
+			{ 1, "not-reviewed" }
+		)
+		Test.eq(state.closed, {})
+	end)
+end
+
+for _, change in ipairs({ "working copy", "staged content" }) do
+	Test.test("workers close gate refuses a late change to the " .. change, function()
+		local rt, state, git = review_fixture()
+		local file = rt.abspath("source.ts")
+		rt.write(file, "// explanation\nconst value = 1\n")
+		Test.eq(state.run("review").result.sent, true)
+		state.hook("UserPromptSubmit")
+		state.report()
+		state.hook("Stop")
+		rt.write(file, "const value = 1\n")
+
+		local exec, changed = rt.exec, false
+		rt.exec = function(argv, opts)
+			local result = exec(argv, opts)
+			if argv[1] == "git" and argv[2] == "diff" and vim.startswith(argv[3], "--output=") then
+				changed = true
+				rt.write(rt.abspath("tracked.txt"), "new code\n")
+				if change == "staged content" then
+					git("add", "--", "tracked.txt")
+				end
+			end
+			return result
+		end
+		local refused = state.run("close")
+		assert(changed)
+		Test.eq(
+			{ refused.code, refused.result.status, refused.result.reviewDelta },
+			{ 1, "not-reviewed" }
+		)
+		Test.eq(state.closed, {})
+	end)
+end
+
+Test.test("workers close gate refuses non-comment deltas and unavailable review trees", function()
+	local rt, state = review_fixture()
+	local file = rt.abspath("source.ts")
+	local before = "// explanation\nconst value = 1\n"
+	rt.write(file, before)
+	Test.eq(state.run("review").result.sent, true)
+	state.hook("UserPromptSubmit")
+	state.report()
+	state.hook("Stop")
+	local function refused()
+		local closed = state.run("close")
+		Test.eq({ closed.code, closed.result.status, closed.result.reviewDelta }, { 1, "not-reviewed" })
+		Test.eq(state.closed, {})
+	end
+	rt.write(file, "// explanation\n")
+	refused()
+	rt.write(file, "const value = 1\n")
+	local new_file = rt.abspath("new.ts")
+	rt.write(new_file, "// newly untracked\n")
+	refused()
+	assert(vim.uv.fs_unlink(new_file))
+	state.failGit = "write-tree"
+	refused()
+	state.failGit = nil
+	local legacy = state.record()
+	local staged = legacy.review.stagedFingerprint
+	legacy.review.stagedFingerprint = nil
+	state.store(legacy)
+	refused()
+	legacy.review.stagedFingerprint = staged
+	legacy.review.tree = nil
+	state.store(legacy)
+	refused()
+	rt.write(file, before)
+	local closed = state.run("close")
+	Test.eq({ closed.code, closed.result.status, closed.result.reviewDelta }, { 0, "closed" })
+end)
 
 Test.test(
 	"workers close accepts a fresh pinned independent review for the current checkout",

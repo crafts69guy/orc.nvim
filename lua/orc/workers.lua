@@ -1,4 +1,5 @@
 local M = {}
+local review_delta = require("orc.review_delta")
 local serial = 0
 local statuses = { done = true, partial = true, blocked = true }
 local TERMINAL_CREATOR = "com.superlogical.terminal"
@@ -47,9 +48,9 @@ local TERMINAL_FLAVOR = TERMINAL_CREATOR .. ".shell"
 ---@field exitCode? integer Last terminal child exit code.
 ---@field deliveryError? string Diagnostic for an unconfirmed terminal write.
 ---@field observationError? string Diagnostic for a failed live status observation.
----@field review? {skill:string,target:string,baseline:string} Read-only review run and its checkout fingerprint.
----@field reviewPin? {runId:string,report:string,baseline:string,started:number} Independent review requested before dispatch.
----@field reviewed? {runId?:string,report?:string,baseline:string} Last done review run or absolute saved report, kept across runs; close requires its fingerprint.
+---@field review? {skill:string,target:string,baseline:string,tree?:string,stagedFingerprint?:string} Read-only review run and its checkout baseline.
+---@field reviewPin? {runId:string,report:string,baseline:string,tree?:string,stagedFingerprint?:string,started:number} Independent review requested before dispatch.
+---@field reviewed? {runId?:string,report?:string,baseline:string,tree?:string,stagedFingerprint?:string} Last done review run or absolute saved report, kept across runs.
 
 ---Whether the worker record still owns its checkout. A failed worker may have left edits.
 ---@param worker orc.Worker
@@ -496,7 +497,12 @@ end
 local function new_run(rt, record)
 	-- A follow-up replaces the review run; keep a done review so close can still match it.
 	if record.review and record.reportStatus == "done" then
-		record.reviewed = { runId = record.runId, baseline = record.review.baseline }
+		record.reviewed = {
+			runId = record.runId,
+			baseline = record.review.baseline,
+			tree = record.review.tree,
+			stagedFingerprint = record.review.stagedFingerprint,
+		}
 	end
 	record.previousRunId = record.runId
 	record.previousReport = record.report or record.previousReport
@@ -570,12 +576,11 @@ end
 local function fingerprint(rt, path)
 	local status =
 		git(rt, path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
-	local parts = {
-		git(rt, path, "rev-parse", "HEAD"),
-		status,
-		git(rt, path, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
-		git(rt, path, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"),
-	}
+	local head = git(rt, path, "rev-parse", "HEAD")
+	local combined = git(rt, path, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD")
+	local staged =
+		git(rt, path, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "HEAD")
+	local parts = { head, status, combined, staged }
 	local untracked = { "hash-object", "--" }
 	for _, entry in ipairs(vim.split(status, "\0", { trimempty = true })) do
 		if entry:sub(1, 3) == "?? " then
@@ -585,7 +590,21 @@ local function fingerprint(rt, path)
 	if #untracked > 2 then
 		parts[#parts + 1] = git(rt, path, unpack(untracked))
 	end
-	return vim.fn.sha256(table.concat(parts, "\0"))
+	return vim.fn.sha256(table.concat(parts, "\0")), vim.fn.sha256(head .. "\0" .. staged)
+end
+
+local function review_match(rt, path, review)
+	local current, staged = fingerprint(rt, path)
+	if current == review.baseline then
+		return true
+	end
+	if review.tree and review.stagedFingerprint == staged then
+		local accepted, deleted = review_delta.compare(rt, path, review.tree)
+		if accepted and deleted and fingerprint(rt, path) == current then
+			return true, "comments-only"
+		end
+	end
+	return false
 end
 
 local function independent_review_hint(record)
@@ -607,13 +626,16 @@ local function review_begin(rt, record, path)
 	assert(path and path ~= "", "orc pane review-begin: --review is required")
 	local file = rt.abspath(path)
 	require_new_review_file(file)
-	local baseline = fingerprint(rt, record.path)
+	local baseline, staged = fingerprint(rt, record.path)
+	local tree = review_delta.snapshot(rt, record.path)
 	local seconds, microseconds = vim.uv.gettimeofday()
 	require_new_review_file(file)
 	record.reviewPin = {
 		runId = record.runId,
 		report = file,
 		baseline = baseline,
+		tree = tree,
+		stagedFingerprint = staged,
 		started = seconds + microseconds / 1000000,
 	}
 	save(rt, record, "review-pin")
@@ -645,11 +667,16 @@ local function independent_review(rt, record, path)
 	local text, read_error = rt.read(file)
 	assert(text, "orc pane close: cannot read review report " .. file .. ": " .. tostring(read_error))
 	assert(text:find("%S"), "orc pane close: review report is empty: " .. file)
-	assert(
-		fingerprint(rt, record.path) == pin.baseline,
-		"orc pane close: checkout changed after review-begin"
-	)
-	return { runId = pin.runId, report = pin.report, baseline = pin.baseline }
+	local matched, delta = review_match(rt, record.path, pin)
+	assert(matched, "orc pane close: checkout changed after review-begin")
+	return {
+		runId = pin.runId,
+		report = pin.report,
+		baseline = pin.baseline,
+		tree = pin.tree,
+		stagedFingerprint = pin.stagedFingerprint,
+	},
+		delta
 end
 
 -- Default target: the checkout's uncommitted diff, else its task branch against the base.
@@ -999,7 +1026,7 @@ local function start(rt, feature, task, values, file, servers)
 	return start_result(rt, record, grid)
 end
 
----@param review? {skill:string,target:string,baseline?:string}
+---@param review? {skill:string,target:string,baseline?:string,tree?:string,stagedFingerprint?:string}
 local function follow_up(rt, record, values, review)
 	-- shortcut: exec resume needs a new owned block; add it when follow-ups are required.
 	assert(
@@ -1028,7 +1055,8 @@ local function follow_up(rt, record, values, review)
 	if review then
 		body = review_body(rt, record, review)
 		-- Baseline after readiness so it is the state the reviewer starts from.
-		review.baseline = fingerprint(rt, record.path)
+		review.baseline, review.stagedFingerprint = fingerprint(rt, record.path)
+		review.tree = review_delta.snapshot(rt, record.path)
 	elseif values.file then
 		local file = rt.abspath(values.file)
 		assert(rt.read(file), "orc pane: cannot read follow-up file")
@@ -1458,7 +1486,6 @@ local function wait_for(rt, record, timeout, until_report)
 	return result(rt, 0, answer)
 end
 
--- A done review run or attested saved report must match the checkout as it is now.
 local function unreviewed(rt, record)
 	local last = record.reviewed
 	if
@@ -1467,10 +1494,19 @@ local function unreviewed(rt, record)
 		and report(rt, record)
 		and record.reportStatus == "done"
 	then
-		last = { runId = record.runId, baseline = record.review.baseline }
+		last = {
+			runId = record.runId,
+			baseline = record.review.baseline,
+			tree = record.review.tree,
+			stagedFingerprint = record.review.stagedFingerprint,
+		}
 	end
-	if last and fingerprint(rt, record.path) == last.baseline then
-		return nil
+	if last then
+		local matched, delta = review_match(rt, record.path, last)
+		if matched then
+			record.reviewed = last
+			return nil, delta
+		end
 	end
 	return "orc pane close: "
 		.. (last and "the checkout changed after " .. (last.report and "saved review " .. last.report or "self-review run " .. last.runId) or "no done self-review for this implementer")
@@ -1480,7 +1516,7 @@ local function unreviewed(rt, record)
 		.. vim.fn.shellescape(record.path)
 		.. " and wait for it, then close; or "
 		.. independent_review_hint(record)
-		.. "; pass --no-review only for an abandoned, stalled or failed task or an unavailable review skill"
+		.. "; pass --no-review only for an abandoned, stalled or failed task, an unavailable review skill, or a non-risky fix round the orchestrator verified (record why in the task log)"
 end
 
 ---@param rt orc.Runtime
@@ -1547,17 +1583,17 @@ local function close_owned(rt, record, authorize)
 end
 
 local function close(rt, record, force, no_review, review)
-	local accepted
+	local accepted, review_delta_kind
 	local function authorize(skip_self_review)
 		if review then
-			local checked, value = pcall(independent_review, rt, record, review)
+			local checked, value, delta = pcall(independent_review, rt, record, review)
 			if not checked then
 				return tostring(value) .. "; " .. independent_review_hint(record)
 			end
-			accepted = value
+			accepted, review_delta_kind = value, delta
 		elseif not (skip_self_review or no_review) and reviewable(record) then
 			-- Keep review failures out of hinted's local-only recovery path.
-			local checked, refusal = pcall(unreviewed, rt, record)
+			local checked, refusal, delta = pcall(unreviewed, rt, record)
 			if not checked then
 				return "orc pane close: cannot compare the checkout with its review: "
 					.. tostring(refusal)
@@ -1565,6 +1601,7 @@ local function close(rt, record, force, no_review, review)
 					.. record.path
 					.. ", or pass --no-review"
 			end
+			review_delta_kind = delta
 			return refusal
 		end
 	end
@@ -1596,11 +1633,12 @@ local function close(rt, record, force, no_review, review)
 	return result(
 		rt,
 		0,
-		vim.tbl_extend(
-			"force",
-			{ status = "closed", task = record.task, pane = record.blockId or rt.null },
-			outcome or {}
-		)
+		vim.tbl_extend("force", {
+			status = "closed",
+			task = record.task,
+			pane = record.blockId or rt.null,
+			reviewDelta = review_delta_kind,
+		}, outcome or {})
 	)
 end
 
