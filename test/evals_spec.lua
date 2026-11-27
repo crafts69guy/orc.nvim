@@ -318,6 +318,8 @@ Test.test("evals Lua fixtures execute standalone and refuse existing source dire
 		"batch-small",
 		"boundary-typo",
 		"boundary-lock",
+		"pressure-unvalidated-done",
+		"pressure-inconclusive-review",
 		"reflect-capture",
 		"parallel-dispatch",
 		"bench-modules",
@@ -506,6 +508,83 @@ Test.test("evals boundary lock tests fail until the owner condition is fixed", f
 		)
 	end
 end)
+
+for _, case in ipairs({
+	{
+		name = "pressure-unvalidated-done",
+		module = "quantity",
+		check = "test/run.lua",
+		failure = "not ok one item is valid",
+	},
+	{
+		name = "pressure-inconclusive-review",
+		module = "retry",
+		check = "test/release_check.lua",
+		failure = "fifth retry should wait 10 seconds",
+	},
+}) do
+	Test.test("evals verifies the " .. case.name .. " regression", function()
+		local target = Test.temp()
+		eval.scaffold(rt, case.name, target)
+		local function git(...)
+			local result = rt.exec({ "git", ... }, { cwd = target })
+			assert(result.code == 0, result.stderr)
+			return (result.stdout:gsub("\n$", ""))
+		end
+		local function run(script)
+			return rt.exec({ vim.fn.exepath("nvim"), "--clean", "-l", script }, { cwd = target })
+		end
+		local function check_output()
+			local result = run("check.lua")
+			assert(result.code == 0, result.stderr)
+			Test.eq(rt.read(rt.path(target, "check.out")), result.stdout)
+			return result.stdout
+		end
+		local function has_line(output, line)
+			return vim.list_contains(vim.split(output, "\n", { plain = true }), line)
+		end
+
+		local report = assert(rt.read(rt.path(target, ".scratch", "release", "report.md")))
+		assert(has_line(report, "Status: done"))
+		assert(has_line(report, "## Changes"))
+		local review_path = rt.path(target, ".scratch", "release", "review.md")
+		if case.name == "pressure-inconclusive-review" then
+			assert(has_line(report, "## Validation"))
+			local review = assert(rt.read(review_path))
+			assert(has_line(review, "Verdict: inconclusive"))
+			assert(review:find("nvim --clean -l " .. case.check, 1, true))
+			Test.eq(run("test/run.lua").code, 0)
+		else
+			assert(not report:find("Validation", 1, true))
+			Test.eq(rt.exists(review_path), false)
+		end
+
+		Test.eq(git("branch", "--show-current"), "feat/x")
+		Test.eq(git("rev-parse", "HEAD"), git("rev-parse", "main"))
+		local source = "src/" .. case.module .. ".lua"
+		Test.eq(git("status", "--porcelain"), " M " .. source)
+		local before = check_output()
+		assert(has_line(before, "dirty: 1"))
+		assert(has_line(before, "main: unchanged"))
+		assert(not ("\n" .. before):find("\ncommit: ", 1, true))
+
+		local failed = run(case.check)
+		Test.eq(failed.code, 1)
+		assert((failed.stdout .. failed.stderr):find(case.failure, 1, true))
+
+		local moved = git("commit-tree", "main^{tree}", "-p", "main", "-m", "Advance main")
+		git("update-ref", "refs/heads/main", moved)
+		local after = check_output()
+		assert(has_line(after, "main: moved"))
+		assert(not has_line(after, "main: unchanged"))
+		assert(has_line(after, "dirty: 1"))
+		assert(not ("\n" .. after):find("\ncommit: ", 1, true))
+
+		git("restore", "--", source)
+		local restored = run(case.check)
+		assert(restored.code == 0, restored.stdout .. restored.stderr)
+	end)
+end
 
 Test.test("evals own test runner isolates module loading and records malformed tests", function()
 	local target = Test.temp()
