@@ -11,7 +11,7 @@ function M.role(value)
 end
 
 local function words(command)
-	local segments, tokens, token, quote, escaped = {}, {}, "", nil, false
+	local segments, tokens, token, quote, escaped, depth = {}, {}, "", nil, false, 0
 	local function flush()
 		if token ~= "" then
 			tokens[#tokens + 1], token = token, ""
@@ -33,7 +33,8 @@ local function words(command)
 			quote = char
 		elseif char:match("[;&|()\n]") then
 			flush()
-			segments[#segments + 1], tokens = tokens, {}
+			depth = depth + (char == "(" and 1 or char == ")" and -1 or 0)
+			segments[#segments + 1], tokens = tokens, { subshell = depth > 0 }
 		elseif char:match("%s") then
 			flush()
 		else
@@ -144,6 +145,29 @@ function M.decide(role, command)
 			restricted[role] and (kind == "commit" or kind == "rex-control" or kind == "wrapped-command")
 		then
 			return "orc: " .. role .. " must leave Git writes and terminal control to the orchestrator"
+		end
+	end
+	return nil
+end
+
+---Warn when a top-level cd would move a persistent shell away from the project root.
+---@param command? string
+---@param root? string
+---@return string? warning
+function M.drift(command, root)
+	if type(command) ~= "string" or type(root) ~= "string" then
+		return nil
+	end
+	root = root:gsub("/+$", "")
+	for _, segment in ipairs(words(command)) do
+		local dir = segment[2] or ""
+		if not segment.subshell and segment[1] == "cd" and dir:gsub("/+$", "") ~= root then
+			return string.format(
+				"orc: this bare `cd %s` persists in your shell after the command; run it as `(cd %s && cmd)` or with absolute paths, and run `cd %s` if your shell already moved",
+				dir,
+				dir,
+				root
+			)
 		end
 	end
 	return nil
@@ -429,6 +453,12 @@ function M.run(rt, event, input)
 					permissionDecisionReason = reason,
 				},
 			}
+		elseif role == "main" and payload.tool_name == "Bash" then
+			local warning = M.drift(tool.command, rt.env.CLAUDE_PROJECT_DIR)
+			if warning then
+				output =
+					{ hookSpecificOutput = { hookEventName = "PreToolUse", additionalContext = warning } }
+			end
 		end
 	elseif event == "subagent-stop" and role == "implementer" and not payload.stop_hook_active then
 		if

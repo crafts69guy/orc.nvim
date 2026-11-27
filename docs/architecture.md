@@ -131,6 +131,9 @@ same-user programs or access to a terminal server. Real restrictions come from t
 harness/OS sandbox and available credentials.
 
 The command guard blocks restricted roles from changing the Git stash shared by all worktrees.
+It also warns the main Claude agent, without blocking, when a top-level `cd` targets a
+folder other than `$CLAUDE_PROJECT_DIR`, because that `cd` persists in its shell; `cd` inside
+`( )` or `$( )` runs in a subshell and does not warn.
 Restricted roles may rename the current Rex session, which worker panes share with the
 orchestrator, with `rex session rename <label>`; other Rex control commands stay with the
 orchestrator.

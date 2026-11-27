@@ -774,6 +774,43 @@ Test.test("core workflow guards protect the shared Git stash", function()
 	)
 end)
 
+Test.test("core guard warns the main Claude agent before a bare cd moves its shell", function()
+	for _, command in ipairs({
+		"cd sub && x",
+		"cd .worktrees/feat--T1; nvim -l test/run.lua",
+		"cd /repo/.scratch",
+		"(cd sub && x); cd sub",
+	}) do
+		assert(hooks.drift(command, "/repo/"), command)
+	end
+	for _, command in ipairs({
+		"(cd sub && x)",
+		"cd /repo && x",
+		"cd /repo/ && x",
+		"echo $(cd sub && pwd)",
+		"bash -c 'cd sub && x'",
+		"echo cd sub",
+		"git -C sub status",
+	}) do
+		Test.eq(hooks.drift(command, "/repo"), nil)
+	end
+	Test.eq(hooks.drift("cd sub", nil), nil)
+	Test.eq(hooks.drift(nil, "/repo"), nil)
+	local rt = fake()
+	rt.env.ORC, rt.env.CLAUDE_PROJECT_DIR = "1", "/repo"
+	local input = { tool_name = "Bash", tool_input = { command = "cd sub && x" } }
+	local output = rt.decode(hooks.run(rt, "guard", rt.encode(input)).out).hookSpecificOutput
+	Test.eq(output.permissionDecision, nil)
+	assert(output.additionalContext:find("(cd sub && cmd)", 1, true))
+	for _, case in ipairs({
+		{ tool_name = "Bash", agent_type = "orc:implementer", tool_input = input.tool_input },
+		{ tool_name = "exec_command", tool_input = input.tool_input },
+		{ tool_name = "Bash", tool_input = { command = "(cd sub && x)" } },
+	}) do
+		Test.eq(hooks.run(rt, "guard", rt.encode(case)).out, "")
+	end
+end)
+
 Test.test(
 	"core hooks gate activation, malformed input, role restrictions and report evidence",
 	function()
