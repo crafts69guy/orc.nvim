@@ -32,17 +32,24 @@
   Require done status, validation evidence and docs for changed exports and touched
   behavior. A bug fix or new check that a test can reproduce also needs the test
   failing before the change and passing after, or a stated reason why not.
-  Before review, while the worker is idle, verify in the task checkout, which
-  already has its dependencies (a fresh worktree may lack `node_modules`). Save
-  `git diff HEAD | shasum`, `git status --porcelain` and copies of the changed
-  non-test files outside the checkout. For one red claim, put the base version of
-  those files in place (`git checkout HEAD -- <files>`, moving new ones aside), run
-  the new tests and confirm the failure has the named reason. Then restore the
-  copies, apply one mutant of your own to a changed decision the report did not
-  mutate and confirm a targeted test fails. Restore again and confirm the checksum
-  and status match. A surviving mutant goes into the follow-up. Give the reported
-  mutation probe survivors to the review as questions, not as tests to write.
-  If a native subagent has handed back its report and shows "waiting on
+- Mark each delegated task risky or non-risky in its brief and task log. Risky
+  means it touches security, concurrency, migrations, public APIs or fund safety.
+  Re-mark it risky when its diff or a fix round reaches one of those areas.
+  The steps below name the mark that needs them.
+- For a non-risky task, rerun the report's targeted tests and inspect the diff;
+  the worker's red run and mutation probes stand.
+- For a risky task, before review, while the worker is idle, verify in the task
+  checkout, which already has its dependencies (a fresh worktree may lack
+  `node_modules`). Save `git diff HEAD | shasum`, `git status --porcelain` and
+  copies of the changed non-test files outside the checkout. For one red claim,
+  put the base version of those files in place (`git checkout HEAD -- <files>`,
+  moving new ones aside), run the new tests and confirm the failure has the named
+  reason. Then restore the copies, apply one mutant of your own to a changed
+  decision the report did not mutate and confirm a targeted test fails. Restore
+  again and confirm the checksum and status match. A surviving mutant goes into
+  the follow-up. Give the reported mutation probe survivors to the review as
+  questions, not as tests to write.
+- If a native subagent has handed back its report and shows "waiting on
   its own background work", stop it with TaskStop and keep the report.
 - For an implementer pane, get the report, inspect the diff, run deterministic
   checks, follow [no-comments](../skills/no-comments/SKILL.md) once the worker is
@@ -50,9 +57,9 @@
   `next` field names the review or close command. Use `orc pane close <task> --path
   <checkout>` or `orc pane prune --path <checkout>` before reporting completion.
   See dispatch's Rex reference for the close gate, `--review` and `--no-review`.
-- Single (default) uses exactly one model review per delegated diff. For non-risky
-  diffs, use pane self-review (`orc pane review`). For risky diffs (security,
-  concurrency, migrations, public APIs, fund safety), use one independent review.
+- Single (default) gives the initial diff one model review: pane self-review
+  (`orc pane review`) when non-risky, one independent review when risky. Fix
+  rounds follow Follow-ups below.
 - Cascade (high) escalates after a failed review round. Switch the worker to the
   other `--kind` or a stronger Claude model and record why.
 - Critique (max) uses two independent reviews in parallel where available for
@@ -94,9 +101,16 @@
   and check it before the next attempt. Give a new worker the original brief,
   the follow-ups and the last report. Record kind, level, model/effort and
   escalation reasons in the task log.
-- After no-comments on the paths changed in the round, recheck fixes with the same
-  worker's `orc pane review --target <paths changed in the round>`. Start a fresh
-  native `orc:reviewer` only if the round touches a new risky area.
+- After a fix round, run no-comments on the paths it changed. For a risky task,
+  recheck with the same worker's `orc pane review --target <paths changed in the
+  round>`. For a non-risky task, skip the model recheck: inspect the round's diff,
+  rerun its targeted tests, then close with `--no-review` and record those
+  commands in the task log. Start a fresh native `orc:reviewer` only if the round
+  touches a new risky area.
+- The close gate accepts a delta since the last review that only deletes whole
+  comments in TypeScript or Lua files, so a late no-comments deletion there
+  needs no new review. Any other change
+  needs the review or the non-risky close above.
 - On a usage or rate limit, restart the same brief and worktree with the other
   `--kind` and preserve prior work.
 - Use one task per context and record state in the plan and

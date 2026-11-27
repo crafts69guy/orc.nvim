@@ -72,18 +72,21 @@ outputs and verdicts in that report and accept both before closing.
   Use `--skill ponytail-audit` only when a whole-repo audit is asked.
   Its wait result adds `mode: "review"` and `readOnly`; `false` carries a `violation`
   because the checkout changed: inspect the diff before accepting anything.
-  Single (default) gets exactly one model review per diff: non-risky diffs get only
+  Single (default) gives the initial diff one model review: non-risky diffs get only
   self-review; risky diffs (security, concurrency, migrations, public APIs, fund safety)
   get one independent review. For that initial diff, pin the checkout before
   dispatching a reviewer and use the saved report to close after acceptance.
   Otherwise, initial self-review stays required after the report, deterministic checks
   and no-comments. After a fix round, run no-comments on the paths changed in that
-  round, then self-review only those paths, taken from the follow-up report and
-  `git status`:
+  round. For a risky task, self-review only those paths, taken from the follow-up
+  report and `git status`:
   `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
+  For a non-risky task, inspect the round's diff, rerun its targeted tests and close
+  with `--no-review`, recording those commands in the task log.
   Use the same worker; never start a fresh native `orc:reviewer` unless the round
   touches a new risky area. Keep high (Cascade) and max (Critique) review patterns.
-  The close gate still compares the whole checkout.
+  The close gate compares the whole checkout and accepts only TypeScript or Lua
+  comment deletions after the last review.
 - Pause: `orc pane pause <task> --path <worktree>` sends Esc to a working worker and
   records the ended turn (or records a manual Esc). Resume with `orc pane prompt`;
   never type into a worker pane with `rex send`, which bypasses run IDs and reports.
@@ -97,9 +100,12 @@ outputs and verdicts in that report and accept both before closing.
   the pinned path, run and checkout fingerprint. The orchestrator checks the verdict.
   Without either, close returns `status: "not-reviewed"` naming the review command;
   a missing or empty report file also returns `status: "not-reviewed"`.
+  A delta since that review that only deletes whole comments in `.ts`, `.mts`,
+  `.cts` or `.lua` files, with no directives, passes and the result carries
+  `reviewDelta: "comments-only"`.
   `--review` and `--no-review` are mutually exclusive. `--no-review` closes anyway:
-  use it for cleanup of an abandoned, stalled or failed task;
-  record why in the task log. If Rex restarted
+  use it for cleanup of an abandoned, stalled or failed task, or for a non-risky
+  fix round you verified; record why in the task log. If Rex restarted
   or pane creation failed, close and start refuse the stranded record; after checking
   the pane is gone, add `--force` to mark it closed without touching Rex.
 - Prune: `orc pane prune --path <checkout>` closes successful exits and idle/done

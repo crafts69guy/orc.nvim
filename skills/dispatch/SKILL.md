@@ -25,11 +25,14 @@ subagents normally; use [Rex workers](references/rex.md) in pane mode.
    For the initial diff, when the active level requires an independent review, skip
    pane self-review and use the saved report from step 5. Otherwise, pane workers must
    self-review: `orc pane review <task> --path <worktree>`, waited like any run.
-   After a fix round, run no-comments on the paths changed in that round, then
-   self-review only those paths, taken from the follow-up report and `git status`:
-   `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
+   After a fix round, run no-comments on the paths changed in that round. For a
+   risky task, self-review only those paths, taken from the follow-up report and
+   `git status`: `orc pane review <task> --path <worktree> --target <paths changed in the round>`.
+   For a non-risky task, inspect the round's diff, rerun its targeted tests and
+   close with `--no-review`, recording those commands in the task log.
    Use the same worker; never start a fresh native `orc:reviewer` unless the round
-   touches a new risky area. The close gate still compares the whole checkout.
+   touches a new risky area. The close gate compares the whole checkout and
+   accepts only TypeScript or Lua comment deletions after the last review.
 5. Apply the active level's review pattern and reviewer fallback from the
    delegated workflow guide. Before launching a saved independent review for a
    pane task, run `orc pane review-begin <task> --path <worktree> --review <new-file>`
