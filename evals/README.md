@@ -21,6 +21,36 @@ Arm rows show score and duration ranges (`min..max`). A delta row marks each ran
 touch; `overlap` and `n<2` mean no measured difference. Use at least 5 runs per
 arm before calling one arm better.
 
+## Wording micro-tests
+
+Use `orc eval micro` to compare rule or prompt wording on a realistic task with
+single-shot model calls. Preview the complete prompts and planned spend first.
+
+```fish
+orc eval micro evals/micro/review-coaching.lua --dry-run
+```
+
+Use a trusted local Lua spec with a context file path relative to the spec, one
+shared task, and a `control` arm without guidance. Give arms distinct file-safe
+names, including on case-insensitive filesystems. Each other arm can add its own
+guidance between the context and task. The scorer returns a number and a list of
+one-based line numbers to inspect. Run at least five reps per arm to compare
+wording. Use `--pilot` for one rep per arm to check the setup.
+
+Each provider call starts in an empty directory outside the checkout. Global
+`~/.codex/AGENTS.md` and any user-level Claude instructions may still apply.
+
+Paid runs require an approved budget. For Claude, set `cap` in USD per call. Orc
+checks `arms × reps × cap` against `ORC_EVAL_MAX_COST` (USD 5 by default) before
+any calls. Claude enforces `--max-budget-usd` per call and may slightly overshoot
+within one response. Codex requires `ORC_EVAL_CODEX=1` and its own approved usage
+limit. Orc applies no USD cap to Codex. `--dry-run` makes zero model calls.
+
+Each run saves outputs and `scores.json` under `evals/results/micro-<timestamp>/`.
+The summary reports successful sample counts, errors, means, ranges, and spreads.
+Compare spreads across arms and manually read every flagged `file:line` match.
+In the example, the scorer counts wording that may pre-judge a review finding.
+
 ## Workflow routing boundaries
 
 Run both cases from the plugin copy you want to evaluate. The command keeps

@@ -625,6 +625,9 @@ end
 ---@param argv string[]
 ---@return table
 function M.run(rt, argv)
+	if argv[1] == "micro" then
+		return require("orc.micro").run(rt, vim.list_slice(argv, 2))
+	end
 	local ok, result = pcall(function()
 		if argv[1] == "summarize" then
 			assert(#argv <= 2, "usage: orc eval summarize [aggregate-result.json]")
