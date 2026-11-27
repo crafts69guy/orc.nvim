@@ -3494,6 +3494,10 @@ Test.test("workers parse_report accepts bullets and bold labels and rejects pros
 	Test.eq(prose.validation, false)
 	Test.eq(workers.parse_report("Status: maybe\nValidation: ok").status, nil)
 	Test.eq(workers.parse_report("Status: Done\nValidation: ok").status, "done")
+	Test.eq(
+		workers.parse_report("Run: `5be9-c1`  \nStatus: `done`\n\n## Validation\nran tests"),
+		{ run = "5be9-c1", status = "done", validation = true }
+	)
 end)
 
 Test.test("workers parse_report keeps its own header when it quotes an earlier report", function()

@@ -292,7 +292,7 @@ end
 function M.parse_report(text)
 	local run, status, validation, depth
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-		local plain = line:gsub("[*_]", ""):gsub("^%s*[#>%-]*%s*", "")
+		local plain = line:gsub("[*_`]", ""):gsub("^%s*[#>%-]*%s*", "")
 		run = run or plain:match("^Run:%s*([%w%-]+)%s*$")
 		local found = (plain:match("^Status:%s*(%a+)%s*$") or ""):lower()
 		status = status or (statuses[found] and found or nil)
