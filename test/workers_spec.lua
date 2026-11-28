@@ -3665,6 +3665,19 @@ Test.test(
 	end
 )
 
+Test.test(
+	"workers parse_report ends Validation only at report labels, not labeled items",
+	function()
+		local function validation(body)
+			return workers.parse_report("Run: abc\nStatus: done\n\n" .. body).validation
+		end
+		Test.eq(validation("## Validation\n- RED: spec fails before the change\n\n## Notes\nn"), true)
+		Test.eq(validation("Validation:\n- GREEN: nvim -l t -> ok\nNotes: n"), true)
+		Test.eq(validation("## Validation\n- Notes: unvalidated"), false)
+		Test.eq(validation("Validation:\nDocs: none"), false)
+	end
+)
+
 Test.test("workers pause interrupts with Esc so prompt can resume the ended turn", function()
 	local _, state = fake()
 	state.start()

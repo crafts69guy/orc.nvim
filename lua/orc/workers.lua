@@ -286,10 +286,25 @@ end
 
 ---Parse the final-report fields shared by hooks, status and worker delivery.
 ---Labels may be bulleted, headed or wrapped in markdown emphasis.
+---Validation ends at a heading of its level or higher, or at a report section label such as Notes:;
+---item labels inside it, such as `- RED:`, stay validation content.
 ---The first Run and Status win: a report that quotes an earlier run's report keeps its own header.
 ---@param text string
 ---@return {run:string?,status:'done'|'partial'|'needs-context'|'blocked'|nil,validation:boolean}
 function M.parse_report(text)
+	local sections = {
+		run = true,
+		status = true,
+		changes = true,
+		validation = true,
+		notes = true,
+		docs = true,
+		scope = true,
+		decisions = true,
+		target = true,
+		findings = true,
+		verdict = true,
+	}
 	local run, status, validation, depth
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 		local plain = line:gsub("[*_`]", ""):gsub("^%s*[#>%-]*%s*", "")
@@ -305,7 +320,7 @@ function M.parse_report(text)
 				validation = true
 			end
 		elseif depth and level <= depth then
-			if level > 0 or plain:match("^%u%w*:%s*") then
+			if level > 0 or sections[(plain:match("^(%u%w*):") or ""):lower()] then
 				depth = nil
 			elseif plain:match("%S") then
 				validation = true
