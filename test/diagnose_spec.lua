@@ -205,3 +205,21 @@ Test.test("diagnose uses exec logs as fallback without counting a rollout twice"
 	Test.eq(output.stumbles[1].path, evidence)
 	Test.eq(output.stumbles[1].line, 4)
 end)
+
+Test.test("diagnose counts runs whose prompt the TUI wrapped as pasted content", function()
+	local rt, root, record = fixture()
+	local transcript = rt.path(root, "pasted.jsonl")
+	local rows = {}
+	for _, content in ipairs({
+		"[orc-run:first] work",
+		'\n\n<pasted_content id="4e03">\n[orc-run:second] review\n</pasted_content>',
+		"quoting [orc-run:third] is not a run",
+	}) do
+		rows[#rows + 1] = rt.encode({ type = "user", message = { role = "user", content = content } })
+	end
+	rt.write(transcript, table.concat(rows, "\n") .. "\n")
+	record("pasted", { transcript = transcript, kind = "claude" })
+	local response = cli.run(rt, { "diagnose", "feature", "--json" })
+	Test.eq(response.code, 0)
+	Test.eq(rt.decode(response.out).workers[1].runs, 2)
+end)

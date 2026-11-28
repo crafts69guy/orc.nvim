@@ -1912,7 +1912,8 @@ function M.event(rt, input)
 		if type(input.transcript_path) == "string" and input.transcript_path ~= "" then
 			record.transcript = input.transcript_path
 		end
-		local marker = type(input.prompt) == "string" and input.prompt:match("^%[orc%-run:([%w%-]+)%]")
+		local marker = type(input.prompt) == "string"
+			and input.prompt:gsub("^%s*<pasted_content[^>]*>%s*", "", 1):match("^%[orc%-run:([%w%-]+)%]")
 		if marker == record.runId then
 			record.acknowledged = true
 		end

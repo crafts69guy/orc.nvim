@@ -4951,3 +4951,18 @@ Test.test("workers accept Rex terminals that set REX_BLOCK without REX_SESSION",
 		0
 	)
 end)
+
+Test.test("workers acknowledge a run marker that the TUI wrapped as pasted content", function()
+	for prompt, expected in pairs({
+		['\n\n<pasted_content id="4e03">\n[orc-run:%s] review\n</pasted_content>'] = true,
+		["see [orc-run:%s] quoted"] = false,
+	}) do
+		local _, state = fake()
+		state.start()
+		local record = state.record()
+		record.acknowledged = false
+		state.store(record)
+		state.hook("UserPromptSubmit", { prompt = prompt:format(record.runId) })
+		Test.eq(state.record().acknowledged, expected)
+	end
+end)

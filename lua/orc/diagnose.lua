@@ -140,7 +140,7 @@ end
 
 local function prompt_run(value)
 	if type(value) == "string" then
-		return value:match("^%[orc%-run:([%w_.%-]+)%]")
+		return (value:gsub("^%s*<pasted_content[^>]*>%s*", "", 1):match("^%[orc%-run:([%w_.%-]+)%]"))
 	end
 	for _, block in ipairs(object(value)) do
 		local id = prompt_run(object(block).text)
