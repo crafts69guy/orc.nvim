@@ -1,6 +1,8 @@
 local M = {}
 local uv = vim.uv
 local serial = 0
+local execve_declared = false
+local ENOENT = 2
 
 ---@class orc.ProcessResult
 ---@field code integer Process exit code; 127 when the executable is missing.
@@ -31,6 +33,20 @@ local function spawn_error(err)
 	return tostring(err):find("ENOENT", 1, true) and 127 or 1
 end
 
+local function owned_c_string_vector(ffi, values)
+	local bytes = table.concat(values, "\0") .. "\0"
+	local pointer_slots = #values + 1
+	local string_slots = math.ceil(#bytes / ffi.sizeof("const char *"))
+	local vector = ffi.new("const char *[?]", pointer_slots + string_slots)
+	local cursor = ffi.cast("char *", vector + pointer_slots)
+	ffi.copy(cursor, bytes, #bytes)
+	for index, value in ipairs(values) do
+		vector[index - 1] = cursor
+		cursor = cursor + #value + 1
+	end
+	return vector
+end
+
 local function source_root()
 	local source = debug.getinfo(1, "S").source:sub(2)
 	local file = assert(uv.fs_realpath(source))
@@ -44,6 +60,7 @@ end
 ---@field null userdata JSON null sentinel.
 ---@field exec fun(argv:string[], opts?:orc.ProcessOptions):orc.ProcessResult
 ---@field interactive fun(argv:string[], opts?:orc.ProcessOptions):integer
+---@field replace fun(argv:string[], opts?:orc.ProcessOptions):integer Replace this process, returning on failure or when FFI is unavailable.
 ---@field async fun(argv:string[], opts:orc.ProcessOptions?, callback:fun(result:orc.ProcessResult)):orc.ProcessHandle
 ---@field stream fun(argv:string[], opts:orc.ProcessOptions?, on_data:fun(chunk:string)):orc.ProcessHandle
 ---@field read fun(path:string):string?,string?
@@ -248,6 +265,66 @@ function M.new(opts)
 		end
 		handle:close()
 		return signal == 0 and code or 128 + signal
+	end
+
+	rt.replace = function(argv, options)
+		local has_ffi, ffi = pcall(require, "ffi")
+		if not has_ffi then
+			return rt.interactive(argv, options)
+		end
+		options = options or {}
+		assert(type(argv) == "table" and type(argv[1]) == "string", "command needs an executable")
+		if not execve_declared then
+			ffi.cdef([[
+				int execve(const char *path, const char *const argv[], const char *const envp[]);
+				char *strerror(int errnum);
+			]])
+			execve_declared = true
+		end
+
+		local previous_cwd = uv.cwd()
+		local changed, err = uv.chdir(options.cwd or rt.cwd)
+		if not changed then
+			io.stderr:write(tostring(err) .. "\n")
+			return 1
+		end
+		local function failed(message, code)
+			if previous_cwd then
+				uv.chdir(previous_cwd)
+			end
+			io.stderr:write(argv[1] .. ": " .. message .. "\n")
+			return code
+		end
+
+		local env = environment(rt.env, options.env)
+		local file = argv[1]
+		if not file:find("/", 1, true) then
+			local executable
+			for _, dir in ipairs(env.PATH and vim.split(env.PATH, ":", { plain = true }) or {}) do
+				local candidate = dir == "" and file or dir .. "/" .. file
+				local stat = uv.fs_stat(candidate)
+				if stat and stat.type == "file" and uv.fs_access(candidate, "X") then
+					executable = candidate
+					break
+				end
+			end
+			if not executable then
+				return failed("executable not found", 127)
+			end
+			file = executable
+		end
+
+		local envp = {}
+		for key, value in pairs(env) do
+			envp[#envp + 1] = key .. "=" .. value
+		end
+		local argv_ptr = owned_c_string_vector(ffi, argv)
+		local envp_ptr = owned_c_string_vector(ffi, envp)
+		io.stdout:flush()
+		io.stderr:flush()
+		ffi.C.execve(file, argv_ptr, envp_ptr)
+		local errno = ffi.errno()
+		return failed(ffi.string(ffi.C.strerror(errno)), errno == ENOENT and 127 or 126)
 	end
 
 	rt.read = function(path)

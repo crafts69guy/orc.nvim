@@ -136,6 +136,136 @@ Test.test("runtime interactive preserves exit codes and environment", function()
 	end)
 end)
 
+local function replace_child(source)
+	local rt, dir = runtime.new(), Test.temp()
+	local script = rt.path(dir, "replace.lua")
+	local lua_path = rt.path(rt.root, "lua", "?.lua") .. ";"
+	rt.write(
+		script,
+		("package.path = %q .. package.path\nlocal rt = require('orc.runtime').new()\n"):format(
+			lua_path
+		) .. source
+	)
+	return rt.exec({ vim.v.progpath, "--clean", "-l", script }, { timeout = 5000 })
+end
+
+local has_ffi = pcall(require, "ffi")
+
+local function execve_test(name, run)
+	name = name .. " (requires LuaJIT FFI)"
+	if has_ffi then
+		Test.test(name, run)
+	else
+		io.stdout:write("skip " .. name .. "\n")
+	end
+end
+
+execve_test("runtime replace keeps the launcher pid", function()
+	local result = replace_child([[
+io.stdout:write(vim.fn.getpid(), "\n")
+os.exit(rt.replace({ "/bin/sh", "-c", "echo $$" }))
+]])
+	assert(result.code == 0, result.stderr)
+	local launcher, shell = result.stdout:match("^(%d+)\n(%d+)\n$")
+	assert(launcher and shell, result.stdout)
+	Test.eq(shell, launcher)
+end)
+
+Test.test("runtime replace passes through exit status", function()
+	local exited = replace_child([[os.exit(rt.replace({ "/bin/sh", "-c", "exit 7" }))]])
+	assert(exited.code == 7, vim.inspect(exited))
+	Test.eq(exited.signal, 0)
+end)
+
+execve_test("runtime replace passes through signal death", function()
+	local signaled = replace_child([[
+os.exit(rt.replace({ "/bin/sh", "-c", "kill -TERM $$" }))
+]])
+	assert(signaled.signal == 15, vim.inspect(signaled))
+end)
+
+Test.test("runtime replace searches the merged PATH from the launch cwd", function()
+	local rt, dir = runtime.new(), Test.temp()
+	rt.mkdir(rt.path(dir, "orc-test-agent"))
+	local script = rt.path(dir, "agent bin", "orc-test-agent")
+	rt.write(
+		script,
+		[[#!/bin/sh
+printf '%s|%s|%s\n' "$ORC_RUNTIME_TEST" "${ORC_RUNTIME_REMOVE-unset}" "$1"
+/bin/pwd -P
+]]
+	)
+	assert(vim.uv.fs_chmod(script, 493))
+	local result = replace_child(([[
+rt.cwd = %q
+rt.env.PATH = "base-path"
+rt.env.ORC_RUNTIME_TEST = "base"
+rt.env.ORC_RUNTIME_REMOVE = "remove me"
+os.exit(rt.replace({ "orc-test-agent", "literal a;$(false)" }, {
+	env = { PATH = ":agent bin", ORC_RUNTIME_TEST = "override", ORC_RUNTIME_REMOVE = false },
+}))
+]]):format(dir))
+	assert(result.code == 0, result.stderr)
+	Test.eq(
+		result.stdout,
+		"override|unset|literal a;$(false)\n" .. assert(vim.uv.fs_realpath(dir)) .. "\n"
+	)
+end)
+
+Test.test("runtime replace reports missing cwd or executable and returns to the caller", function()
+	local dir = Test.temp()
+	local missing_cwd_status = has_ffi and 1 or 127
+	local result = replace_child(([[
+local cwd = vim.uv.cwd()
+assert(rt.replace({ "/bin/sh", "-c", "echo unexpected exec" }, { cwd = %q }) == %d)
+assert(rt.replace({ "orc-not-found" }, { cwd = %q, env = { PATH = false } }) == 127)
+assert(vim.uv.cwd() == cwd)
+io.stdout:write("continued\n")
+]]):format(dir .. "/absent", missing_cwd_status, dir))
+	assert(result.code == 0, result.stderr)
+	Test.eq(result.stdout, "continued\n")
+	local cwd_error, executable_error = result.stderr:match("^([^\n]+)\n([^\n]+)\n$")
+	assert(cwd_error and cwd_error:find("ENOENT", 1, true), result.stderr)
+	local expected = has_ffi and "orc-not-found" or "ENOENT"
+	assert(executable_error and executable_error:find(expected, 1, true), result.stderr)
+end)
+
+execve_test("runtime replace reports execve failures and can be retried", function()
+	local rt, dir = runtime.new(), Test.temp()
+	local invalid = rt.path(dir, "invalid format")
+	local missing_interpreter = rt.path(dir, "missing interpreter")
+	rt.write(invalid, "invalid executable\n")
+	rt.write(missing_interpreter, "#!" .. rt.path(dir, "absent") .. "\n")
+	assert(vim.uv.fs_chmod(invalid, 493))
+	assert(vim.uv.fs_chmod(missing_interpreter, 493))
+	local result = replace_child(([[
+local cwd = vim.uv.cwd()
+local options = { cwd = %q }
+assert(rt.replace({ "./invalid format" }, options) == 126)
+assert(rt.replace({ "./missing interpreter" }, options) == 127)
+assert(vim.uv.cwd() == cwd)
+]]):format(dir))
+	assert(result.code == 0, result.stderr)
+	assert(result.stderr:find("./invalid format: ", 1, true), result.stderr)
+	assert(result.stderr:find("./missing interpreter: ", 1, true), result.stderr)
+end)
+
+Test.test("runtime replace falls back to interactive when FFI is unavailable", function()
+	local result = replace_child([[
+package.loaded.ffi = nil
+package.preload.ffi = function()
+	error("FFI unavailable")
+end
+local code = rt.replace({ "/bin/sh", "-c", 'echo "$ORC_RUNTIME_TEST"; exit 7' }, {
+	env = { ORC_RUNTIME_TEST = "fallback" },
+})
+assert(code == 7)
+io.stdout:write("continued\n")
+]])
+	assert(result.code == 0, result.stderr)
+	Test.eq(result.stdout, "fallback\ncontinued\n")
+end)
+
 Test.test(
 	"runtime async captures output without blocking and reports missing executables",
 	function()

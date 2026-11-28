@@ -68,7 +68,10 @@ local function fixture(fn)
 		end
 		return { code = state.gitFail and 1 or 0, stdout = state.gitOutput or "/repo\n", stderr = "" }
 	end
-	rt.interactive = function(argv, opts)
+	rt.interactive = function()
+		error("main sessions must replace the launcher")
+	end
+	rt.replace = function(argv, opts)
 		state.launched[#state.launched + 1] = { argv = argv, opts = opts }
 		return 0
 	end

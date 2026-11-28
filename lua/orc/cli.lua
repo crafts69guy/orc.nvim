@@ -115,7 +115,7 @@ local function launch(rt, kind, argv)
 		-- The SessionStart hook cannot call Rex, so resolve the session here.
 		launch.env.REX_SESSION = require("orc.rex").session(rt)
 	end
-	return { code = rt.interactive(launch.argv, { cwd = launch.cwd, env = launch.env }), out = "" }
+	return { code = rt.replace(launch.argv, { cwd = launch.cwd, env = launch.env }), out = "" }
 end
 
 local function claude_updates(rt)

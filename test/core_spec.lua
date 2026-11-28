@@ -97,7 +97,10 @@ local function fake(handlers)
 		end
 		return result()
 	end
-	rt.interactive = function(argv, options)
+	rt.interactive = function()
+		error("main sessions must replace the launcher")
+	end
+	rt.replace = function(argv, options)
 		rt.launched[#rt.launched + 1] = { argv = argv, options = options }
 		return 0
 	end

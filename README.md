@@ -149,6 +149,9 @@ and leaves product and preference decisions to you.
 
 Run `orc --help` for arguments.
 
+On LuaJIT builds, `orc claude` and `orc codex` replace the Neovim launcher with
+the agent in the same process.
+
 Choose `--level default|high|max` (or `ORC_LEVEL`; the flag wins):
 
 | Level | Routing after deterministic checks |
