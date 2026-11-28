@@ -895,6 +895,8 @@ local function review_body(rt, record, review)
 		.. rt.path(rt.root, "skills", "typescript-best-practices", "SKILL.md")
 		.. ". When the diff adds or changes tests, also check them against "
 		.. rt.path(rt.root, "skills", "test-discipline", "SKILL.md")
+		.. ". For UI changes, also check their evidence against "
+		.. rt.path(rt.root, "skills", "ui-verification", "SKILL.md")
 		.. "."
 end
 

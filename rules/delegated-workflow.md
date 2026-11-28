@@ -25,6 +25,13 @@
 - Give the absolute path of [test-discipline](../skills/test-discipline/SKILL.md)
   and the edge cases the task's tests must cover in every implementer brief, and
   the path in any review prompt you write. `orc pane review` adds the path itself.
+- For a task that changes UI rendered in a browser, give the absolute path of
+  [ui-verification](../skills/ui-verification/SKILL.md), the app URL, the allowed
+  origins and the ready selector in its brief and in any review prompt you write.
+  Start the worker with `--kind claude`. Before accepting, rerun the main flow once
+  with the skill's template, since `orc pane review` runs nothing; a Codex
+  orchestrator follows the skill's rule for that rerun. `orc pane review` adds the
+  path itself.
 
 ## Reports and review
 

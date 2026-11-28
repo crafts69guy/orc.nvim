@@ -204,6 +204,12 @@ itself. Its JavaScript and TypeScript section adapts fast-check's
 it installs it only with the user's approval. The upstream skill is not recommended
 because it asks for test comments and self-installs packages, against orc's rules.
 
+Tasks that change browser UI also name the explicit-only
+[ui-verification](skills/ui-verification/SKILL.md) skill. It drives the page with ego
+lite (`ego-browser`) across a viewport and color-scheme matrix and reports screenshots,
+an overflow, target-size and alt/label audit, and console errors. It runs only in Claude
+workers and the orchestrator; `orc pane review` adds its path.
+
 Inside Rex (`REX_BLOCK` set), pane mode turns on automatically
 unless pair mode, `--no-panes`, or `ORC_PANES=0` applies. `--panes` or `ORC_PANES=1`
 forces it; `--panes` conflicts with `--no-panes`. Start workers with

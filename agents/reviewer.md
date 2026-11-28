@@ -16,6 +16,8 @@ For `.ts` or `.tsx` changes, check them against the `typescript-best-practices` 
 file named in the brief or review prompt.
 When the diff adds or changes tests, check them against the `test-discipline`
 skill file named in the brief or review prompt.
+For UI changes, check the reported evidence against the `ui-verification` skill file
+named in the brief or review prompt.
 Follow the project's style rules. Never ask for comments outside the `comment-sicko`
 exceptions. Apply the ponytail-review skill's method and
 report format when it is available: Claude preloads `ponytail:ponytail-review`, or

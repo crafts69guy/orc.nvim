@@ -24,6 +24,8 @@ named in the brief.
 When adding or changing tests, read and follow the `test-discipline` skill file
 named in the brief. Never delete, skip or weaken an existing test or assertion to
 pass a check; report the conflict as blocked.
+For UI work, read and follow the `ui-verification` skill file named in the brief and
+list its evidence under Validation.
 Follow the project's style rules, including the injected Ponytail guidance, except
 that you write no comments outside the `comment-sicko` exceptions: no narration,
 workaround notes or `shortcut:` comments.
